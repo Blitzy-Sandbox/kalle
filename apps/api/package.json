@@ -22,7 +22,7 @@
     "@opentelemetry/exporter-prometheus": "^0.51.0",
     "@opentelemetry/instrumentation-express": "^0.39.0",
     "@opentelemetry/instrumentation-http": "^0.51.0",
-    "@opentelemetry/sdk-metrics": "^0.51.0",
+    "@opentelemetry/sdk-metrics": "^1.24.0",
     "@opentelemetry/sdk-node": "^0.51.0",
     "@prisma/client": "^5.14.0",
     "@socket.io/redis-adapter": "^8.3.0",
