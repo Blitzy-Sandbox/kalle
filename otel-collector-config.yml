@@ -1,0 +1,79 @@
+# =============================================================================
+# Kalle — OpenTelemetry Collector Configuration
+# =============================================================================
+# Receives OTLP metrics from the backend API via gRPC, batches them, and
+# exposes a Prometheus-compatible scrape endpoint. Used by the otel-collector
+# Docker service defined in docker-compose.yml.
+#
+# Ports:
+#   4317  — gRPC OTLP receiver (backend SDK pushes metrics here)
+#   8889  — Prometheus exporter (scrape endpoint for metrics)
+#   13133 — Health check extension (used by Docker healthcheck)
+#
+# Metrics include: HTTP request count/latency, WebSocket connection count,
+# BullMQ queue depth, and DB query latency percentiles (R37).
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Receivers — Ingest telemetry data from instrumented services
+# -----------------------------------------------------------------------------
+receivers:
+  # OTLP receiver accepts metrics from the backend @opentelemetry/sdk-node
+  # via gRPC. The backend OTEL_EXPORTER_OTLP_ENDPOINT env var points here.
+  otlp:
+    protocols:
+      grpc:
+        endpoint: "0.0.0.0:4317"
+
+# -----------------------------------------------------------------------------
+# Processors — Transform and batch telemetry data before export
+# -----------------------------------------------------------------------------
+processors:
+  # Batch processor aggregates telemetry into larger payloads to reduce
+  # export overhead. Flushes every 10 seconds or when 1024 items accumulate.
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+
+# -----------------------------------------------------------------------------
+# Exporters — Deliver processed telemetry to external systems
+# -----------------------------------------------------------------------------
+exporters:
+  # Prometheus exporter serves a /metrics endpoint that Prometheus (or any
+  # compatible scraper) can poll. All metric names are prefixed with "kalle_".
+  prometheus:
+    endpoint: "0.0.0.0:8889"
+    namespace: "kalle"
+
+  # Logging exporter writes a summary of received telemetry to stdout.
+  # Useful for local development debugging; verbosity kept at "basic"
+  # to avoid flooding container logs.
+  logging:
+    verbosity: basic
+
+# -----------------------------------------------------------------------------
+# Extensions — Auxiliary services for collector health and diagnostics
+# -----------------------------------------------------------------------------
+extensions:
+  # Health check extension exposes an HTTP endpoint on port 13133 (default).
+  # Docker healthcheck uses: wget http://localhost:13133
+  health_check:
+    endpoint: "0.0.0.0:13133"
+
+# -----------------------------------------------------------------------------
+# Service — Wire receivers, processors, exporters, and extensions together
+# -----------------------------------------------------------------------------
+service:
+  extensions:
+    - health_check
+
+  pipelines:
+    # Metrics pipeline: OTLP gRPC → batch → Prometheus + stdout logging
+    metrics:
+      receivers:
+        - otlp
+      processors:
+        - batch
+      exporters:
+        - prometheus
+        - logging
