@@ -208,7 +208,7 @@ export async function processAuditLogCleanup(
           DELETE FROM "audit_logs"
           WHERE "ctid" IN (
             SELECT "ctid" FROM "audit_logs"
-            WHERE "created_at" < ${cutoffDate}
+            WHERE "createdAt" < ${cutoffDate}
             LIMIT ${BATCH_SIZE}
           )
         `;

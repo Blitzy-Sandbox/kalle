@@ -47,7 +47,7 @@ const config: Config = {
         'nav-shadow': 'rgba(166, 166, 170, 1)',  /* color-nav-shadow: navigation bar and tab bar shadows */
 
         /* --- Message bubble colors --- */
-        'msg-sent': '#DCF7C5',        /* color-msg-sent-bg: sent message bubble (green-tinted) — Figma fill_ZYO61A */
+        'msg-sent': '#DCF8C6',        /* color-msg-sent-bg: sent message bubble (green-tinted) — Figma fill_ZYO61A */
         'msg-received': '#FFFFFF',    /* color-msg-received-bg: received message bubble (white) */
 
         /* --- Toggle and brand colors --- */
