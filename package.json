@@ -1,8 +1,9 @@
 {
   "name": "kalle",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "private": true,
-  "description": "WhatsApp clone web application - monorepo",
+  "description": "Production-grade WhatsApp clone web application",
+  "license": "MIT",
   "workspaces": [
     "packages/*",
     "apps/*",
@@ -10,38 +11,38 @@
   ],
   "scripts": {
     "build": "turbo run build",
-    "build:shared": "turbo run build --filter=@kalle/shared",
-    "build:api": "turbo run build --filter=@kalle/api",
-    "build:web": "turbo run build --filter=@kalle/web",
-    "build:worker": "turbo run build --filter=@kalle/worker",
-    "dev": "turbo run dev --parallel",
-    "dev:api": "turbo run dev --filter=@kalle/api",
-    "dev:web": "turbo run dev --filter=@kalle/web",
+    "dev": "turbo run dev",
     "lint": "turbo run lint",
-    "test": "turbo run test",
-    "test:api": "turbo run test --filter=@kalle/api",
-    "test:web": "turbo run test --filter=@kalle/web",
-    "test:e2e": "cd e2e && npx playwright test",
     "typecheck": "turbo run typecheck",
-    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
-    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\"",
-    "seed": "cd prisma && npx tsx seed.ts",
-    "db:migrate": "npx prisma migrate dev",
-    "db:generate": "npx prisma generate",
-    "clean": "turbo run clean && rm -rf node_modules"
+    "test": "turbo run test",
+    "test:e2e": "npx playwright test --config=e2e/playwright.config.ts",
+    "clean": "turbo run clean",
+    "seed": "npx prisma db seed",
+    "migrate": "npx prisma migrate dev",
+    "migrate:deploy": "npx prisma migrate deploy",
+    "generate": "npx prisma generate",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "npx prisma generate"
   },
   "devDependencies": {
     "@types/node": "^20.14.0",
-    "@typescript-eslint/eslint-plugin": "^7.18.0",
-    "@typescript-eslint/parser": "^7.18.0",
-    "eslint": "^8.57.1",
-    "prettier": "^3.3.3",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "concurrently": "^8.2.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.0",
     "prisma": "^5.14.0",
-    "turbo": "^2.0.14",
-    "typescript": "^5.4.5"
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0"
+  },
+  "prisma": {
+    "schema": "prisma/schema.prisma",
+    "seed": "npx tsx prisma/seed.ts"
   },
   "engines": {
-    "node": ">=20.0.0"
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
   },
   "packageManager": "npm@11.1.0"
 }
