@@ -1,0 +1,47 @@
+{
+  "name": "kalle",
+  "version": "0.1.0",
+  "private": true,
+  "description": "WhatsApp clone web application - monorepo",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "workers/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "build:shared": "turbo run build --filter=@kalle/shared",
+    "build:api": "turbo run build --filter=@kalle/api",
+    "build:web": "turbo run build --filter=@kalle/web",
+    "build:worker": "turbo run build --filter=@kalle/worker",
+    "dev": "turbo run dev --parallel",
+    "dev:api": "turbo run dev --filter=@kalle/api",
+    "dev:web": "turbo run dev --filter=@kalle/web",
+    "lint": "turbo run lint",
+    "test": "turbo run test",
+    "test:api": "turbo run test --filter=@kalle/api",
+    "test:web": "turbo run test --filter=@kalle/web",
+    "test:e2e": "cd e2e && npx playwright test",
+    "typecheck": "turbo run typecheck",
+    "format": "prettier --write \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "format:check": "prettier --check \"**/*.{ts,tsx,js,jsx,json,md}\"",
+    "seed": "cd prisma && npx tsx seed.ts",
+    "db:migrate": "npx prisma migrate dev",
+    "db:generate": "npx prisma generate",
+    "clean": "turbo run clean && rm -rf node_modules"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "eslint": "^8.57.1",
+    "prettier": "^3.3.3",
+    "prisma": "^5.14.0",
+    "turbo": "^2.0.14",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "packageManager": "npm@11.1.0"
+}

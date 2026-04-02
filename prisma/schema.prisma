@@ -1,0 +1,271 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Stub models - will be replaced by implementation agent with full schema
+// Minimal schema required for Prisma client generation
+
+enum ConversationType {
+  DIRECT
+  GROUP
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  DOCUMENT
+  VOICE_NOTE
+  SYSTEM
+}
+
+enum MessageStatusType {
+  SENT
+  DELIVERED
+  READ
+}
+
+enum MediaType {
+  IMAGE
+  VIDEO
+  DOCUMENT
+  VOICE_NOTE
+}
+
+enum AuditAction {
+  USER_REGISTER
+  USER_LOGIN
+  USER_LOGIN_FAILED
+  SESSION_REVOKE
+  SESSION_REVOKE_ALL
+  USER_BLOCK
+  USER_UNBLOCK
+  GROUP_MEMBER_ADD
+  GROUP_MEMBER_REMOVE
+  GROUP_ADMIN_CHANGE
+  MESSAGE_DELETE
+  KEYS_BUNDLE_UPLOAD
+}
+
+model User {
+  id            String    @id @default(uuid())
+  email         String    @unique
+  passwordHash  String
+  displayName   String
+  avatarUrl     String?
+  about         String?   @default("Hey there! I am using WhatsApp.")
+  phoneNumber   String?
+  isOnline      Boolean   @default(false)
+  lastSeenAt    DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  messages              Message[]
+  conversations         ConversationParticipant[]
+  messageStatuses       MessageStatus[]
+  media                 Media[]
+  stories               Story[]
+  storyViews            StoryView[]
+  sessions              Session[]
+  refreshTokens         RefreshToken[]
+  preKeyBundles         PreKeyBundle[]
+  auditLogsAsActor      AuditLog[]       @relation("AuditActor")
+  blockedUsers          BlockedUser[]     @relation("Blocker")
+  blockedByUsers        BlockedUser[]     @relation("Blocked")
+}
+
+model Conversation {
+  id        String           @id @default(uuid())
+  type      ConversationType
+  name      String?
+  avatarUrl String?
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  participants ConversationParticipant[]
+  messages     Message[]
+}
+
+model ConversationParticipant {
+  id             String   @id @default(uuid())
+  userId         String
+  conversationId String
+  isAdmin        Boolean  @default(false)
+  isArchived     Boolean  @default(false)
+  isMuted        Boolean  @default(false)
+  unreadCount    Int      @default(0)
+  joinedAt       DateTime @default(now())
+
+  user         User         @relation(fields: [userId], references: [id])
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  @@unique([userId, conversationId])
+  @@index([userId])
+  @@index([conversationId])
+}
+
+model Message {
+  id               String      @id @default(uuid())
+  conversationId   String
+  senderId         String
+  type             MessageType @default(TEXT)
+  ciphertext       String?
+  replyToMessageId String?
+  isEdited         Boolean     @default(false)
+  isDeleted        Boolean     @default(false)
+  serverTimestamp  DateTime    @default(now())
+  editedAt         DateTime?
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+
+  conversation Conversation    @relation(fields: [conversationId], references: [id])
+  sender       User            @relation(fields: [senderId], references: [id])
+  replyTo      Message?        @relation("MessageReply", fields: [replyToMessageId], references: [id])
+  replies      Message[]       @relation("MessageReply")
+  statuses     MessageStatus[]
+  media        Media[]
+
+  @@index([conversationId, serverTimestamp])
+  @@index([conversationId, senderId])
+}
+
+model MessageStatus {
+  id        String            @id @default(uuid())
+  messageId String
+  userId    String
+  status    MessageStatusType
+  timestamp DateTime          @default(now())
+
+  message Message @relation(fields: [messageId], references: [id])
+  user    User    @relation(fields: [userId], references: [id])
+
+  @@unique([messageId, userId])
+}
+
+model Media {
+  id           String    @id @default(uuid())
+  userId       String
+  messageId    String?
+  storyId      String?
+  type         MediaType
+  filename     String
+  mimeType     String
+  size         Int
+  url          String
+  thumbnailUrl String?
+  createdAt    DateTime  @default(now())
+
+  user    User     @relation(fields: [userId], references: [id])
+  message Message? @relation(fields: [messageId], references: [id])
+  story   Story?   @relation(fields: [storyId], references: [id])
+}
+
+model Story {
+  id        String   @id @default(uuid())
+  authorId  String
+  content   String?
+  bgColor   String?
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  author User        @relation(fields: [authorId], references: [id])
+  views  StoryView[]
+  media  Media[]
+
+  @@index([authorId, expiresAt])
+}
+
+model StoryView {
+  id       String   @id @default(uuid())
+  storyId  String
+  viewerId String
+  viewedAt DateTime @default(now())
+
+  story  Story @relation(fields: [storyId], references: [id])
+  viewer User  @relation(fields: [viewerId], references: [id])
+
+  @@unique([storyId, viewerId])
+}
+
+model PreKeyBundle {
+  id               String @id @default(uuid())
+  userId           String
+  registrationId   Int
+  identityKey      String
+  signedPreKeyId   Int
+  signedPreKey     String
+  signedPreKeySig  String
+  preKeyId         Int
+  preKey           String
+  createdAt        DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  jti       String   @unique
+  userAgent String?
+  ipAddress String?
+  isRevoked Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([jti])
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  isRevoked Boolean  @default(false)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@index([token])
+}
+
+model AuditLog {
+  id        String      @id @default(uuid())
+  actorId   String?
+  action    AuditAction
+  resource  String
+  metadata  Json?
+  ipAddress String?
+  timestamp DateTime    @default(now())
+
+  actor User? @relation("AuditActor", fields: [actorId], references: [id])
+
+  @@index([actorId])
+  @@index([action])
+  @@index([timestamp])
+}
+
+model BlockedUser {
+  id        String   @id @default(uuid())
+  blockerId String
+  blockedId String
+  createdAt DateTime @default(now())
+
+  blocker User @relation("Blocker", fields: [blockerId], references: [id])
+  blocked User @relation("Blocked", fields: [blockedId], references: [id])
+
+  @@unique([blockerId, blockedId])
+}
