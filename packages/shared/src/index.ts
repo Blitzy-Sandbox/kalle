@@ -16,6 +16,7 @@ export * from './types/auth.js';
 export * from './types/encryption.js';
 export * from './types/audit.js';
 export * from './types/error.js';
+export * from './types/websocket-events.js';
 
 // Constants
 export * from './constants/index.js';
