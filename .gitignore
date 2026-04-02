@@ -60,10 +60,6 @@ playwright-report/
 # -------------------------------------------------------
 .docker/
 
-# -------------------------------------------------------
-# Prisma — Migration lock files (auto-generated)
-# -------------------------------------------------------
-prisma/migrations/**/migration_lock.toml
 
 # -------------------------------------------------------
 # Backups — Database backup archives
