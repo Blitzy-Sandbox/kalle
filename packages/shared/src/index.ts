@@ -17,6 +17,15 @@ export * from './types/encryption.js';
 export * from './types/audit.js';
 export * from './types/error.js';
 export * from './types/websocket-events.js';
+export * from './types/api-contracts.js';
+
+// Resolve `GetMessagesQuery` ambiguity: both message.ts and api-contracts.ts
+// export this name. The domain-level definition (from message.ts) includes
+// `conversationId` and is the canonical query shape. The api-contracts version
+// is an API-layer query-params subset. Prefer the domain definition here;
+// consumers needing the API-layer shape import from the subpath directly:
+//   import type { GetMessagesQuery } from '@kalle/shared/types/api-contracts';
+export type { GetMessagesQuery } from './types/message.js';
 
 // Constants
 export * from './constants/index.js';
