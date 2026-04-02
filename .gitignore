@@ -1,56 +1,94 @@
-# Dependencies
+# ============================================================
+# Kalle — WhatsApp Clone Monorepo .gitignore
+# ============================================================
+# Covers: Node.js, Build outputs, Environment, IDE, Testing,
+#         Docker, Prisma, Backups, TypeScript, Turbo, Misc
+# ============================================================
+
+# -------------------------------------------------------
+# Node.js — Dependencies and package manager artifacts
+# -------------------------------------------------------
 node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
 .pnp
 .pnp.js
 
-# Build outputs
+# -------------------------------------------------------
+# Build outputs — Compiled and bundled artifacts
+# -------------------------------------------------------
 dist/
+build/
 .next/
 out/
-build/
 
-# Environment
+# -------------------------------------------------------
+# Environment files
+# Keep .env.example in version control; ignore all .env files
+# -------------------------------------------------------
 .env
 .env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*.local
 
-# Testing
+# -------------------------------------------------------
+# IDE and editor files
+# -------------------------------------------------------
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# -------------------------------------------------------
+# OS-generated files
+# -------------------------------------------------------
+.DS_Store
+Thumbs.db
+
+# -------------------------------------------------------
+# Testing — Coverage reports and test output
+# -------------------------------------------------------
 coverage/
 .nyc_output/
 test-results/
 playwright-report/
 
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-*~
+# -------------------------------------------------------
+# Docker
+# -------------------------------------------------------
+.docker/
 
-# OS
-.DS_Store
-Thumbs.db
+# -------------------------------------------------------
+# Prisma — Migration lock files (auto-generated)
+# -------------------------------------------------------
+prisma/migrations/**/migration_lock.toml
 
-# Prisma
-prisma/*.db
-prisma/*.db-journal
-
-# Turbo
-.turbo/
-
-# Debug
-npm-debug.log*
-yarn-debug.log*
-yarn-error.log*
-
-# Docker volumes
+# -------------------------------------------------------
+# Backups — Database backup archives
+# -------------------------------------------------------
 backups/*.gz
 backups/*.sql
 
-# Uploads
+# -------------------------------------------------------
+# Uploads — User-uploaded encrypted media files
+# -------------------------------------------------------
 uploads/
 
-# Generated
+# -------------------------------------------------------
+# TypeScript — Incremental build info
+# -------------------------------------------------------
 *.tsbuildinfo
+
+# -------------------------------------------------------
+# Turbo — Build cache
+# -------------------------------------------------------
+.turbo/
+
+# -------------------------------------------------------
+# Misc — Logs and temporary files
+# -------------------------------------------------------
+*.log
+tmp/
+temp/
