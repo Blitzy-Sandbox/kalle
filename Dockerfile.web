@@ -1,0 +1,169 @@
+# =============================================================================
+# Dockerfile.web — Next.js 14 Frontend Multi-Stage Build
+# =============================================================================
+# Production-grade multi-stage build for the Kalle WhatsApp clone frontend.
+#
+# Build stages:
+#   1. deps    — Install npm workspace dependencies (cached layer)
+#   2. builder — Compile @kalle/shared + Next.js production build
+#   3. runner  — Minimal Alpine image with standalone server
+#
+# Usage:
+#   Production:  docker build -f Dockerfile.web -t kalle-web .
+#   Dev mode:    docker-compose up web  (overrides CMD with next dev)
+#
+# Requirements:
+#   - Node.js 20 Alpine (matches monorepo engine requirement)
+#   - Next.js standalone output mode (next.config.js: output: 'standalone')
+#   - Non-root user for production security
+#   - Port 3000 exposed
+#   - NEXT_TELEMETRY_DISABLED=1 in both build and runtime
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage 1: Dependencies — Install npm workspace packages
+# -----------------------------------------------------------------------------
+# This stage installs only the dependencies needed for the web frontend and
+# the shared types package. By copying only package.json files first, Docker
+# can cache this layer and skip reinstallation when only source code changes.
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS deps
+
+# Alpine compatibility: libc6-compat is required by some npm native modules
+# that expect glibc. This prevents runtime segfaults from missing shared libs.
+RUN apk add --no-cache libc6-compat
+
+WORKDIR /app
+
+# Copy root workspace manifests first for optimal Docker layer caching.
+# Only changes to package.json or package-lock.json will invalidate this cache.
+COPY package.json package-lock.json ./
+
+# Copy workspace package manifests needed for dependency resolution.
+# npm workspaces require all referenced workspace package.json files to be
+# present for the lockfile resolution to succeed.
+COPY packages/shared/package.json ./packages/shared/
+COPY apps/web/package.json ./apps/web/
+
+# Install production + dev dependencies for the web workspace and shared package.
+# --workspace flags scope the install to only the packages we need, but npm ci
+# still needs the root lockfile for deterministic resolution.
+# --legacy-peer-deps handles React 18 peer dependency conflicts with some packages.
+RUN npm ci --workspace=apps/web --workspace=packages/shared --legacy-peer-deps
+
+# -----------------------------------------------------------------------------
+# Stage 2: Builder — Compile shared types and Next.js application
+# -----------------------------------------------------------------------------
+# Builds the @kalle/shared TypeScript package first (dependency), then runs
+# the Next.js production build which generates the standalone output bundle.
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Disable Next.js anonymous telemetry during build
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Copy installed node_modules from deps stage.
+# The monorepo hoists shared dependencies to the root node_modules, with
+# workspace-specific deps in their respective node_modules directories.
+COPY --from=deps /app/node_modules ./node_modules
+COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
+COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
+
+# Copy root workspace configuration files needed for build resolution
+COPY package.json ./
+COPY tsconfig.base.json ./
+
+# Copy shared package source — must be built before web since web imports from it
+COPY packages/shared/ ./packages/shared/
+
+# Copy web application source (pages, components, styles, assets, configs)
+COPY apps/web/ ./apps/web/
+
+# Build the shared types package first (@kalle/shared).
+# This generates dist/ with compiled .js and .d.ts files that the web app
+# imports via the workspace dependency link.
+RUN npm run build --workspace=packages/shared
+
+# Ensure public directory exists (may be empty in early development).
+# This prevents COPY failures in the runner stage when public/ has no content yet.
+RUN mkdir -p /app/apps/web/public
+
+# Build the Next.js application in production mode.
+# With output: 'standalone' in next.config.js, this generates a self-contained
+# server at .next/standalone/ that includes only the files needed for production,
+# plus a minimal Node.js server (server.js) that replaces `next start`.
+# Static assets (.next/static) and public/ are NOT included in standalone
+# and must be copied separately to the runner stage.
+RUN npm run build --workspace=apps/web
+
+# -----------------------------------------------------------------------------
+# Stage 3: Runner — Minimal production image
+# -----------------------------------------------------------------------------
+# Uses a clean Alpine Node.js image with only the standalone build output.
+# No source code, no devDependencies, no build tools — minimal attack surface.
+# Runs as non-root user for security hardening.
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+# Production environment — enables Next.js production optimizations
+ENV NODE_ENV=production
+
+# Disable Next.js anonymous usage telemetry at runtime
+ENV NEXT_TELEMETRY_DISABLED=1
+
+# Create a dedicated non-root user and group for running the application.
+# Using fixed UID/GID (1001) ensures consistent file ownership across builds
+# and avoids running the web server as root in production.
+RUN addgroup --system --gid 1001 nodejs \
+    && adduser --system --uid 1001 nextjs
+
+# Copy the standalone build output from the builder stage.
+# The standalone output includes a complete node_modules tree with only the
+# production dependencies needed at runtime — significantly smaller than the
+# full node_modules from the build stage.
+# In a monorepo, the standalone output preserves the directory structure,
+# so server.js is located at apps/web/server.js relative to the project root.
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/standalone ./
+
+# Copy static assets that Next.js serves directly.
+# These are NOT included in the standalone output and must be explicitly copied.
+# Static files include compiled CSS, JS chunks, and other hashed assets.
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/.next/static ./apps/web/.next/static
+
+# Copy public directory (favicons, robots.txt, static images).
+# The public/ directory contains files served at the root URL path.
+# The builder stage ensures this directory exists via mkdir -p, so COPY
+# will always succeed even if the directory is empty in early development.
+COPY --from=builder --chown=nextjs:nodejs /app/apps/web/public ./apps/web/public
+
+# Switch to non-root user for all subsequent commands and runtime execution
+USER nextjs
+
+# Expose the Next.js server port (default 3000)
+EXPOSE 3000
+
+# Set the port environment variable consumed by Next.js standalone server.
+# The standalone server.js reads PORT from env to determine listen port.
+ENV PORT=3000
+
+# Set hostname to 0.0.0.0 to accept connections from outside the container.
+# By default, Next.js standalone server listens on 0.0.0.0, but setting this
+# explicitly ensures correct behavior across all deployment environments.
+ENV HOSTNAME="0.0.0.0"
+
+# Health check to verify the Next.js server is responsive.
+# Uses wget (available in Alpine) instead of curl to avoid additional packages.
+# Checks every 30 seconds, allows 5 seconds for response, retries 3 times
+# before marking the container as unhealthy, with a 10-second startup grace.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/ || exit 1
+
+# Start the Next.js standalone server.
+# In production, this runs the self-contained server.js generated by `next build`
+# with output: 'standalone'. In development (via docker-compose override), this
+# CMD is replaced with `npm run dev --workspace=apps/web` for hot module reload.
+CMD ["node", "apps/web/server.js"]
