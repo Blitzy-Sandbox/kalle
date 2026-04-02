@@ -170,11 +170,12 @@ USER worker
 # It connects outbound to Redis (for job queue polling) and PostgreSQL
 # (for database operations). No inbound ports are required.
 
-# Health check to verify the worker Node.js process is running.
-# Since the worker doesn't expose HTTP, we check for the running process.
-# This matches the docker-compose healthcheck pattern.
+# Health check verifying the BullMQ worker can reach Redis (its core dependency).
+# Since the worker doesn't expose HTTP, we verify Redis connectivity instead of
+# an HTTP endpoint. A successful PING proves the worker process is alive AND its
+# Redis connection is functional — both are required for BullMQ job processing.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
-    CMD node -e "process.exit(0)" || exit 1
+    CMD node -e "const Redis=require('ioredis');const r=new Redis(process.env.REDIS_URL,{connectTimeout:3000,maxRetriesPerRequest:1,retryStrategy:()=>null});r.ping().then(()=>{r.disconnect();process.exit(0)}).catch(()=>{r.disconnect();process.exit(1)})" || exit 1
 
 # Start the BullMQ worker process.
 # In production, this runs the compiled entry point that registers all job

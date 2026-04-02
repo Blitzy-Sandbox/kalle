@@ -32,45 +32,47 @@
  * AuditService is injected into: AuthService, UserService,
  * ConversationService, MessageService, and EncryptionKeyService.
  *
- * Each value uses a dot-notation string (e.g., 'user.register') for
- * human-readable log filtering and query convenience.
+ * Each value uses SCREAMING_SNAKE_CASE matching the Prisma enum identifiers
+ * to ensure serialization consistency between database and application layers.
+ * Prisma enums serialize to their identifier name — the TypeScript string
+ * values must match exactly for correct type-safe comparisons.
  */
 export enum AuditAction {
   /** New user account created via registration endpoint */
-  USER_REGISTER = 'user.register',
+  USER_REGISTER = 'USER_REGISTER',
 
   /** Successful user login (JWT token pair issued) */
-  USER_LOGIN = 'user.login',
+  USER_LOGIN = 'USER_LOGIN',
 
   /** Failed login attempt (invalid credentials) */
-  USER_LOGIN_FAILED = 'user.login_failed',
+  USER_LOGIN_FAILED = 'USER_LOGIN_FAILED',
 
   /** Single session revoked (access token blacklisted in Redis) */
-  SESSION_REVOKE = 'session.revoke',
+  SESSION_REVOKE = 'SESSION_REVOKE',
 
   /** All active sessions for a user revoked at once */
-  SESSION_REVOKE_ALL = 'session.revoke_all',
+  SESSION_REVOKE_ALL = 'SESSION_REVOKE_ALL',
 
   /** User blocked another user */
-  USER_BLOCK = 'user.block',
+  USER_BLOCK = 'USER_BLOCK',
 
   /** User unblocked a previously blocked user */
-  USER_UNBLOCK = 'user.unblock',
+  USER_UNBLOCK = 'USER_UNBLOCK',
 
   /** Member added to a group conversation */
-  GROUP_MEMBER_ADD = 'group.member_add',
+  GROUP_MEMBER_ADD = 'GROUP_MEMBER_ADD',
 
   /** Member removed from a group conversation */
-  GROUP_MEMBER_REMOVE = 'group.member_remove',
+  GROUP_MEMBER_REMOVE = 'GROUP_MEMBER_REMOVE',
 
   /** Admin role granted or revoked within a group conversation */
-  GROUP_ADMIN_CHANGE = 'group.admin_change',
+  GROUP_ADMIN_CHANGE = 'GROUP_ADMIN_CHANGE',
 
   /** Message soft-deleted (tombstone — ciphertext nulled, row retained) */
-  MESSAGE_DELETE = 'message.delete',
+  MESSAGE_DELETE = 'MESSAGE_DELETE',
 
   /** Encryption prekey bundle uploaded to the server */
-  KEYS_BUNDLE_UPLOAD = 'keys.bundle_upload',
+  KEYS_BUNDLE_UPLOAD = 'KEYS_BUNDLE_UPLOAD',
 }
 
 // ---------------------------------------------------------------------------

@@ -42,13 +42,13 @@ enum ParticipantRole {
 }
 
 /// Discriminator for the payload type carried inside a message.
+/// Values must match the shared TypeScript MessageType enum exactly.
 enum MessageType {
   TEXT
   IMAGE
   VIDEO
   DOCUMENT
-  VOICE
-  SYSTEM
+  VOICE_NOTE
 }
 
 /// Delivery lifecycle status of a message for a given recipient.
@@ -56,6 +56,14 @@ enum MessageDeliveryStatus {
   SENT
   DELIVERED
   READ
+}
+
+/// Discriminator for the content type of a story.
+/// Matches the shared TypeScript StoryType enum (R12: stories are NOT encrypted).
+enum StoryType {
+  TEXT
+  IMAGE
+  VIDEO
 }
 
 /// Security-sensitive actions recorded in the immutable audit log (R32).
@@ -85,6 +93,7 @@ model User {
   email        String    @unique
   passwordHash String
   displayName  String
+  phoneNumber  String?
   avatarUrl    String?
   about        String?   @default("Hey there! I am using Kalle")
   lastSeen     DateTime?
@@ -136,7 +145,8 @@ model ConversationParticipant {
   role           ParticipantRole @default(MEMBER)
   isArchived     Boolean         @default(false)
   isMuted        Boolean         @default(false)
-  muteExpiry     DateTime?
+  muteExpiresAt  DateTime?
+  pinnedAt       DateTime?
   lastReadAt     DateTime?
   joinedAt       DateTime        @default(now())
 
@@ -156,12 +166,14 @@ model Message {
   id              String      @id @default(uuid())
   conversationId  String
   senderId        String
+  clientMessageId String?     @unique
   ciphertext      String?
   type            MessageType @default(TEXT)
   replyToId       String?
   isEdited        Boolean     @default(false)
   isDeleted       Boolean     @default(false)
   editedAt        DateTime?
+  deletedAt       DateTime?
   serverTimestamp  DateTime    @default(now())
   clientTimestamp  DateTime?
 
@@ -197,17 +209,26 @@ model MessageStatus {
 
 /// Encrypted media attachment associated with a message or story.
 /// size is in bytes; the application enforces a 25 MB (26 214 400 bytes) limit (R8).
+/// Encryption key/IV fields store the client-side encryption metadata for E2E (R12).
 model Media {
-  id           String   @id @default(uuid())
-  userId       String
-  messageId    String?
-  storyId      String?
-  mimeType     String
-  encryptedUrl String
-  thumbnailUrl String?
-  size         Int
-  filename     String
-  createdAt    DateTime @default(now())
+  id                      String   @id @default(uuid())
+  userId                  String
+  messageId               String?
+  storyId                 String?
+  mimeType                String
+  encryptedUrl            String
+  thumbnailUrl            String?
+  size                    Int
+  filename                String
+  encryptionKey           String?
+  encryptionIv            String?
+  thumbnailEncryptionKey  String?
+  thumbnailEncryptionIv   String?
+  width                   Int?
+  height                  Int?
+  duration                Int?
+  waveform                String?
+  createdAt               DateTime @default(now())
 
   // Relations
   user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -224,11 +245,14 @@ model Media {
 /// Stories are NOT encrypted — only messages use E2E encryption (R12).
 /// Expired stories and their media are purged by the hourly cleanup job (R35).
 model Story {
-  id              String   @id @default(uuid())
+  id              String    @id @default(uuid())
   authorId        String
+  type            StoryType @default(TEXT)
   textContent     String?
   backgroundColor String?
-  createdAt       DateTime @default(now())
+  fontStyle       String?
+  duration        Int?
+  createdAt       DateTime  @default(now())
   expiresAt       DateTime
 
   // Relations
@@ -286,14 +310,16 @@ model PreKeyBundle {
 ///
 /// Records older than 90 days are purged by the audit-log-cleanup BullMQ job (R35).
 model AuditLog {
-  id         String      @id @default(uuid())
-  actorId    String?
-  action     AuditAction
-  targetType String
-  targetId   String
-  metadata   Json?
-  ipAddress  String?
-  createdAt  DateTime    @default(now())
+  id            String      @id @default(uuid())
+  actorId       String?
+  action        AuditAction
+  targetType    String?
+  targetId      String?
+  metadata      Json?
+  ipAddress     String?
+  userAgent     String?
+  correlationId String?
+  createdAt     DateTime    @default(now())
 
   // Relations
   actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)

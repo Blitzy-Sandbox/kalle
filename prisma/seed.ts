@@ -26,6 +26,7 @@ import {
   MessageType,
   MessageDeliveryStatus,
   AuditAction,
+  StoryType,
 } from '@prisma/client';
 import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
@@ -36,8 +37,13 @@ import crypto from 'crypto';
 
 const prisma = new PrismaClient();
 
-/** bcrypt hash cost factor for demo user passwords. */
-const SALT_ROUNDS = 10;
+/**
+ * Fixed bcrypt salt for deterministic password hashing in seed data (R10).
+ * Using a fixed salt ensures that running the seed twice produces byte-identical
+ * password hashes, satisfying the "run twice produces identical state" requirement.
+ * This salt is ONLY used in the seed script — production code uses random salts.
+ */
+const FIXED_SALT = '$2b$10$KalleSeedDeterministic';
 
 /** Stable prefix for all deterministic generation, ensuring cross-run consistency. */
 const SEED_PREFIX = 'kalle-seed-v1';
@@ -126,10 +132,12 @@ function offsetDate(hoursOffset: number): Date {
 }
 
 /**
- * Hashes a plaintext password using bcrypt with configured salt rounds.
+ * Hashes a plaintext password using bcrypt with a fixed salt (R10 determinism).
+ * Every invocation with the same input produces the same output, ensuring
+ * idempotent seed data across multiple runs.
  */
 async function hashPassword(password: string): Promise<string> {
-  return bcrypt.hash(password, SALT_ROUNDS);
+  return bcrypt.hash(password, FIXED_SALT);
 }
 
 // =============================================================================
@@ -212,7 +220,7 @@ const MESSAGE_DEFS: readonly MessageDef[] = [
   { convIndex: 1, senderIndex: IDX_SABOHIDDIN, type: MessageType.TEXT,     contentKey: 'perfect-see-you',             hoursOffset: -18.5 },
 
   // ── Conversation 2: Sabohiddin ↔ Karen Castillo (DIRECT) ──
-  { convIndex: 2, senderIndex: IDX_KAREN,      type: MessageType.VOICE,   contentKey: 'voice-note-014',              hoursOffset: -16 },
+  { convIndex: 2, senderIndex: IDX_KAREN,      type: MessageType.VOICE_NOTE, contentKey: 'voice-note-014',           hoursOffset: -16 },
   { convIndex: 2, senderIndex: IDX_SABOHIDDIN, type: MessageType.TEXT,     contentKey: 'got-it-check-back',           hoursOffset: -15.5 },
   { convIndex: 2, senderIndex: IDX_KAREN,      type: MessageType.TEXT,     contentKey: 'thanks',                      hoursOffset: -15 },
 
@@ -533,12 +541,13 @@ async function seedStories(userIds: string[]): Promise<void> {
     },
   });
 
-  // Story 2: Martha image story
+  // Story 2: Martha image story (type explicitly set to IMAGE per StoryType enum)
   const story2Id = deterministicUUID('story:1');
   await prisma.story.create({
     data: {
       id: story2Id,
       authorId: userIds[IDX_MARTHA],
+      type: StoryType.IMAGE,
       createdAt: offsetDate(-4),
       expiresAt: offsetDate(20),
     },
@@ -844,7 +853,8 @@ main()
     await prisma.$disconnect();
   })
   .catch(async (e) => {
-    console.error(e);
+    console.error('Seed failed — database may be in an inconsistent state.');
+    console.error('Error details:', e);
     await prisma.$disconnect();
     process.exit(1);
   });

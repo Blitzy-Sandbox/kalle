@@ -1,57 +1,5 @@
-import { Request, Response, NextFunction } from 'express';
-import { metrics } from '@opentelemetry/api';
-
-// ---------------------------------------------------------------------------
-// OpenTelemetry Meter & Metric Instruments
-// ---------------------------------------------------------------------------
-// Obtain a Meter from the global MeterProvider registered by the OTel SDK.
-//
-// When the full OpenTelemetry SDK is configured (via @opentelemetry/sdk-node
-// with a Prometheus exporter in MetricsService), this meter produces real
-// metric data that is automatically scraped by Prometheus.
-//
-// When no SDK has been registered, @opentelemetry/api returns a safe no-op
-// meter — all add() and record() calls become no-ops with zero overhead.
-// This allows the middleware to be loaded unconditionally during boot without
-// requiring the OTel SDK to be initialised first.
-// ---------------------------------------------------------------------------
-const meter = metrics.getMeter('kalle-api-http');
-
-/**
- * Counter tracking the total number of completed HTTP requests.
- *
- * Prometheus metric name: `http_requests_total`
- * Labels: method, route, status_code
- */
-const httpRequestCounter = meter.createCounter('http_requests_total', {
-  description: 'Total number of HTTP requests',
-});
-
-/**
- * Histogram tracking HTTP request duration in seconds.
- *
- * Prometheus metric name: `http_request_duration_seconds`
- * Labels: method, route, status_code
- *
- * Duration is recorded with nanosecond precision via `process.hrtime.bigint()`
- * and converted to seconds (Prometheus convention for duration metrics).
- */
-const httpRequestDuration = meter.createHistogram('http_request_duration_seconds', {
-  description: 'HTTP request duration in seconds',
-  unit: 's',
-});
-
-/**
- * UpDownCounter tracking the number of currently active (in-flight) HTTP
- * requests. Incremented when a request enters the middleware chain and
- * decremented when the response `finish` event fires.
- *
- * Prometheus metric name: `http_active_requests`
- * Labels: method
- */
-const httpActiveRequests = meter.createUpDownCounter('http_active_requests', {
-  description: 'Number of currently active HTTP requests',
-});
+import { Request, Response, NextFunction, RequestHandler } from 'express';
+import type { MetricsService } from '../services/MetricsService';
 
 // ---------------------------------------------------------------------------
 // In-Memory Active Request Tracking
@@ -116,14 +64,18 @@ function getRoutePattern(
 }
 
 // ---------------------------------------------------------------------------
-// Express Middleware — metricsMiddleware
+// Express Middleware Factory — createMetricsMiddleware
 // ---------------------------------------------------------------------------
 
 /**
- * Express middleware that instruments HTTP request/response cycles for
- * Prometheus-compatible metrics via the OpenTelemetry Metrics API (Rule R37).
+ * Creates an Express middleware that instruments HTTP request/response cycles
+ * for Prometheus-compatible metrics via the MetricsService (Rule R37).
  *
- * **Metric instruments:**
+ * This factory pattern connects the middleware directly to MetricsService's
+ * instruments (backed by the PrometheusExporter), ensuring all HTTP metrics
+ * flow through a single MeterProvider and reach the /api/v1/metrics endpoint.
+ *
+ * **Metric instruments (owned by MetricsService):**
  * | Metric Name                      | Type           | Labels                       |
  * |----------------------------------|----------------|------------------------------|
  * | `http_requests_total`            | Counter        | method, route, status_code   |
@@ -149,68 +101,69 @@ function getRoutePattern(
  *   processing time.
  * - Route labels are normalised (UUIDs → `:id`, numeric IDs → `:id`) to
  *   prevent high-cardinality label explosion in Prometheus.
- * - When the OpenTelemetry SDK is not registered, all metric operations are
- *   safe no-ops with negligible overhead.
+ * - All instruments are owned by MetricsService (single source of truth),
+ *   eliminating duplicate instrument registration and ensuring all data
+ *   reaches the PrometheusExporter.
  *
- * @param req  - Express request; used for `method`, `path`, and `route`.
- * @param res  - Express response; used for `statusCode` and `finish` event.
- * @param next - Express next function; always invoked immediately to avoid
- *               blocking the middleware chain.
+ * @param metricsService - The MetricsService instance owning all metric instruments.
+ * @returns Express middleware function that instruments each HTTP request.
  */
-export function metricsMiddleware(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): void {
-  // -----------------------------------------------------------------------
-  // Step 1: Record high-resolution start time for duration measurement
-  // -----------------------------------------------------------------------
-  const startTime = process.hrtime.bigint();
+export function createMetricsMiddleware(
+  metricsService: MetricsService,
+): RequestHandler {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    // -----------------------------------------------------------------------
+    // Step 1: Record high-resolution start time for duration measurement
+    // -----------------------------------------------------------------------
+    const startTime = process.hrtime.bigint();
 
-  // -----------------------------------------------------------------------
-  // Step 2: Increment active request gauge
-  // -----------------------------------------------------------------------
-  activeRequestCount += 1;
-  httpActiveRequests.add(1, { method: req.method });
+    // -----------------------------------------------------------------------
+    // Step 2: Increment active request gauge
+    // -----------------------------------------------------------------------
+    activeRequestCount += 1;
+    metricsService.httpActiveRequests.add(1, { method: req.method });
 
-  // -----------------------------------------------------------------------
-  // Step 3: Hook into the response `finish` event
-  //
-  // The `finish` event fires when the response has been fully written to
-  // the underlying socket. This captures the complete request lifecycle,
-  // including controller processing, service calls, database queries, and
-  // response serialisation — not just the time until `next()` returns.
-  // -----------------------------------------------------------------------
-  res.on('finish', () => {
-    // Compute duration in seconds (Prometheus convention)
-    const endTime = process.hrtime.bigint();
-    const durationNs = Number(endTime - startTime);
-    const durationSeconds = durationNs / 1e9;
+    // -----------------------------------------------------------------------
+    // Step 3: Hook into the response `finish` event
+    //
+    // The `finish` event fires when the response has been fully written to
+    // the underlying socket. This captures the complete request lifecycle,
+    // including controller processing, service calls, database queries, and
+    // response serialisation — not just the time until `next()` returns.
+    // -----------------------------------------------------------------------
+    res.on('finish', () => {
+      // Compute duration in milliseconds for MetricsService
+      const endTime = process.hrtime.bigint();
+      const durationNs = Number(endTime - startTime);
+      const durationMs = durationNs / 1e6;
 
-    // Build metric labels with normalised route pattern
-    const route = getRoutePattern(req.path, req.route as { path?: string } | undefined);
-    const labels = {
-      method: req.method,
-      route,
-      status_code: String(res.statusCode),
-    };
+      // Build normalised route pattern for low-cardinality labels
+      const route = getRoutePattern(
+        req.path,
+        req.route as { path?: string } | undefined,
+      );
 
-    // Record request count (counter — monotonically increasing)
-    httpRequestCounter.add(1, labels);
+      // Delegate recording to MetricsService — single source of truth
+      // for all metric instruments. MetricsService handles counter increment,
+      // histogram recording, and ms→s conversion internally.
+      metricsService.recordHttpRequest({
+        method: req.method,
+        route,
+        statusCode: res.statusCode,
+        durationMs,
+      });
 
-    // Record request duration (histogram — distribution of latencies)
-    httpRequestDuration.record(durationSeconds, labels);
+      // Decrement active request gauge
+      activeRequestCount -= 1;
+      metricsService.httpActiveRequests.add(-1, { method: req.method });
+    });
 
-    // Decrement active request gauge
-    activeRequestCount -= 1;
-    httpActiveRequests.add(-1, { method: req.method });
-  });
-
-  // -----------------------------------------------------------------------
-  // Step 4: Continue the middleware chain immediately — metrics recording
-  // happens asynchronously via the `finish` event listener above.
-  // -----------------------------------------------------------------------
-  next();
+    // -----------------------------------------------------------------------
+    // Step 4: Continue the middleware chain immediately — metrics recording
+    // happens asynchronously via the `finish` event listener above.
+    // -----------------------------------------------------------------------
+    next();
+  };
 }
 
 // ---------------------------------------------------------------------------

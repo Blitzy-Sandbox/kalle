@@ -23,6 +23,7 @@ import {
   PrometheusExporter,
   PrometheusSerializer,
 } from '@opentelemetry/exporter-prometheus';
+import { metrics } from '@opentelemetry/api';
 import type {
   Meter,
   Counter,
@@ -215,6 +216,12 @@ export class MetricsService {
     const meterProvider = new MeterProvider({
       readers: [this.exporter],
     });
+
+    // Register this MeterProvider as the global provider so that any code using
+    // the OpenTelemetry Metrics API (e.g., `metrics.getMeter()`) connects to the
+    // same PrometheusExporter. This ensures all instruments — whether created here
+    // or in middleware/handlers — export data to the Prometheus scrape endpoint.
+    metrics.setGlobalMeterProvider(meterProvider);
 
     // Obtain a Meter scoped to this application for creating instruments.
     this.meter = meterProvider.getMeter('kalle-api', '1.0.0');
