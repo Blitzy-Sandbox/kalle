@@ -1,6 +1,15 @@
 {
-  "watch": ["src"],
+  "watch": [
+    "src/**/*.ts",
+    "../../../packages/shared/src/**/*.ts"
+  ],
   "ext": "ts,json",
-  "ignore": ["src/**/*.test.ts", "dist"],
-  "exec": "tsx src/server.ts"
+  "ignore": [
+    "src/**/*.test.ts",
+    "src/**/*.spec.ts",
+    "node_modules"
+  ],
+  "exec": "tsx src/server.ts",
+  "signal": "SIGTERM",
+  "delay": "500"
 }
