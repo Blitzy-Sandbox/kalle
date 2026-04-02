@@ -140,7 +140,7 @@ const config: Config = {
        * ============================================================ */
       boxShadow: {
         /* shadow-nav-bottom: navigation bar bottom edge separator */
-        'nav': '0px 0.33px 0px rgba(166, 166, 170, 1)',
+        'nav-bottom': '0px 0.33px 0px rgba(166, 166, 170, 1)',
         /* shadow-tab-top: tab bar top edge separator */
         'tab': '0px -0.33px 0px rgba(166, 166, 170, 1)',
         /* shadow-card: form cards and content sections */
