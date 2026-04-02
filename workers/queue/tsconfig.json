@@ -4,14 +4,10 @@
     "outDir": "./dist",
     "rootDir": "./src",
     "composite": true,
-    "paths": {
-      "@kalle/shared": ["../../packages/shared/src"],
-      "@kalle/shared/*": ["../../packages/shared/src/*"]
-    }
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist"],
-  "references": [
-    { "path": "../../packages/shared" }
-  ]
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
 }
