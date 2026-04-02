@@ -15,10 +15,16 @@
     "plugin:@typescript-eslint/recommended"
   ],
   "rules": {
-    "no-console": "warn",
-    "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
+    "no-console": "error",
+    "@typescript-eslint/no-explicit-any": "warn",
     "@typescript-eslint/explicit-function-return-type": "off",
-    "@typescript-eslint/no-explicit-any": "warn"
+    "@typescript-eslint/no-unused-vars": ["error", { "argsIgnorePattern": "^_" }]
   },
-  "ignorePatterns": ["dist", "node_modules", ".next", "coverage", "*.js"]
+  "ignorePatterns": [
+    "node_modules/",
+    "dist/",
+    ".next/",
+    "coverage/",
+    "prisma/migrations/"
+  ]
 }
