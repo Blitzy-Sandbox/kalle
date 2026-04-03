@@ -25,11 +25,7 @@ export default function AccountSettingsPage() {
   return (
     <AccountSettings
       onBack={() => router.back()}
-      onRowClick={(label) => {
-        /* Navigate to the selected sub-setting page when routes are available */
-        const slug = label.toLowerCase().replace(/\s+/g, '-');
-        router.push(`/settings/account/${slug}`);
-      }}
+      onTabPress={(tab) => router.push(`/${tab}`)}
     />
   );
 }

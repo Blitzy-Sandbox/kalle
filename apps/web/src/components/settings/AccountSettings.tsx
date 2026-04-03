@@ -1,57 +1,67 @@
 'use client';
 
 import React from 'react';
+import { useRouter } from 'next/navigation';
 import { NavigationBar } from '@/components/common/NavigationBar';
+import { TabBar } from '@/components/common/TabBar';
+import { SettingsRow } from '@/components/common/SettingsRow';
 import { Separator } from '@/components/common/Separator';
+import { StatusBar } from '@/components/common/StatusBar';
 
 /* ==========================================================================
- * AccountSettings — Reusable Account Settings Component
+ * AccountSettings — Account Settings Screen Component
  *
- * Maps to Figma Screen 17 (WhatsApp Account, node 0:9371),
+ * Maps 1:1 to Figma Screen 17 (WhatsApp Account, node 0:9371),
  * file key miK1B6qEPrUnRZ9wwZNrW2.
  *
- * Figma layout specs:
- * - Frame: bg #EFEFF4 (bg-surface), min-height fills parent
- * - NavigationBar: back "Settings" (blue #007AFF) + "Account" centered
- * - Row Group 1 (375×188px, y=123, 35px below nav):
- *   - Privacy, Security, Two-Step Verification, Change Number
- *   - White bg, dual shadow, rows 47px each, no icon squares
- *   - Label at x=16 (no icon offset), chevron at x=351
- *   - SF Pro Text 400 16px / 1.375em / -0.03em, #000000
- * - Row Group 2 (375×94px, y=346, 35px gap):
- *   - Request Account Info, Delete My Account
- * - Separators: x=16, 0.33px, rgba(60,60,67,0.29)
+ * Figma layout specifications:
+ * - Frame: 375×812px, background #EFEFF4 (bg-surface)
+ * - NavigationBar: back chevron + "Settings" (blue #007AFF), "Account" centered
+ * - Row Group 1 (y=123, 375×188px): Privacy, Security, Two-Step Verification,
+ *   Change Number — white bg, dual 0.33px shadow, rows 47px each
+ * - Row Group 2 (y=346, 375×94px): Request Account Info, Delete My Account
+ * - Tab Bar (y=729): "Settings" tab active (#007AFF)
  *
- * KEY DISTINCTION: No colored icon squares — text aligns at x=16.
+ * KEY DISTINCTION FROM SETTINGS MENU:
+ * These rows have NO colored icon squares. Text labels begin at x=16
+ * (standard page margin) instead of x=59 (icon offset). All rows use
+ * SettingsRow WITHOUT icon prop.
+ *
+ * Separators between rows use insetLeft=16px (not the default 59px
+ * that SettingsRow's built-in separator uses).
+ *
+ * WCAG 2.1 AA (R34):
+ * - Screen-reader-only heading for landmark navigation
+ * - All rows are keyboard-accessible via SettingsRow's button role
+ * - Visible focus indicators on all interactive elements
+ * - Semantic grouping of row sections
  * ========================================================================== */
 
 /**
- * Group 1 menu items: Privacy, Security, Two-Step Verification, Change Number.
+ * Props for the AccountSettings component.
+ *
+ * All props are optional — the component provides sensible defaults
+ * using Next.js router for navigation and 'settings' as the active tab.
  */
-const GROUP_1_ITEMS: ReadonlyArray<{ readonly label: string }> = [
-  { label: 'Privacy' },
-  { label: 'Security' },
-  { label: 'Two-Step Verification' },
-  { label: 'Change Number' },
-] as const;
-
-/**
- * Group 2 menu items: Request Account Info, Delete My Account.
- */
-const GROUP_2_ITEMS: ReadonlyArray<{ readonly label: string }> = [
-  { label: 'Request Account Info' },
-  { label: 'Delete My Account' },
-] as const;
+export interface AccountSettingsProps {
+  /** Callback when the back button ("Settings") is pressed. Falls back to router.back(). */
+  onBack?: () => void;
+  /** Currently active tab identifier. Defaults to 'settings'. */
+  activeTab?: 'settings';
+  /** Callback when a tab bar item is pressed. Falls back to router.push(). */
+  onTabPress?: (tab: string) => void;
+  /** Additional CSS class names for the root container element. */
+  className?: string;
+}
 
 /* --------------------------------------------------------------------------
- * Inline SVG Components
+ * BackChevron — Inline SVG for iOS-style back navigation arrow
+ *
+ * Figma node 0:9414 — Back chevron shape:
+ * - Dimensions: 11.84×21px (rendered at 12×21px viewBox)
+ * - Fill: currentColor (inherits #007AFF from NavigationBar action button)
  * -------------------------------------------------------------------------- */
-
-/**
- * Back chevron SVG — 12×21px, currentColor, rendered in NavigationBar
- * back button. Source: icon-back-chevron.svg (Figma node 0:8257).
- */
-function BackChevron() {
+function BackChevron(): React.ReactNode {
   return (
     <svg
       className="w-[12px] h-[21px]"
@@ -68,135 +78,106 @@ function BackChevron() {
   );
 }
 
-/**
- * Right chevron disclosure arrow — 7×12px, rgba(60,60,67,0.3).
- * Source: icon-arrow-right.svg (Figma node 0:8883).
- */
-function ChevronRight() {
-  return (
-    <svg
-      className="w-[7px] h-[12px] flex-shrink-0"
-      viewBox="0 0 7 12"
-      fill="none"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden="true"
-    >
-      <path
-        d="M4.58579 6L0.292893 10.2929C-0.0976311 10.6834 -0.0976311 11.3166 0.292893 11.7071C0.683418 12.0976 1.31658 12.0976 1.70711 11.7071L6.70711 6.70711C7.09763 6.31658 7.09763 5.68342 6.70711 5.29289L1.70711 0.292893C1.31658 -0.0976311 0.683418 -0.0976311 0.292893 0.292893C-0.0976311 0.683418 -0.0976311 1.31658 0.292893 1.70711L4.58579 6Z"
-        fill="#3C3C43"
-        fillOpacity="0.3"
-      />
-    </svg>
-  );
-}
-
 /* --------------------------------------------------------------------------
- * RowGroup — Renders a white card group of account settings rows
+ * Row Group Data Constants
  *
- * Figma specs per row (node 0:9374 pattern):
- * - Height: 47px, background: #FFFFFF
- * - Text: x:16, SF Pro Text 400 16px/1.375em/-0.03em, #000000
- * - Chevron: x:351, 7×12px, rgba(60,60,67,0.3)
- * - Separator: x:16, 0.33px between rows only
+ * Static row labels for each account settings group, matching Figma
+ * Screen 17 exactly (verbatim text from design).
  * -------------------------------------------------------------------------- */
 
-interface RowGroupProps {
-  readonly items: ReadonlyArray<{ readonly label: string }>;
-  /** Callback when a row is clicked */
-  readonly onRowClick?: (label: string) => void;
-}
+/** Group 1: Privacy, Security, Two-Step Verification, Change Number */
+const GROUP_1_ROWS: ReadonlyArray<string> = [
+  'Privacy',
+  'Security',
+  'Two-Step Verification',
+  'Change Number',
+] as const;
 
-/**
- * Renders a group of settings rows inside a white iOS card container.
- */
-function RowGroup({ items, onRowClick }: RowGroupProps) {
-  return (
-    <div
-      className="bg-white shadow-[0_-0.33px_0_rgba(60,60,67,0.29),0_0.33px_0_rgba(60,60,67,0.29)]"
-      role="group"
-    >
-      {items.map((item, index) => (
-        <React.Fragment key={item.label}>
-          <button
-            type="button"
-            onClick={() => onRowClick?.(item.label)}
-            className={[
-              'w-full h-[47px] bg-white',
-              'flex items-center justify-between',
-              'ps-4 pe-4',
-              'active:bg-gray-100 motion-safe:transition-colors motion-safe:duration-150',
-              'focus-visible:outline focus-visible:outline-2',
-              'focus-visible:outline-blue-ios focus-visible:outline-offset-[-2px]',
-            ].join(' ')}
-            aria-label={item.label}
-          >
-            <span className="font-normal text-[16px] leading-[1.375em] tracking-[-0.03em] text-black">
-              {item.label}
-            </span>
-            <ChevronRight />
-          </button>
-          {index < items.length - 1 && (
-            <Separator inset insetLeft={16} />
-          )}
-        </React.Fragment>
-      ))}
-    </div>
-  );
-}
+/** Group 2: Request Account Info, Delete My Account */
+const GROUP_2_ROWS: ReadonlyArray<string> = [
+  'Request Account Info',
+  'Delete My Account',
+] as const;
+
+/* --------------------------------------------------------------------------
+ * Dual shadow CSS value for row group containers
+ *
+ * Figma: 0px -0.33px 0px rgba(60,60,67,0.29) top edge +
+ *         0px 0.33px 0px rgba(60,60,67,0.29) bottom edge
+ *
+ * Combined as a single Tailwind arbitrary shadow value.
+ * -------------------------------------------------------------------------- */
+const ROW_GROUP_SHADOW =
+  'shadow-[0_-0.33px_0_rgba(60,60,67,0.29),0_0.33px_0_rgba(60,60,67,0.29)]';
 
 /* ==========================================================================
- * AccountSettings — Exported Component
+ * AccountSettings Component
  * ========================================================================== */
 
 /**
- * Props for the AccountSettings component.
- */
-export interface AccountSettingsProps {
-  /** Callback when the back button ("Settings") is pressed */
-  onBack?: () => void;
-  /** Callback when a settings row is clicked, receiving the label text */
-  onRowClick?: (label: string) => void;
-  /** Additional CSS class names */
-  className?: string;
-}
-
-/**
- * AccountSettings — Reusable account settings component.
+ * Account settings screen matching Figma Screen 17 (node 0:9371).
  *
- * Renders the Account settings screen matching Figma Screen 17 (node 0:9371)
- * with two groups of plain-text menu rows. This component is a standalone
- * reusable module that can be used in both the page route and in modal or
- * layout contexts.
+ * Renders two groups of plain-text navigation rows without colored icon
+ * squares. Each row displays a label at x=16 with a right disclosure
+ * chevron at x=351. Groups are separated by a 35px vertical gap on
+ * the #EFEFF4 surface background.
  *
- * Key architectural note: Rows have NO colored icon squares — labels
- * align at x=16 directly, differentiating this from the main Settings
- * menu which uses colored icon backgrounds.
+ * @example Usage in a Next.js page
+ * ```tsx
+ * export default function AccountPage() {
+ *   return <AccountSettings />;
+ * }
+ * ```
  *
- * WCAG 2.1 AA compliant (R34):
- * - Rows are button elements for keyboard accessibility
- * - Visible focus indicators (outline-blue-ios)
- * - Screen-reader-only heading for landmark navigation
- * - Semantic group roles on row containers
- *
- * @example
+ * @example Usage with custom callbacks
  * ```tsx
  * <AccountSettings
- *   onBack={() => router.back()}
- *   onRowClick={(label) => navigateToSetting(label)}
+ *   onBack={() => router.push('/settings')}
+ *   onTabPress={(tab) => router.push(`/${tab}`)}
  * />
  * ```
  */
 const AccountSettings: React.FC<AccountSettingsProps> = ({
   onBack,
-  onRowClick,
+  activeTab = 'settings',
+  onTabPress,
   className = '',
 }) => {
-  return (
-    <div className={`flex flex-col h-full bg-surface ${className}`}>
-      {/* Visually hidden page heading for screen readers (WCAG landmark) */}
-      <h1 className="sr-only">Account Settings</h1>
+  const router = useRouter();
 
-      {/* iOS-style navigation bar — centered "Account" title with back nav */}
+  /**
+   * Back navigation handler.
+   * Uses the onBack prop callback if provided, otherwise falls back
+   * to Next.js router.back() for standard browser history navigation.
+   */
+  const handleBack = (): void => {
+    if (onBack) {
+      onBack();
+    } else {
+      router.back();
+    }
+  };
+
+  /**
+   * Tab bar press handler.
+   * Bridges the component's string-typed onTabPress callback to the
+   * TabBar's TabId-typed onTabPress prop. Falls back to router.push()
+   * when no callback is provided.
+   */
+  const handleTabPress = (tab: string): void => {
+    if (onTabPress) {
+      onTabPress(tab);
+    } else {
+      router.push(`/${tab}`);
+    }
+  };
+
+  return (
+    <div className={`flex flex-col min-h-screen bg-surface ${className}`.trim()}>
+      {/* Simulated iOS status bar — hidden on mobile, visible on desktop (md+) */}
+      <StatusBar />
+
+      {/* iOS-style navigation bar — centered "Account" title, back to Settings */}
       <NavigationBar
         title="Account"
         leftAction={
@@ -205,23 +186,65 @@ const AccountSettings: React.FC<AccountSettingsProps> = ({
             <span>Settings</span>
           </span>
         }
-        onLeftAction={onBack}
+        onLeftAction={handleBack}
       />
 
-      {/* Scrollable content area */}
-      <main className="flex-1 overflow-y-auto">
-        {/* Group 1 — Privacy / Security / Two-Step Verification / Change Number
-            Figma: y=123, 35px below NavigationBar bottom edge */}
-        <div className="mt-[35px]">
-          <RowGroup items={GROUP_1_ITEMS} onRowClick={onRowClick} />
+      {/* Visually hidden heading for screen readers (WCAG landmark navigation) */}
+      <h1 className="sr-only">Account Settings</h1>
+
+      {/* Scrollable content area with bottom padding for fixed tab bar (83px) */}
+      <main className="flex-1 overflow-y-auto pb-[83px]">
+        {/* ================================================================
+         * Row Group 1 — Account Options
+         *
+         * Figma: node 0:9372, position (0, 123), size 375×188px
+         * 4 rows × 47px each, white bg, dual 0.33px shadow
+         * 35px gap below NavigationBar (123px - 88px nav area = 35px)
+         * Separators at x=16, 0.33px, rgba(60,60,67,0.29)
+         * ================================================================ */}
+        <div
+          className={`mt-[35px] bg-white ${ROW_GROUP_SHADOW}`}
+          role="group"
+          aria-label="Account options"
+        >
+          {GROUP_1_ROWS.map((label, index) => (
+            <React.Fragment key={label}>
+              <SettingsRow label={label} />
+              {index < GROUP_1_ROWS.length - 1 && (
+                <Separator inset insetLeft={16} />
+              )}
+            </React.Fragment>
+          ))}
         </div>
 
-        {/* Group 2 — Request Account Info / Delete My Account
-            Figma: y=346, 35px gap from Group 1 bottom edge */}
-        <div className="mt-[35px]">
-          <RowGroup items={GROUP_2_ITEMS} onRowClick={onRowClick} />
+        {/* ================================================================
+         * Row Group 2 — Account Actions
+         *
+         * Figma: node 0:9397, position (0, 346), size 375×94px
+         * 2 rows × 47px each, same styling as Group 1
+         * 35px gap from Group 1 bottom (346 - (123 + 188) = 35px)
+         * ================================================================ */}
+        <div
+          className={`mt-[35px] bg-white ${ROW_GROUP_SHADOW}`}
+          role="group"
+          aria-label="Account actions"
+        >
+          {GROUP_2_ROWS.map((label, index) => (
+            <React.Fragment key={label}>
+              <SettingsRow label={label} />
+              {index < GROUP_2_ROWS.length - 1 && (
+                <Separator inset insetLeft={16} />
+              )}
+            </React.Fragment>
+          ))}
         </div>
       </main>
+
+      {/* Fixed bottom tab bar — "Settings" tab active (blue #007AFF) */}
+      <TabBar
+        activeTab={activeTab}
+        onTabPress={handleTabPress}
+      />
     </div>
   );
 };
