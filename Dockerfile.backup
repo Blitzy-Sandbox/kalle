@@ -1,0 +1,168 @@
+# =============================================================================
+# Kalle — PostgreSQL Backup Service Container
+# =============================================================================
+#
+# Purpose:
+#   Alpine-based cron container that runs pg_dump daily at 2 AM UTC, producing
+#   gzip-compressed SQL archives in /backups with configurable retention
+#   (default 7 days). Designed to run as a sidecar service alongside the
+#   primary PostgreSQL container within Docker Compose.
+#
+# Base Image:
+#   postgres:16-alpine is used instead of plain alpine to ensure the exact
+#   same pg_dump binary version as the database server. This prevents
+#   version mismatch errors (pg_dump refuses to dump a newer server).
+#
+# Environment Variables (set via docker-compose.yml):
+#   PGHOST                 - PostgreSQL host (default: "postgres")
+#   PGPORT                 - PostgreSQL port (default: "5432")
+#   PGUSER                 - PostgreSQL username (required)
+#   PGPASSWORD             - PostgreSQL password (required, read by libpq)
+#   PGDATABASE             - PostgreSQL database name (required)
+#   BACKUP_RETENTION_DAYS  - Days to retain backups (default: 7)
+#
+# Volumes:
+#   /backups — Mount from host (./backups:/backups) for persistent archives
+#
+# Rules:
+#   R36 — Daily pg_dump archives to ./backups/ with 7-day retention
+#   R38 — Zero external dependencies; runs inside Docker only
+#   R39 — Part of single-command bootstrap via docker-compose up
+#
+# =============================================================================
+
+# ---------------------------------------------------------------------------
+# Base Image — PostgreSQL 16 Alpine
+# ---------------------------------------------------------------------------
+# Using the same major version as the database server guarantees pg_dump
+# compatibility. Alpine variant keeps the image small (~80MB).
+# Includes: pg_dump, psql, busybox crond, and standard POSIX utilities.
+# ---------------------------------------------------------------------------
+FROM postgres:16-alpine
+
+# ---------------------------------------------------------------------------
+# Metadata Labels
+# ---------------------------------------------------------------------------
+LABEL maintainer="Kalle Team"
+LABEL description="PostgreSQL daily backup service with pg_dump and 7-day retention"
+LABEL org.opencontainers.image.source="https://github.com/Blitzy-Sandbox/kalle"
+
+# ---------------------------------------------------------------------------
+# Create Required Directories
+# ---------------------------------------------------------------------------
+# /backups  — Destination for compressed SQL archives (volume-mounted in prod)
+# /var/log  — Cron job output logs for operational visibility
+# ---------------------------------------------------------------------------
+RUN mkdir -p /backups /var/log
+
+# ---------------------------------------------------------------------------
+# Copy Backup Script
+# ---------------------------------------------------------------------------
+# The backup script (scripts/backup.sh) handles:
+#   1. Pre-flight validation of required environment variables
+#   2. pg_dump execution with gzip compression
+#   3. Backup integrity verification (non-empty file check)
+#   4. Retention cleanup — removes archives older than BACKUP_RETENTION_DAYS
+#
+# Build context is the repository root (context: . in docker-compose.yml),
+# so the COPY path is relative to the repo root.
+# ---------------------------------------------------------------------------
+COPY scripts/backup.sh /usr/local/bin/backup.sh
+RUN chmod +x /usr/local/bin/backup.sh
+
+# ---------------------------------------------------------------------------
+# Create Cron Wrapper Script
+# ---------------------------------------------------------------------------
+# Alpine's busybox crond does NOT inherit Docker environment variables.
+# This wrapper sources the environment file written by the entrypoint at
+# container startup, ensuring PGHOST, PGUSER, PGPASSWORD, etc. are
+# available to the backup script when invoked by cron.
+# ---------------------------------------------------------------------------
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'set -e' \
+    '# Source Docker environment variables exported by entrypoint' \
+    '. /etc/backup.env' \
+    '# Execute the backup script' \
+    'exec /usr/local/bin/backup.sh' \
+    > /usr/local/bin/run-backup.sh && \
+    chmod +x /usr/local/bin/run-backup.sh
+
+# ---------------------------------------------------------------------------
+# Configure Cron Schedule
+# ---------------------------------------------------------------------------
+# Schedule: Daily at 2:00 AM UTC
+# Format:   minute hour day-of-month month day-of-week command
+#
+# Output is appended to /var/log/backup.log for debugging and audit trail.
+# Alpine crontabs live in /etc/crontabs/ (not /etc/cron.d/).
+# ---------------------------------------------------------------------------
+RUN echo '0 2 * * * /usr/local/bin/run-backup.sh >> /var/log/backup.log 2>&1' \
+    > /etc/crontabs/root
+
+# ---------------------------------------------------------------------------
+# Create Entrypoint Script
+# ---------------------------------------------------------------------------
+# The entrypoint performs two critical setup tasks before starting crond:
+#
+# 1. Environment Export — Serializes all Docker environment variables to
+#    /etc/backup.env in shell-sourceable format using `export -p`. This
+#    bridges the gap between Docker's env injection and cron's minimal
+#    execution environment.
+#
+# 2. Log Initialization — Creates the backup log file so the first cron
+#    run's append redirect (>>) does not fail on a missing file.
+#
+# The `exec "$@"` pattern allows CMD to be overridden (e.g., running
+# backup.sh manually for testing) while always executing the env export.
+# ---------------------------------------------------------------------------
+RUN printf '%s\n' \
+    '#!/bin/sh' \
+    'set -e' \
+    '' \
+    '# Serialize Docker environment variables for cron job consumption.' \
+    '# Using export -p produces shell-safe quoting (handles spaces,' \
+    '# special characters, and passwords with symbols correctly).' \
+    'export -p > /etc/backup.env' \
+    '' \
+    '# Ensure log file exists for cron append redirect' \
+    'touch /var/log/backup.log' \
+    '' \
+    '# Execute CMD (default: crond) or any override command' \
+    'exec "$@"' \
+    > /usr/local/bin/entrypoint.sh && \
+    chmod +x /usr/local/bin/entrypoint.sh
+
+# ---------------------------------------------------------------------------
+# Health Check
+# ---------------------------------------------------------------------------
+# Verifies that a backup archive (.gz) was created within the last 25 hours
+# (1500 minutes). This catches both "cron not running" and "backup script
+# failing silently" scenarios.
+#
+# Parameters:
+#   --interval=60s     — Check once per minute
+#   --timeout=5s       — find command timeout
+#   --start-period=30s — Grace period after container start
+#   --retries=3        — Three consecutive failures = unhealthy
+#
+# Note: docker-compose.yml may override this with a simpler PID-1 check
+# for the development environment. This HEALTHCHECK serves as a sensible
+# production default.
+# ---------------------------------------------------------------------------
+HEALTHCHECK --interval=60s --timeout=5s --start-period=30s --retries=3 \
+  CMD find /backups -name "*.gz" -mmin -1500 | grep -q . || exit 1
+
+# ---------------------------------------------------------------------------
+# Entrypoint and Default Command
+# ---------------------------------------------------------------------------
+# ENTRYPOINT: Always runs env export before the main process.
+# CMD:        Starts busybox crond in foreground mode.
+#   -f  — Foreground (prevents container exit; required for Docker)
+#   -d 8 — Log level 8 (minimal logging; 0 = most verbose)
+#
+# Override CMD to run a manual backup:
+#   docker compose run --rm backup /usr/local/bin/backup.sh
+# ---------------------------------------------------------------------------
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+CMD ["crond", "-f", "-d", "8"]
