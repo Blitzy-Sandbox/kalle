@@ -14,6 +14,7 @@ const config: Config = {
   coverageDirectory: 'coverage',
   coverageReporters: ['text', 'lcov', 'clover'],
   moduleNameMapper: {
+    '^(\\.{1,2}/.*)\\.js$': '$1',
     '^@kalle/shared(.*)$': '<rootDir>/../../packages/shared/src$1',
   },
   passWithNoTests: true,
