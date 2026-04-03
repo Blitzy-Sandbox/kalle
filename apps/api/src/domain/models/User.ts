@@ -37,7 +37,7 @@ const MAX_DISPLAY_NAME_LENGTH = 100;
 const MAX_ABOUT_LENGTH = 500;
 
 /** Default "about" text assigned to new users when no about text is provided */
-const DEFAULT_ABOUT = 'Hey there! I am using WhatsApp';
+const DEFAULT_ABOUT = 'Hey there! I am using Kalle';
 
 /**
  * Regex pattern for basic email format validation.
@@ -86,7 +86,7 @@ export interface UserProps {
   /** Optional avatar image URL */
   avatar?: string;
 
-  /** Optional status/about text. Defaults to "Hey there! I am using WhatsApp" */
+  /** Optional status/about text. Defaults to "Hey there! I am using Kalle" */
   about?: string;
 
   /** Current online/offline status */

@@ -315,9 +315,9 @@ export class Story {
     return this._duration;
   }
 
-  /** Array of unique view records (returns the internal mutable array) */
+  /** Array of unique view records (returns a defensive copy to prevent external mutation) */
   get views(): StoryViewRecord[] {
-    return this._views;
+    return [...this._views];
   }
 
   /** Date when this story expires (24h after creation per R11) */

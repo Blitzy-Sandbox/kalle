@@ -128,7 +128,7 @@ export default function ChatHeader({
             />
             {isOnline && (
               <span
-                className="absolute bottom-0 end-0 block w-2.5 h-2.5 rounded-full bg-[#4CD964] border-[1.5px] border-nav"
+                className="absolute bottom-0 end-0 block w-2.5 h-2.5 rounded-full bg-toggle-green border-[1.5px] border-nav"
                 aria-hidden="true"
               />
             )}

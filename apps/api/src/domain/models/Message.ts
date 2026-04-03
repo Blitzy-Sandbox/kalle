@@ -392,7 +392,7 @@ export class Message {
    * 3. Ciphertext must not be null (tombstone state)
    * 4. Current time must be within 15-minute window of serverTimestamp
    *
-   * The 15-minute boundary is exclusive: exactly 15 minutes elapsed returns false.
+   * The 15-minute boundary is inclusive: exactly 15 minutes elapsed still allows edit.
    *
    * @param userId - The ID of the user attempting to edit
    * @param now - Optional current time for testability; defaults to new Date()
@@ -419,7 +419,7 @@ export class Message {
     const currentTime = now ?? new Date();
     const elapsedMs = currentTime.getTime() - this._serverTimestamp.getTime();
 
-    // Boundary: exactly 15 minutes elapsed returns false (strictly > threshold)
+    // Boundary: exactly 15 minutes elapsed still permits edit (inclusive window)
     if (elapsedMs > TTL.MESSAGE_EDIT_WINDOW_MS) {
       return false;
     }

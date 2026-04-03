@@ -265,7 +265,7 @@ export function errorHandler(
 
     res.status(400).json({
       error: {
-        code: 'INVALID_JSON',
+        code: 'VALIDATION_ERROR',
         message: 'Malformed JSON in request body',
         ...(correlationId !== undefined && { correlationId }),
       },

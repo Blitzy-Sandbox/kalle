@@ -262,7 +262,7 @@ const StatusItem: FC<StatusItemProps> = ({
           'flex items-center h-[74px] px-4 bg-white cursor-pointer',
           'active:bg-gray-100',
           'focus:outline-none focus-visible:bg-gray-50',
-          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#007AFF]',
+          'focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-ios',
           'motion-safe:transition-colors motion-safe:duration-150',
         ].join(' ')}
       >

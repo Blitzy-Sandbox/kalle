@@ -324,7 +324,7 @@ export default function NotificationsPage() {
           onClick={handleResetNotifications}
           aria-label="Reset Notification Settings"
         >
-          <span className="text-[16px] leading-[1.375em] tracking-[-0.03em] text-[#FF3B30]">
+          <span className="text-[16px] leading-[1.375em] tracking-[-0.03em] text-red-ios">
             Reset Notification Settings
           </span>
         </button>
