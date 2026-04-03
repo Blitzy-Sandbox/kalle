@@ -167,6 +167,44 @@ export function createMetricsMiddleware(
 }
 
 // ---------------------------------------------------------------------------
+// Standalone Metrics Middleware — metricsMiddleware
+// ---------------------------------------------------------------------------
+
+/**
+ * Stateless HTTP metrics middleware for direct import into the Express
+ * middleware chain (Step 9 in `app.ts`).
+ *
+ * This standalone middleware tracks active HTTP request count at the module
+ * level without requiring a MetricsService instance, making it suitable for
+ * direct import during Express app construction (before the full DI container
+ * is wired in `server.ts`).
+ *
+ * The active request count is exposed via {@link getMetricsData} and can be
+ * consumed by health-check endpoints or custom aggregation logic.
+ *
+ * For full Prometheus-compatible metrics recording (counters, histograms,
+ * route-level breakdowns), use {@link createMetricsMiddleware} factory with
+ * a MetricsService instance instead.
+ *
+ * @param _req - Express Request object (unused — signature required by Express)
+ * @param res  - Express Response object (used to listen for the `finish` event)
+ * @param next - Express NextFunction to continue the middleware chain
+ */
+export function metricsMiddleware(
+  _req: Request,
+  res: Response,
+  next: NextFunction,
+): void {
+  activeRequestCount += 1;
+
+  res.on('finish', () => {
+    activeRequestCount = Math.max(0, activeRequestCount - 1);
+  });
+
+  next();
+}
+
+// ---------------------------------------------------------------------------
 // Metrics Data Export
 // ---------------------------------------------------------------------------
 
