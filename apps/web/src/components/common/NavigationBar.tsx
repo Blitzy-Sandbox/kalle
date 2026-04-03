@@ -122,8 +122,9 @@ export const NavigationBar: React.FC<NavigationBarProps> = ({
       aria-label="Navigation"
       className={`relative flex items-center justify-between h-nav-bar bg-nav shadow-nav-bottom ${className}`}
     >
-      {/* Left action zone — positioned above centered title via z-10 */}
-      <div className="flex items-center z-10 min-w-[60px] ps-4">
+      {/* Left action zone — relative + z-10 + h-full stacks above the absolute-centered title;
+          bg-nav provides visual masking for any title text that extends beneath on non-SF-Pro systems */}
+      <div className="relative flex items-center z-10 min-w-[60px] h-full ps-4 bg-nav">
         {leftAction != null && (
           <button
             type="button"
@@ -136,16 +137,19 @@ export const NavigationBar: React.FC<NavigationBarProps> = ({
       </div>
 
       {/* Center zone — absolute positioned for perfect iOS-style centering.
-          pointer-events-none allows click-through to left/right actions beneath. */}
-      <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+          px-[90px] constrains the title to the area between left/right action zones,
+          preventing overlap on non-SF-Pro font systems where text renders wider.
+          pointer-events-none allows click-through to left/right actions beneath.
+          Title truncates gracefully when the text exceeds the constrained width. */}
+      <div className="absolute inset-0 flex items-center justify-center pointer-events-none px-[100px]">
         {centerContent != null ? (
           <div className="pointer-events-auto">{centerContent}</div>
         ) : (
           <h1
             className={
               largeTitleStyle
-                ? 'text-[34px] font-bold leading-[1.2em] text-black tracking-tight-ios'
-                : 'text-nav-title text-black tracking-tight-ios'
+                ? 'text-[34px] font-bold leading-[1.2em] text-black tracking-tight-ios truncate'
+                : 'text-nav-title text-black tracking-tight-ios truncate'
             }
           >
             {title}
@@ -153,8 +157,9 @@ export const NavigationBar: React.FC<NavigationBarProps> = ({
         )}
       </div>
 
-      {/* Right action zone — positioned above centered title via z-10 */}
-      <div className="flex items-center z-10 min-w-[60px] justify-end pe-4">
+      {/* Right action zone — relative + z-10 + h-full stacks above the absolute-centered title;
+          bg-nav provides visual masking for any title text that extends beneath */}
+      <div className="relative flex items-center z-10 min-w-[60px] h-full justify-end pe-4 bg-nav">
         {rightAction != null && (
           <button
             type="button"
