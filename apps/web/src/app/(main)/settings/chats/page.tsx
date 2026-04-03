@@ -17,21 +17,7 @@ export default function ChatsSettingsPage() {
   return (
     <ChatSettings
       onBack={() => router.back()}
-      onChangeWallpaper={() => {
-        /* Wallpaper selection — implementation deferred to wallpaper feature */
-      }}
-      onChatBackup={() => {
-        /* Chat backup flow — implementation deferred to backup feature */
-      }}
-      onArchiveAll={() => {
-        /* Archive all chats action */
-      }}
-      onClearAll={() => {
-        /* Clear all chats confirmation flow */
-      }}
-      onDeleteAll={() => {
-        /* Delete all chats confirmation flow */
-      }}
+      onTabPress={(tab) => router.push(`/${tab}`)}
     />
   );
 }
