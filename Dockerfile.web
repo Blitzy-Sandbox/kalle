@@ -45,11 +45,24 @@ COPY package.json package-lock.json ./
 COPY packages/shared/package.json ./packages/shared/
 COPY apps/web/package.json ./apps/web/
 
-# Install production + dev dependencies for the web workspace and shared package.
-# --workspace flags scope the install to only the packages we need, but npm ci
-# still needs the root lockfile for deterministic resolution.
+# Copy Prisma schema BEFORE npm ci — the root package.json "prepare" script
+# runs "npx prisma generate" during install, which requires the schema file.
+# Without this, npm ci fails with "prisma/schema.prisma not found".
+COPY prisma/ ./prisma/
+
+# Install ALL dependencies from the lockfile. We do NOT use --workspace flags
+# here because the root package.json devDependencies (including prisma ^5.14.x)
+# must be present for prisma generate to use the correct local version.
+# --ignore-scripts prevents the root "prepare" lifecycle script from running
+# "npx prisma generate" during install — without local prisma, npx would
+# download the latest (v7.x) which has breaking schema changes.
+# We run prisma generate explicitly below using the locally installed version.
 # --legacy-peer-deps handles React 18 peer dependency conflicts with some packages.
-RUN npm ci --workspace=apps/web --workspace=packages/shared --legacy-peer-deps
+RUN npm ci --legacy-peer-deps --ignore-scripts
+
+# Explicitly generate Prisma client using the version installed in node_modules
+# (^5.14.x per package.json), NOT the latest from the npm registry.
+RUN npx prisma generate
 
 # -----------------------------------------------------------------------------
 # Stage 2: Builder — Compile shared types and Next.js application
@@ -65,11 +78,9 @@ WORKDIR /app
 ENV NEXT_TELEMETRY_DISABLED=1
 
 # Copy installed node_modules from deps stage.
-# The monorepo hoists shared dependencies to the root node_modules, with
-# workspace-specific deps in their respective node_modules directories.
+# npm ci without --workspace hoists ALL dependencies to the root node_modules.
+# Workspace-specific node_modules are not created in this configuration.
 COPY --from=deps /app/node_modules ./node_modules
-COPY --from=deps /app/packages/shared/node_modules ./packages/shared/node_modules
-COPY --from=deps /app/apps/web/node_modules ./apps/web/node_modules
 
 # Copy root workspace configuration files needed for build resolution
 COPY package.json ./

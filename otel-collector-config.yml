@@ -45,11 +45,12 @@ exporters:
     endpoint: "0.0.0.0:8889"
     namespace: "kalle"
 
-  # Logging exporter writes a summary of received telemetry to stdout.
-  # Useful for local development debugging; verbosity kept at "basic"
-  # to avoid flooding container logs.
-  logging:
-    verbosity: basic
+  # Debug exporter writes a summary of received telemetry to stdout.
+  # Useful for local development debugging; verbosity kept at "normal"
+  # to avoid flooding container logs. Note: the "logging" exporter has
+  # been deprecated in recent OTel Collector releases — use "debug" instead.
+  debug:
+    verbosity: normal
 
 # -----------------------------------------------------------------------------
 # Extensions — Auxiliary services for collector health and diagnostics
@@ -68,7 +69,7 @@ service:
     - health_check
 
   pipelines:
-    # Metrics pipeline: OTLP gRPC → batch → Prometheus + stdout logging
+    # Metrics pipeline: OTLP gRPC → batch → Prometheus + stdout debug output
     metrics:
       receivers:
         - otlp
@@ -76,4 +77,4 @@ service:
         - batch
       exporters:
         - prometheus
-        - logging
+        - debug

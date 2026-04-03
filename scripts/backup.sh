@@ -91,28 +91,58 @@ mkdir -p "${BACKUP_DIR}"
 
 echo "Creating backup: ${BACKUP_FILE}"
 
-# pg_dump outputs SQL in plain text format; gzip compresses the stream.
+# ---------------------------------------------------------------------------
+# Two-step dump-then-compress pattern for reliable failure detection.
+# ---------------------------------------------------------------------------
+# A piped `pg_dump | gzip > file` silently masks pg_dump failures because
+# gzip creates a valid (but empty-content) .gz file from empty stdin, and
+# the `-s` size check passes on the gzip headers (~20 bytes). By writing
+# the raw SQL to a temp file first, we can detect pg_dump failures via
+# exit code and verify actual content before compressing.
+# ---------------------------------------------------------------------------
+
+TEMP_DUMP="${BACKUP_DIR}/kalle_db_${TIMESTAMP}.sql.tmp"
+
+# pg_dump outputs SQL in plain text format to a temporary file.
 # --no-owner:      Omit ownership assignment commands (portable across roles)
 # --no-privileges: Omit GRANT/REVOKE statements (portable across environments)
 # PGPASSWORD is read automatically by libpq from the environment variable.
-pg_dump \
+if ! pg_dump \
   -h "${PGHOST}" \
   -p "${PGPORT}" \
   -U "${PGUSER}" \
   -d "${PGDATABASE}" \
   --no-owner \
   --no-privileges \
-  | gzip > "${BACKUP_FILE}"
+  > "${TEMP_DUMP}" 2>&1; then
+  echo "ERROR: pg_dump command failed!" >&2
+  rm -f "${TEMP_DUMP}"
+  exit 1
+fi
 
 # ---------------------------------------------------------------------------
-# Verify Backup Integrity
+# Verify pg_dump Output Integrity
 # ---------------------------------------------------------------------------
 
-# Ensure the backup file was created and is non-empty. An empty file indicates
-# pg_dump produced no output, which typically means a connection or auth failure.
+# Ensure the raw dump file is non-empty before compressing. An empty file
+# indicates pg_dump produced no output (connection or auth failure).
+if [ ! -s "${TEMP_DUMP}" ]; then
+  echo "ERROR: pg_dump produced empty output — backup failed!" >&2
+  rm -f "${TEMP_DUMP}"
+  exit 1
+fi
+
+# Compress the verified dump into the final backup file and remove the temp
+gzip -c "${TEMP_DUMP}" > "${BACKUP_FILE}"
+rm -f "${TEMP_DUMP}"
+
+# ---------------------------------------------------------------------------
+# Verify Compressed Backup Integrity
+# ---------------------------------------------------------------------------
+
+# Final safety check: verify the gzip file exists and has meaningful size
 if [ ! -s "${BACKUP_FILE}" ]; then
-  echo "ERROR: Backup failed — file is empty or was not created!" >&2
-  # Remove the zero-byte artifact so it does not consume retention slots
+  echo "ERROR: Backup compression failed — gzip file is empty!" >&2
   rm -f "${BACKUP_FILE}"
   exit 1
 fi

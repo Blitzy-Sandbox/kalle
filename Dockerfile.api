@@ -1,0 +1,200 @@
+# =============================================================================
+# Dockerfile.api — Express Backend Multi-Stage Build
+# =============================================================================
+# Production-grade multi-stage build for the Kalle WhatsApp clone backend API.
+#
+# Build stages:
+#   1. deps    — Install npm workspace dependencies (cached layer)
+#   2. builder — Compile @kalle/shared + backend TypeScript to JavaScript
+#   3. runner  — Minimal Alpine image with compiled application
+#
+# Usage:
+#   Production:  docker build -f Dockerfile.api -t kalle-api .
+#   Dev mode:    docker-compose up api  (overrides CMD with tsx watch)
+#
+# Requirements:
+#   - Node.js 20 Alpine (matches monorepo engine requirement)
+#   - Non-root user for production security
+#   - Port 3001 exposed
+#   - Prisma Client generated at build time
+#   - Entrypoint: scripts/entrypoint.api.sh (waits for PG/Redis, runs migrations)
+#
+# Rules:
+#   R26 — Fail-fast env validation on boot (handled by app code, not Dockerfile)
+#   R39 — Part of single-command bootstrap via docker-compose up
+#   R40 — Hot reload via volume mounts in development (docker-compose override)
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage 1: Dependencies — Install npm workspace packages
+# -----------------------------------------------------------------------------
+# This stage installs only the dependencies needed for the API backend and
+# the shared types package. By copying only package.json files and the Prisma
+# schema first, Docker can cache this layer and skip reinstallation when only
+# source code changes.
+#
+# IMPORTANT: The Prisma schema must be present before npm ci because the root
+# package.json "prepare" lifecycle script runs "npx prisma generate", which
+# requires prisma/schema.prisma to exist. Without it, npm ci fails.
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS deps
+
+# Alpine compatibility: libc6-compat is required by some npm native modules
+# that expect glibc. This prevents runtime segfaults from missing shared libs.
+RUN apk add --no-cache libc6-compat
+
+WORKDIR /app
+
+# Copy root workspace manifests first for optimal Docker layer caching.
+# Only changes to package.json or package-lock.json will invalidate this cache.
+COPY package.json package-lock.json ./
+
+# Copy workspace package manifests needed for dependency resolution.
+# npm workspaces require all referenced workspace package.json files to be
+# present for the lockfile resolution to succeed.
+COPY packages/shared/package.json ./packages/shared/
+COPY apps/api/package.json ./apps/api/
+
+# Copy Prisma schema BEFORE npm ci — the root package.json "prepare" script
+# runs "npx prisma generate" during install, which requires the schema file.
+# Also copy migration files to ensure prisma generate has full context.
+COPY prisma/ ./prisma/
+
+# Install ALL dependencies from the lockfile. We do NOT use --workspace flags
+# here because the root package.json devDependencies (including prisma ^5.14.x)
+# must be present for prisma generate to use the correct local version.
+# --ignore-scripts prevents the root "prepare" lifecycle script from running
+# "npx prisma generate" during install — without local prisma, npx would
+# download the latest (v7.x) which has breaking schema changes.
+# We run prisma generate explicitly below using the locally installed version.
+# --legacy-peer-deps handles potential peer dependency conflicts.
+RUN npm ci --legacy-peer-deps --ignore-scripts
+
+# Explicitly generate Prisma client using the version installed in node_modules
+# (^5.14.x per package.json), NOT the latest from the npm registry.
+RUN npx prisma generate
+
+# -----------------------------------------------------------------------------
+# Stage 2: Builder — Compile shared types and backend TypeScript
+# -----------------------------------------------------------------------------
+# Builds the @kalle/shared TypeScript package first (dependency), then compiles
+# the backend API TypeScript code to JavaScript in dist/.
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Set production environment for optimized builds
+ENV NODE_ENV=production
+
+# Copy installed node_modules from deps stage.
+# npm ci without --workspace hoists ALL dependencies to the root node_modules.
+# Workspace-specific node_modules are not created in this configuration.
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copy root workspace configuration files needed for build resolution
+COPY package.json ./
+COPY tsconfig.base.json ./
+
+# Copy Prisma schema and generated client from deps stage
+COPY --from=deps /app/prisma ./prisma
+COPY --from=deps /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=deps /app/node_modules/@prisma ./node_modules/@prisma
+
+# Copy shared package source — must be built before API since API imports from it
+COPY packages/shared/ ./packages/shared/
+
+# Copy API application source (controllers, services, middleware, etc.)
+COPY apps/api/ ./apps/api/
+
+# Copy scripts directory for entrypoint and post-migration scripts
+COPY scripts/ ./scripts/
+RUN chmod +x scripts/*.sh 2>/dev/null || true
+
+# Build the shared types package first (@kalle/shared).
+# This generates dist/ with compiled .js and .d.ts files that the API
+# imports via the workspace dependency link.
+RUN npm run build --workspace=packages/shared
+
+# Regenerate Prisma Client to ensure it matches the current schema and
+# is available for the TypeScript compilation step.
+RUN npx prisma generate
+
+# Build the API TypeScript to JavaScript.
+# The tsconfig.json in apps/api/ should output to apps/api/dist/.
+RUN npm run build --workspace=apps/api
+
+# -----------------------------------------------------------------------------
+# Stage 3: Runner — Minimal production image
+# -----------------------------------------------------------------------------
+# Uses a clean Alpine Node.js image with only the compiled build output.
+# No source code, no devDependencies, no build tools — minimal attack surface.
+# Runs as non-root user for security hardening.
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+# Production environment — enables Express production optimizations
+ENV NODE_ENV=production
+
+# Create a dedicated non-root user and group for running the application.
+# Using fixed UID/GID (1001) ensures consistent file ownership across builds
+# and avoids running the server as root in production.
+RUN addgroup --system --gid 1001 appgroup \
+    && adduser --system --uid 1001 appuser
+
+# Copy package manifests for workspace resolution at runtime
+COPY --from=builder --chown=appuser:appgroup /app/package.json ./
+COPY --from=builder --chown=appuser:appgroup /app/apps/api/package.json ./apps/api/
+
+# Copy production node_modules from the builder stage.
+# All dependencies are hoisted to the root node_modules directory.
+# Includes Prisma Client and all runtime dependencies.
+COPY --from=builder --chown=appuser:appgroup /app/node_modules ./node_modules
+
+# Copy compiled JavaScript output from the builder stage
+COPY --from=builder --chown=appuser:appgroup /app/apps/api/dist ./apps/api/dist
+COPY --from=builder --chown=appuser:appgroup /app/packages/shared/dist ./packages/shared/dist
+
+# Copy Prisma schema and migrations for runtime migrate deploy
+COPY --from=builder --chown=appuser:appgroup /app/prisma ./prisma
+COPY --from=builder --chown=appuser:appgroup /app/node_modules/.prisma ./node_modules/.prisma
+COPY --from=builder --chown=appuser:appgroup /app/node_modules/@prisma ./node_modules/@prisma
+
+# Copy entrypoint and utility scripts
+COPY --from=builder --chown=appuser:appgroup /app/scripts ./scripts
+RUN chmod +x scripts/*.sh 2>/dev/null || true
+
+# Create uploads directory for encrypted media storage
+RUN mkdir -p /app/uploads && chown appuser:appgroup /app/uploads
+
+# Switch to non-root user for all subsequent commands and runtime execution
+USER appuser
+
+# Expose the API server port (default 3001)
+EXPOSE 3001
+
+# Set the port environment variable consumed by the Express server
+ENV PORT=3001
+
+# Health check to verify the API server is responsive.
+# Uses wget (available in Alpine) instead of curl to avoid additional packages.
+# Checks every 30 seconds, allows 10 seconds for response, retries 3 times
+# before marking the container as unhealthy, with a 60-second startup grace
+# (migration may take time on first boot).
+HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3001/api/v1/health || exit 1
+
+# Entrypoint script handles pre-start sequence:
+#   1. Wait for PostgreSQL readiness
+#   2. Wait for Redis readiness
+#   3. Run Prisma migrations (prisma migrate deploy)
+#   4. Optional database seeding (when SEED_ON_INIT=true)
+#   5. Execute CMD via exec "$@"
+ENTRYPOINT ["sh", "scripts/entrypoint.api.sh"]
+
+# Default production command — start the compiled Express server.
+# In development (via docker-compose command override), this is replaced
+# with "npx tsx watch apps/api/src/server.ts" for hot module reload.
+CMD ["node", "apps/api/dist/server.js"]
