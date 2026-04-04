@@ -137,8 +137,9 @@ export const NavigationBar: React.FC<NavigationBarProps> = ({
       </div>
 
       {/* Center zone — absolute positioned for perfect iOS-style centering.
-          px-[90px] constrains the title to the area between left/right action zones,
+          px-[100px] constrains the title to the area between left/right action zones,
           preventing overlap on non-SF-Pro font systems where text renders wider.
+          Left/right zones use z-10+bg-nav to mask any title extending beneath.
           pointer-events-none allows click-through to left/right actions beneath.
           Title truncates gracefully when the text exceeds the constrained width. */}
       <div className="absolute inset-0 flex items-center justify-center pointer-events-none px-[100px]">
