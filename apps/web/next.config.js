@@ -47,6 +47,17 @@ const nextConfig = {
         buffer: false,
       };
     }
+
+    // Map .js extension imports to their TypeScript source equivalents.
+    // Required because @kalle/shared uses NodeNext module resolution which
+    // mandates .js extensions in source imports, but webpack/bundler resolution
+    // needs to find the actual .ts files when transpilePackages processes
+    // the shared package from source.
+    config.resolve.extensionAlias = {
+      ...config.resolve.extensionAlias,
+      '.js': ['.ts', '.tsx', '.js', '.jsx'],
+    };
+
     return config;
   },
 
