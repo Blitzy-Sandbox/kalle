@@ -49,11 +49,14 @@ WORKDIR /app
 # Only changes to package.json or package-lock.json will invalidate this cache.
 COPY package.json package-lock.json ./
 
-# Copy workspace package manifests needed for dependency resolution.
-# npm workspaces require all referenced workspace package.json files to be
-# present for the lockfile resolution to succeed.
+# Copy ALL workspace package manifests needed for dependency resolution.
+# npm workspaces require every referenced workspace package.json to be present
+# for lockfile resolution to succeed. Missing any workspace causes npm ci to
+# fail because the lockfile contains entries for all declared workspaces.
 COPY packages/shared/package.json ./packages/shared/
 COPY apps/api/package.json ./apps/api/
+COPY apps/web/package.json ./apps/web/
+COPY workers/queue/package.json ./workers/queue/
 
 # Copy Prisma schema BEFORE npm ci — the root package.json "prepare" script
 # runs "npx prisma generate" during install, which requires the schema file.
@@ -156,6 +159,7 @@ COPY --from=builder --chown=appuser:appgroup /app/node_modules ./node_modules
 # Copy compiled JavaScript output from the builder stage
 COPY --from=builder --chown=appuser:appgroup /app/apps/api/dist ./apps/api/dist
 COPY --from=builder --chown=appuser:appgroup /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder --chown=appuser:appgroup /app/packages/shared/package.json ./packages/shared/
 
 # Copy Prisma schema and migrations for runtime migrate deploy
 COPY --from=builder --chown=appuser:appgroup /app/prisma ./prisma
