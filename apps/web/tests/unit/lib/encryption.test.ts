@@ -296,6 +296,7 @@ describe('encryption.ts — Signal Protocol Wrapper', () => {
           keyId: 1,
           publicKey: toBase64(fakeArrayBuffer('spk')),
           signature: toBase64(fakeArrayBuffer('sig')),
+          timestamp: Date.now(),
         },
         preKey: {
           keyId: 42,
@@ -320,6 +321,7 @@ describe('encryption.ts — Signal Protocol Wrapper', () => {
           keyId: 1,
           publicKey: toBase64(fakeArrayBuffer('spk')),
           signature: toBase64(fakeArrayBuffer('sig')),
+          timestamp: Date.now(),
         },
         preKey: undefined,
         registrationId: 1234,
