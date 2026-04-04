@@ -3,7 +3,6 @@
 import React from 'react';
 import Image from 'next/image';
 import Avatar from '@/components/common/Avatar';
-import { Separator } from '@/components/common/Separator';
 import MessageStatus from '@/components/chat/MessageStatus';
 import SwipeActions from '@/components/chat/SwipeActions';
 import iconArrowRight from '@/assets/icons/icon-arrow-right.svg';
@@ -14,8 +13,8 @@ import iconSelectionCircle from '@/assets/icons/icon-selection-circle.svg';
 /* ==========================================================================
  * ChatListItem — Individual Conversation Row in Chat List
  *
- * Maps to Figma node 0:8873 (WhatsApp Chats screen 0:8855),
- * file key miK1B6qEPrUnRZ9wwZNrW2.
+ * Maps to Figma node 0:8873 (Maximillian Jacobson row as canonical example)
+ * within WhatsApp Chats screen (0:8855), file key miK1B6qEPrUnRZ9wwZNrW2.
  *
  * Figma layout specs (single chat row):
  * - Row: 375×74px, bg #FFFFFF, padding-left 16px
@@ -27,65 +26,68 @@ import iconSelectionCircle from '@/assets/icons/icon-selection-circle.svg';
  * - Separator: at x=79, width 296, 0.33px, rgba(60,60,67,0.29)
  *
  * Variants:
- * - default: standard text preview
- * - photo: camera icon + "Photo" text
- * - voice: green microphone icon + duration text
- * - multiline: 2-line message preview with line-clamp-2
+ * - default (text): standard text preview
+ * - photo: camera icon 14×11px (#8E8E93) + "Photo" text with 5.5px gap
+ * - voice: green mic icon 9×15px (#60BB58) + duration text with 5px gap
+ * - multiline: 2-line message preview with line-clamp-2, leading-[1.5em]
  *
  * Edit mode: selection circle (gray outline) on left, content shifted right.
  * Swipe: wraps content in SwipeActions for "More" and "Archive" reveal.
  *
- * Design tokens used (from tailwind.config.ts):
- * - text-black, text-secondary (#8E8E93), bg-white
- * - separator color rgba(60,60,67,0.29)
+ * Design tokens (from tailwind.config.ts):
+ * - text-chat-name: SF Pro Text 600 16px / 1.31em
+ * - text-chat-preview: SF Pro Text 400 14px / 1.19em
+ * - text-chat-date: SF Pro Text 400 14px / 1.19em
+ * - text-secondary: #8E8E93
+ * - border-separator: rgba(60,60,67,0.29)
+ * - border-b-hairline: 0.33px
  * ========================================================================== */
 
 /**
  * Preview type determines how the message preview area is rendered.
  * Maps to the 4 Figma variants for chat row content:
- * - 'text': standard message preview text
- * - 'photo': camera icon + "Photo" label (node 0:8936)
- * - 'voice': microphone icon + duration (node 0:8964)
- * - 'multiline': 2-line message preview with line-clamp-2
+ * - 'text': standard single-line message preview text
+ * - 'photo': camera icon + "Photo" label (Figma node 0:8936)
+ * - 'voice': green microphone icon + duration (Figma node 0:8964)
+ * - 'multiline': 2-line message preview with line-clamp-2 (Figma node 0:8909)
  */
 export type PreviewType = 'text' | 'photo' | 'voice' | 'multiline';
 
 /**
  * Props for the ChatListItem component.
+ * Each property maps to a visual element in the Figma chat row design.
  */
 export interface ChatListItemProps {
-  /** Unique conversation identifier */
+  /** Unique conversation identifier — used for data attribute and navigation */
   conversationId: string;
-  /** Contact or group display name */
+  /** Contact or group display name — SF Pro Text 600 16px at position (80, 7-8) */
   name: string;
-  /** Avatar image URL (optional — falls back to initials) */
+  /** Avatar image URL — falls back to initials via Avatar component when undefined */
   avatarSrc?: string;
-  /** Message preview text content */
+  /** Message preview text content (decrypted) — shown in preview area */
   preview: string;
-  /** Preview variant controlling the left-side indicator */
+  /** Preview variant controlling icon and layout of the preview area */
   previewType: PreviewType;
   /** Duration string for voice notes (e.g., "0:14") — only used when previewType='voice' */
   voiceDuration?: string;
-  /** Date or time string displayed on the right (e.g., "10/7/18" or "2:13 PM") */
+  /** Date or time string displayed at right (e.g., "11/19/19" or "2:13 PM") */
   date: string;
   /** Whether to show the blue read receipt indicator before the preview text */
   hasReadIndicator: boolean;
   /** Number of unread messages — renders a blue badge when > 0 */
   unreadCount?: number;
-  /** Whether the conversation is muted — muted icon next to date if true */
+  /** Whether the conversation is muted — shows muted speaker icon next to date */
   isMuted?: boolean;
-  /** Whether this item is selected in edit mode */
+  /** Whether this item is selected in edit mode — drives aria-checked and blue circle */
   isSelected?: boolean;
-  /** Whether the chat list is in edit/select mode */
+  /** Whether the chat list is in edit/select mode — toggles selection UI and disables swipe */
   isEditMode?: boolean;
-  /** Click handler when the chat row is tapped */
+  /** Click handler — navigates to conversation view in normal mode, toggles selection in edit mode */
   onClick: () => void;
-  /** "More" swipe action callback — opens ChatActionsModal */
+  /** "More" swipe action callback — opens ChatActionsModal (swipe action on More button) */
   onMoreActions: () => void;
-  /** "Archive" swipe action callback */
+  /** "Archive" swipe action callback — archives conversation (swipe action on Archive button) */
   onArchive: () => void;
-  /** Toggle selection in edit mode */
-  onToggleSelect?: () => void;
 }
 
 /**
@@ -97,9 +99,15 @@ export interface ChatListItemProps {
  * Features:
  * - 4 preview type variants: text, photo, voice, multiline
  * - Blue read receipt indicator (via MessageStatus component)
- * - Edit mode with selection circles
- * - Swipe-to-reveal "More" and "Archive" actions (via SwipeActions)
- * - WCAG 2.1 AA: keyboard navigable, focus-visible ring, aria-labels
+ * - Edit mode with selection circles (outline gray / filled blue)
+ * - Swipe-to-reveal "More" and "Archive" actions (via SwipeActions wrapper)
+ * - Inline 0.33px separator at x=79 (indented past avatar)
+ *
+ * Accessibility:
+ * - role="listitem" in normal mode, role="checkbox" in edit mode
+ * - Keyboard navigable (Enter/Space activates click)
+ * - focus-visible ring for keyboard users
+ * - Descriptive aria-label with name, preview, date, and unread count
  *
  * @example
  * ```tsx
@@ -133,65 +141,71 @@ const ChatListItem: React.FC<ChatListItemProps> = ({
   onClick,
   onMoreActions,
   onArchive,
-  onToggleSelect,
 }) => {
   /**
-   * Keyboard handler: Enter/Space activates click in normal mode,
-   * toggles selection in edit mode.
+   * Keyboard handler: Enter or Space activates the row click.
+   * Prevents default to stop scroll on Space.
    */
   const handleKeyDown = (e: React.KeyboardEvent) => {
     if (e.key === 'Enter' || e.key === ' ') {
       e.preventDefault();
-      if (isEditMode && onToggleSelect) {
-        onToggleSelect();
-      } else {
-        onClick();
-      }
-    }
-  };
-
-  /**
-   * Click handler: delegates to selection toggle in edit mode,
-   * otherwise opens the conversation.
-   */
-  const handleClick = () => {
-    if (isEditMode && onToggleSelect) {
-      onToggleSelect();
-    } else {
       onClick();
     }
   };
 
   /**
+   * Renders the blue double-check read receipt indicator when hasReadIndicator
+   * is true, followed by a 2.5px spacer matching Figma gap between indicator
+   * and preview content (indicator at x=81, 17px wide → 2.5px gap → content).
+   */
+  const renderReadIndicator = () => {
+    if (!hasReadIndicator) return null;
+    return (
+      <>
+        <span className="flex-shrink-0 flex items-center">
+          <MessageStatus status="read" />
+        </span>
+        {/* 2.5px gap between read indicator and preview content per Figma */}
+        <span className="w-[2.5px] flex-shrink-0" aria-hidden="true" />
+      </>
+    );
+  };
+
+  /**
    * Renders the message preview area based on previewType.
-   * Each variant matches its Figma counterpart in the Chats screen.
+   * Each variant matches its Figma counterpart exactly:
+   *
+   * - text: [read indicator?] → single-line truncated text
+   * - photo: [read indicator?] → camera icon 14×11 → 5.5px gap → "Photo"
+   * - voice: [read indicator?] → mic icon 9×15 → 5px gap → duration
+   * - multiline: [read indicator?] → 2-line text with line-clamp-2
    */
   const renderPreview = () => {
     switch (previewType) {
       case 'photo':
         return (
-          <span className="flex items-center gap-1 min-w-0">
-            {hasReadIndicator && (
-              <MessageStatus status="read" className="flex-shrink-0" />
-            )}
+          <span className="flex items-center min-w-0">
+            {renderReadIndicator()}
             <Image
               src={iconPhoto}
               alt=""
               width={14}
               height={11}
-              className="flex-shrink-0 opacity-60"
+              className="flex-shrink-0"
               aria-hidden="true"
             />
-            <span className="truncate text-secondary">Photo</span>
+            {/* 5.5px gap between camera icon and "Photo" text per Figma */}
+            <span className="w-[5.5px] flex-shrink-0" aria-hidden="true" />
+            <span className="truncate text-secondary text-chat-preview tracking-[-0.01em]">
+              Photo
+            </span>
           </span>
         );
 
       case 'voice':
         return (
-          <span className="flex items-center gap-1 min-w-0">
-            {hasReadIndicator && (
-              <MessageStatus status="read" className="flex-shrink-0" />
-            )}
+          <span className="flex items-center min-w-0">
+            {renderReadIndicator()}
             <Image
               src={iconVoiceRecord}
               alt=""
@@ -200,7 +214,9 @@ const ChatListItem: React.FC<ChatListItemProps> = ({
               className="flex-shrink-0"
               aria-hidden="true"
             />
-            <span className="truncate text-secondary">
+            {/* 5px gap between voice icon and duration text per Figma */}
+            <span className="w-[5px] flex-shrink-0" aria-hidden="true" />
+            <span className="truncate text-secondary text-chat-preview tracking-[-0.01em]">
               {voiceDuration ?? '0:00'}
             </span>
           </span>
@@ -208,11 +224,20 @@ const ChatListItem: React.FC<ChatListItemProps> = ({
 
       case 'multiline':
         return (
-          <span className="flex items-start gap-1 min-w-0">
+          <span className="flex items-start min-w-0">
             {hasReadIndicator && (
-              <MessageStatus status="read" className="flex-shrink-0 mt-0.5" />
+              <>
+                <span className="flex-shrink-0 mt-[1px] flex items-center">
+                  <MessageStatus status="read" />
+                </span>
+                <span className="w-[2.5px] flex-shrink-0" aria-hidden="true" />
+              </>
             )}
-            <span className="text-secondary line-clamp-2 leading-[1.5em]">
+            {/* Multiline uses 1.5em line-height (Figma style_JAK7GS)
+                instead of the standard 1.19em single-line height */}
+            <span
+              className="text-secondary text-[14px] font-normal leading-[1.5em] tracking-[-0.01em] line-clamp-2"
+            >
               {preview}
             </span>
           </span>
@@ -221,41 +246,73 @@ const ChatListItem: React.FC<ChatListItemProps> = ({
       default:
         /* text preview — single line truncated */
         return (
-          <span className="flex items-center gap-1 min-w-0">
-            {hasReadIndicator && (
-              <MessageStatus status="read" className="flex-shrink-0" />
-            )}
-            <span className="truncate text-secondary">{preview}</span>
+          <span className="flex items-center min-w-0">
+            {renderReadIndicator()}
+            <span className="truncate text-secondary text-chat-preview tracking-[-0.01em]">
+              {preview}
+            </span>
           </span>
         );
     }
   };
 
   /**
-   * Inner row content — avatar, name/preview column, date/chevron.
+   * Builds the composite aria-label for screen reader announcements.
+   * Format: "{name}, {preview context}, {date}[, {unreadCount} unread messages]"
+   */
+  const ariaLabel = [
+    name,
+    previewType === 'voice'
+      ? `Voice note ${voiceDuration ?? '0:00'}`
+      : previewType === 'photo'
+        ? 'Photo'
+        : preview,
+    date,
+    unreadCount > 0 ? `${unreadCount} unread messages` : '',
+  ]
+    .filter(Boolean)
+    .join(', ');
+
+  /** Whether preview type uses 2-line layout — affects vertical padding and gap */
+  const isMultiline = previewType === 'multiline';
+
+  /**
+   * Inner row content — avatar, name/preview column, right indicators.
+   * This element receives focus, keyboard, and click handling.
    * Wrapped in SwipeActions when not in edit mode.
+   *
+   * Layout uses items-start (not items-center) to allow explicit vertical
+   * positioning that matches the Figma specs exactly:
+   * - Avatar at y=11 via mt-[11px]
+   * - Name at y=8 via pt-[8px] on content column (pt-[5px] for multiline)
+   * - Preview at y=40 via mt-[11px] gap (mt-px for multiline)
+   * - Chevron vertically centered via self-center at y=(74-12)/2=31
    */
   const rowContent = (
     <div
-      role="button"
+      role={isEditMode ? 'checkbox' : 'listitem'}
       tabIndex={0}
-      aria-label={`Chat with ${name}. ${previewType === 'voice' ? `Voice note ${voiceDuration}` : preview}. ${date}${unreadCount > 0 ? `. ${unreadCount} unread messages` : ''}`}
-      onClick={handleClick}
+      aria-label={ariaLabel}
+      aria-checked={isEditMode ? isSelected : undefined}
+      onClick={onClick}
       onKeyDown={handleKeyDown}
       className={[
-        'flex items-center h-[74px] bg-white cursor-pointer',
+        'flex items-start h-[74px] bg-white cursor-pointer',
         'active:bg-gray-100',
         'focus:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-blue-ios',
         'motion-safe:transition-colors motion-safe:duration-150',
         isEditMode ? 'pl-0' : 'pl-4',
       ].join(' ')}
     >
-      {/* Edit mode selection circle */}
+      {/* Edit mode selection circle — Figma Screen 2 (node 0:8114).
+          self-center vertically centers the 21×21 circle within the 74px row. */}
       {isEditMode && (
-        <div className="flex-shrink-0 w-8 flex items-center justify-center ml-2">
+        <div className="flex-shrink-0 w-8 self-center flex items-center justify-center ml-2">
           {isSelected ? (
-            /* Filled blue circle for selected state */
-            <div className="w-[22px] h-[22px] rounded-full bg-blue-ios flex items-center justify-center">
+            /* Filled blue circle with white checkmark for selected state */
+            <div
+              className="w-[21px] h-[21px] rounded-full bg-blue-ios flex items-center justify-center"
+            >
               <svg
                 width="12"
                 height="9"
@@ -274,33 +331,49 @@ const ChatListItem: React.FC<ChatListItemProps> = ({
               </svg>
             </div>
           ) : (
-            /* Gray outline circle for unselected state */
+            /* Gray outline circle for unselected state — icon-selection-circle.svg (21×21) */
             <Image
               src={iconSelectionCircle}
               alt=""
-              width={22}
-              height={22}
+              width={21}
+              height={21}
               aria-hidden="true"
             />
           )}
         </div>
       )}
 
-      {/* Avatar — 52×52px circular */}
-      <div className={`flex-shrink-0 ${isEditMode ? 'ml-2' : ''}`}>
+      {/* Avatar — 52×52px circular at position (16, 11) within the row.
+          mt-[11px] positions the avatar top at y=11 per Figma spec. */}
+      <div className={`flex-shrink-0 mt-[11px] ${isEditMode ? 'ml-2' : ''}`}>
         <Avatar src={avatarSrc} alt={name} size="md" />
       </div>
 
-      {/* Name, preview, date column */}
-      <div className="flex-1 min-w-0 ml-3 mr-2 flex flex-col justify-center">
-        {/* Top row: name + date */}
+      {/* Name, preview, date column — flex-1 fills remaining width.
+          ml-3 (12px) gap: avatar at x=16, width 52 → right edge at 68, + 12 = name at x=80.
+          Top padding positions name at y=8 (standard) or y=5 (multiline). */}
+      <div
+        className={[
+          'flex-1 min-w-0 ml-3 flex flex-col',
+          isMultiline ? 'pt-[5px]' : 'pt-[8px]',
+        ].join(' ')}
+      >
+        {/* Top row: name (left) + date (right) */}
         <div className="flex items-baseline justify-between">
+          {/* Contact name — SF Pro Text 600 16px, #000000, tracking -2.06% ≈ -0.02em.
+              min-w-0 enables flex truncation; no fixed max-width so flex layout
+              naturally truncates when the name approaches the date area. */}
           <span
-            className="font-semibold text-[16px] leading-[1.31em] tracking-[-0.02em] text-black truncate max-w-[180px]"
+            className="text-chat-name tracking-[-0.02em] text-black truncate min-w-0"
           >
             {name}
           </span>
+
+          {/* Date area — right-aligned, with optional muted speaker icon */}
           <span className="flex-shrink-0 flex items-center gap-1 ml-2">
+            {/* BLITZY [ASSET]: Muted speaker icon is inline SVG — not from Figma export.
+                The isMuted prop is part of the required ChatListItemProps schema but no
+                Figma screen shows a muted row. Replace with Figma-sourced asset when available. */}
             {isMuted && (
               <svg
                 width="12"
@@ -316,54 +389,59 @@ const ChatListItem: React.FC<ChatListItemProps> = ({
                 />
               </svg>
             )}
-            <span className="text-[14px] leading-[1.19em] tracking-[-0.01em] text-secondary">
+            {/* Date text — SF Pro Text 400 14px, #8E8E93, tracking -1.07% ≈ -0.01em */}
+            <span className="text-chat-date tracking-[-0.01em] text-secondary">
               {date}
             </span>
           </span>
         </div>
 
-        {/* Bottom row: preview + chevron/badge */}
-        <div className="flex items-center justify-between mt-0.5">
-          <div
-            className={[
-              'text-[14px] leading-[1.19em] tracking-[-0.01em] min-w-0 flex-1',
-              previewType === 'multiline' ? '' : 'truncate',
-            ].join(' ')}
-          >
+        {/* Bottom row: preview content (left) + unread badge (right).
+            Gap: 11px for standard rows (name bottom at y≈29, preview at y=40),
+            1px for multiline rows (name bottom at y≈26, preview at y=27). */}
+        <div className={[
+          'flex items-start',
+          isMultiline ? 'mt-px' : 'mt-[11px]',
+        ].join(' ')}>
+          {/* Preview area — flex-1 fills available width */}
+          <div className="min-w-0 flex-1">
             {renderPreview()}
           </div>
 
-          <div className="flex items-center gap-2 flex-shrink-0 ml-2">
-            {/* Unread badge */}
-            {unreadCount > 0 && (
-              <span
-                className="min-w-[20px] h-5 rounded-full bg-blue-ios text-white text-[12px] font-semibold flex items-center justify-center px-1.5"
-                aria-label={`${unreadCount} unread messages`}
-              >
-                {unreadCount > 99 ? '99+' : unreadCount}
-              </span>
-            )}
-
-            {/* Right chevron — 7×12px, muted gray */}
-            {!isEditMode && (
-              <Image
-                src={iconArrowRight}
-                alt=""
-                width={7}
-                height={12}
-                className="opacity-30"
-                aria-hidden="true"
-              />
-            )}
-          </div>
+          {/* Unread message count badge — blue pill when unreadCount > 0.
+              Positioned in the preview row flow, to the left of the chevron. */}
+          {unreadCount > 0 && (
+            <span
+              className="min-w-[20px] h-5 rounded-full bg-blue-ios text-white text-[12px] font-semibold flex items-center justify-center px-1.5 flex-shrink-0 ml-2"
+              aria-label={`${unreadCount} unread messages`}
+            >
+              {unreadCount > 99 ? '99+' : unreadCount}
+            </span>
+          )}
         </div>
       </div>
+
+      {/* Right chevron arrow — 7×12px, rgba(60,60,67,0.3) fill baked into SVG.
+          self-center vertically centers the chevron at y=(74-12)/2=31 per Figma.
+          Hidden in edit mode per Figma Screen 2 spec. */}
+      {!isEditMode && (
+        <div className="self-center flex-shrink-0 ml-2 mr-[18px]">
+          <Image
+            src={iconArrowRight}
+            alt=""
+            width={7}
+            height={12}
+            aria-hidden="true"
+          />
+        </div>
+      )}
     </div>
   );
 
   return (
     <div data-conversation-id={conversationId}>
-      {/* In edit mode, no swipe actions — just the row content */}
+      {/* In edit mode, disable swipe actions — show row content directly.
+          In normal mode, wrap in SwipeActions for "More" and "Archive" reveal. */}
       {isEditMode ? (
         rowContent
       ) : (
@@ -372,8 +450,13 @@ const ChatListItem: React.FC<ChatListItemProps> = ({
         </SwipeActions>
       )}
 
-      {/* Separator — indented at 79px from left edge per Figma (16px padding + 52px avatar + 11px gap) */}
-      <Separator inset insetLeft={79} />
+      {/* Separator — 0.33px horizontal line starting at x=79
+          (16px padding + 52px avatar + 11px gap = 79px from left edge).
+          Color: rgba(60,60,67,0.29) per Figma stroke_CCBBM1. */}
+      <div
+        className="h-[0.33px] bg-separator ml-[79px]"
+        aria-hidden="true"
+      />
     </div>
   );
 };
