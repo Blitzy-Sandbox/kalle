@@ -167,7 +167,7 @@ export function registerTypingHandlers(
       const indicatorPayload: TypingIndicatorPayload = {
         conversationId,
         userId,
-        displayName: '', // Client resolves display name from local user cache
+        displayName: socket.data.displayName || '',
         isTyping: true,
         correlationId,
         timestamp: new Date().toISOString(),
@@ -219,7 +219,7 @@ export function registerTypingHandlers(
       const indicatorPayload: TypingIndicatorPayload = {
         conversationId,
         userId,
-        displayName: '', // Client resolves display name from local user cache
+        displayName: socket.data.displayName || '',
         isTyping: false,
         correlationId,
         timestamp: new Date().toISOString(),

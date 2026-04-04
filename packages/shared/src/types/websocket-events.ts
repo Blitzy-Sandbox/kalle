@@ -565,6 +565,9 @@ export interface SocketData {
   /** Authenticated user ID extracted from JWT during handshake */
   userId: string;
 
+  /** Authenticated user's display name extracted from JWT during handshake */
+  displayName: string;
+
   /** UUID v4 correlation ID assigned during connection setup (R29) */
   correlationId: string;
 }

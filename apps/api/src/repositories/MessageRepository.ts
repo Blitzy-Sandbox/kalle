@@ -66,6 +66,7 @@ interface MessageRecord {
   isDeleted: boolean;
   editedAt: Date | null;
   deletedAt: Date | null;
+  linkPreview: Record<string, unknown> | null;
   serverTimestamp: Date;
   clientTimestamp: Date | null;
   sender?: {
@@ -531,9 +532,9 @@ export class MessageRepository implements IMessageRepository {
    * includes the link preview data for emission via the `link:preview`
    * WebSocket event to all conversation participants.
    *
-   * The link preview data is attached to the in-memory response object.
-   * Full database persistence of link preview data requires a dedicated
-   * JSON column on the Message model added via schema migration.
+   * The link preview data is persisted to the Message.linkPreview JSON column
+   * and included in the returned response for emission via the `link:preview`
+   * WebSocket event to all conversation participants.
    *
    * @param messageId - Message UUID to enrich with link preview.
    * @param linkPreview - Extracted OG metadata (url, title, description, imageUrl, siteName).
@@ -544,15 +545,15 @@ export class MessageRepository implements IMessageRepository {
     messageId: string,
     linkPreview: LinkPreviewData,
   ): Promise<MessageResponse> {
-    // Retrieve the current message record to build the full response
-    const record = await this.prisma.message.findUnique({
+    // Persist the link preview data to the database JSON column
+    // Cast to Prisma-compatible JSON input type for the Json? column
+    const record = await this.prisma.message.update({
       where: { id: messageId },
+      data: {
+        linkPreview: JSON.parse(JSON.stringify(linkPreview)),
+      },
       include: FULL_MESSAGE_INCLUDE,
     });
-
-    if (!record) {
-      throw new Error(`Message not found: ${messageId}`);
-    }
 
     // Build response and attach the link preview data for WebSocket emission
     const response = this.mapToResponse(record as unknown as MessageRecord);
@@ -626,6 +627,9 @@ export class MessageRepository implements IMessageRepository {
         ? record.deletedAt.toISOString()
         : undefined,
       clientMessageId: record.clientMessageId ?? '',
+      linkPreview: record.linkPreview
+        ? (record.linkPreview as unknown as LinkPreviewData)
+        : undefined,
       serverTimestamp: serverTs,
       createdAt: serverTs, // serverTimestamp is the message creation time
       updatedAt,

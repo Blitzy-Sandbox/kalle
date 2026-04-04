@@ -46,6 +46,9 @@ export interface JwtPayload {
   /** User email address */
   email: string;
 
+  /** User display name — included in access tokens by AuthService.generateAccessToken() */
+  displayName?: string;
+
   /** JWT ID — unique per token, used as Redis blacklist key for revocation (R33) */
   jti: string;
 
@@ -78,6 +81,9 @@ export interface AuthenticatedSocketData {
 
   /** Authenticated user's email address (from JWT email claim) */
   email: string;
+
+  /** Authenticated user's display name (from JWT displayName claim) */
+  displayName: string;
 
   /** JWT ID for potential mid-connection revocation checks */
   jti: string;
@@ -220,6 +226,7 @@ export function createWsAuthMiddleware(
       //   socket.data.correlationId — unique ID for tracing (R29)
       socket.data.userId = decoded.sub;
       socket.data.email = decoded.email;
+      socket.data.displayName = decoded.displayName || '';
       socket.data.jti = decoded.jti;
       socket.data.correlationId = uuidv4();
 

@@ -151,10 +151,12 @@ RUN addgroup --system --gid 1001 appgroup \
 COPY --from=builder --chown=appuser:appgroup /app/package.json ./
 COPY --from=builder --chown=appuser:appgroup /app/apps/api/package.json ./apps/api/
 
-# Copy production node_modules from the builder stage.
-# All dependencies are hoisted to the root node_modules directory.
-# Includes Prisma Client and all runtime dependencies.
+# Copy node_modules from the builder stage and prune devDependencies.
+# The deps stage ran npm ci (full install) for compilation, but the runner
+# only needs production dependencies. Pruning removes typescript, jest,
+# ts-jest, @types/*, nodemon, etc. — reducing image size and attack surface.
 COPY --from=builder --chown=appuser:appgroup /app/node_modules ./node_modules
+RUN npm prune --omit=dev --ignore-scripts 2>/dev/null || true
 
 # Copy compiled JavaScript output from the builder stage
 COPY --from=builder --chown=appuser:appgroup /app/apps/api/dist ./apps/api/dist

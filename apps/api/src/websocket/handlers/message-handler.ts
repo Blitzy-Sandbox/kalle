@@ -26,6 +26,7 @@ import type { Logger } from 'pino';
 import type { ICacheProvider } from '../../domain/interfaces/ICacheProvider';
 import type { IRealtimeProvider } from '../../domain/interfaces/IRealtimeProvider';
 import type { WsRateLimiter } from '../middleware/ws-rate-limiter';
+import { MessageStatusEnum } from '@kalle/shared/types/message';
 import type {
   MessageSendPayload,
   MessageEditPayload,
@@ -304,7 +305,7 @@ export function registerMessageHandlers(
       const message = await messageService.sendMessage({
         conversationId: payload.conversationId,
         senderId: userId,
-        senderName: userId, // Service resolves display name from user record
+        senderName: socket.data.displayName || userId,
         ciphertext: payload.ciphertext,
         type: payload.type || 'text',
         replyToMessageId: payload.replyToMessageId,
@@ -602,12 +603,12 @@ export function registerMessageHandlers(
       });
 
       // Step 4: Emit message:status to conversation room
-      // Uses MessageStatusPayload shape with indexed type for enum compatibility
-      const statusPayload: Omit<MessageStatusPayload, 'status'> & { status: string } = {
+      // Uses MessageStatusPayload shape with MessageStatusEnum for type safety
+      const statusPayload: MessageStatusPayload = {
         messageId: payload.messageId,
         conversationId: payload.conversationId,
         userId,
-        status: 'DELIVERED',
+        status: MessageStatusEnum.DELIVERED,
         correlationId,
         timestamp: new Date().toISOString(),
       };
@@ -702,19 +703,22 @@ export function registerMessageHandlers(
         userId,
       });
 
-      // Step 4: Emit message:status to conversation room for batch read
-      // Emitting a single batch event with messageIds array for efficiency
-      const readStatusPayload = {
-        messageIds: payload.messageIds,
-        conversationId: payload.conversationId,
-        userId,
-        status: 'READ' as const,
-        correlationId,
-        timestamp: new Date().toISOString(),
-      };
-      socket
-        .to(payload.conversationId)
-        .emit('message:status', readStatusPayload);
+      // Step 4: Emit message:status to conversation room for each read message
+      // Individual events per messageId to conform to MessageStatusPayload contract
+      const timestamp = new Date().toISOString();
+      for (const messageId of payload.messageIds) {
+        const readStatusPayload: MessageStatusPayload = {
+          messageId,
+          conversationId: payload.conversationId,
+          userId,
+          status: MessageStatusEnum.READ,
+          correlationId,
+          timestamp,
+        };
+        socket
+          .to(payload.conversationId)
+          .emit('message:status', readStatusPayload);
+      }
 
       // Log at debug level — high-frequency event
       childLogger.debug(
