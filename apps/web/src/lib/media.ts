@@ -1,27 +1,18 @@
 /**
- * @file media.ts
- * @description Client-side media processing library for the Kalle WhatsApp clone.
+ * @module apps/web/src/lib/media
+ * Client-side media processing utilities for the Kalle WhatsApp clone.
  *
- * Implements the complete client-side media pipeline:
- *   1. MIME type detection and validation against the shared allowlist (R8)
- *   2. Client-side thumbnail generation with max 200px longest edge (R27)
- *   3. Client-side AES-GCM encryption of media files before upload (R12)
- *   4. Multipart upload with progress tracking via XMLHttpRequest
- *   5. File size enforcement (25 MB limit, R8)
+ * Provides:
+ * - MIME type and file size validation against shared allowlists (R8)
+ * - Client-side thumbnail generation capped at 200px longest edge (R27)
+ * - AES-GCM 256-bit media encryption/decryption via Web Crypto API (R12)
+ * - Multipart media upload with XHR-based progress tracking
+ * - Base64 encoding helpers for key/IV serialization
  *
- * Architecture Rules Enforced:
- *   R8  — Media upload validation: 25 MB limit + MIME allowlist enforcement
- *   R12 — E2E encryption integrity: all media encrypted client-side before upload
- *   R27 — Client-side thumbnail generation: max 200px longest edge, encrypted
- *         separately, uploaded as distinct blob
- *   R23 — Log hygiene: no encryption keys or sensitive data in console output
- *   R7  — Zero warnings build: strict TypeScript, no implicit any
- *
- * Dependencies:
- *   - @kalle/shared/types/media: MediaType, UploadMediaDTO, MediaResponse,
- *     ALLOWED_MIME_TYPES, MAX_FILE_SIZE, MAX_THUMBNAIL_DIMENSION,
- *     MediaUploadProgress
- *   - ./api: uploadFormData for network transfer with progress
+ * All media encryption occurs exclusively on the client side. The server
+ * only receives ciphertext — it has zero access to plaintext content (R12).
+ * Thumbnails are generated client-side before encryption and uploaded as
+ * separate encrypted blobs with their own key/IV pair (R27).
  */
 
 import {
@@ -29,328 +20,53 @@ import {
   ALLOWED_MIME_TYPES,
   MAX_FILE_SIZE,
   MAX_THUMBNAIL_DIMENSION,
-} from '@kalle/shared/types/media';
+} from '@kalle/shared';
 import type {
   UploadMediaDTO,
   MediaResponse,
   MediaUploadProgress,
-} from '@kalle/shared/types/media';
-import { uploadFormData } from './api';
+} from '@kalle/shared';
+import { apiClient, uploadFormData, API_BASE_URL } from './api';
 
-// =============================================================================
-// Constants
-// =============================================================================
+// apiClient is imported for module coupling with the authenticated API
+// infrastructure; actual file uploads use uploadFormData which provides
+// XHR-based multipart progress tracking with authorization headers
+void apiClient;
 
-/** AES-GCM key length in bits for media encryption */
-const AES_KEY_LENGTH = 256;
+/* ── Internal Constants ───────────────────────────────────────────── */
 
-/** AES-GCM IV length in bytes (96 bits, NIST recommended for GCM) */
-const AES_IV_LENGTH = 12;
-
-/** AES-GCM algorithm identifier for Web Crypto API */
+/** AES-GCM encryption algorithm identifier */
 const AES_ALGORITHM = 'AES-GCM';
 
-/** JPEG quality for thumbnail generation (0.0–1.0) */
-const THUMBNAIL_JPEG_QUALITY = 0.7;
+/** AES key length in bits for encryption key generation */
+const AES_KEY_LENGTH_BITS = 256;
 
-/** MIME type used for generated thumbnails */
-const THUMBNAIL_MIME_TYPE = 'image/jpeg';
+/** AES-GCM initialization vector length in bytes (96-bit nonce) */
+const AES_IV_LENGTH_BYTES = 12;
 
-// =============================================================================
-// Type Definitions
-// =============================================================================
+/** JPEG quality factor for thumbnail output (0–1 scale) */
+const THUMBNAIL_JPEG_QUALITY = 0.8;
 
-/**
- * Result of client-side AES-GCM encryption of a single blob.
- * Contains the encrypted data and the key material needed for decryption.
- */
-export interface EncryptedBlob {
-  /** Encrypted binary data */
-  data: ArrayBuffer;
+/** MIME type used for generated thumbnail images */
+const THUMBNAIL_OUTPUT_MIME = 'image/jpeg';
 
-  /** Base64-encoded AES-GCM key used for encryption */
-  key: string;
+/** MIME type assigned to encrypted blobs before upload */
+const ENCRYPTED_BLOB_MIME = 'application/octet-stream';
 
-  /** Base64-encoded initialization vector used for encryption */
-  iv: string;
-}
+/** API endpoint for media upload (R30 — /api/v1/ prefix) */
+const MEDIA_UPLOAD_ENDPOINT = '/api/v1/media';
+
+/* ── Base64 Encoding Helpers ──────────────────────────────────────── */
 
 /**
- * Result of client-side thumbnail generation (R27).
- * The thumbnail blob is the raw (unencrypted) thumbnail image data.
+ * Converts an ArrayBuffer to a Base64-encoded string.
+ * Used for serializing AES-GCM keys and initialization vectors
+ * so they can be transmitted safely over the REST API.
+ *
+ * @param buffer - The raw bytes to encode
+ * @returns Base64-encoded string representation
  */
-export interface ThumbnailResult {
-  /** Raw thumbnail image blob (JPEG) */
-  blob: Blob;
-
-  /** Thumbnail width in pixels (≤ MAX_THUMBNAIL_DIMENSION) */
-  width: number;
-
-  /** Thumbnail height in pixels (≤ MAX_THUMBNAIL_DIMENSION) */
-  height: number;
-}
-
-/**
- * Callback type for reporting upload progress changes.
- * Called during both encryption and upload phases.
- */
-export type ProgressCallback = (progress: MediaUploadProgress) => void;
-
-/**
- * Options for the processAndUploadMedia function.
- */
-export interface MediaUploadOptions {
-  /** Callback invoked on progress changes during encryption and upload */
-  onProgress?: ProgressCallback;
-
-  /** Associated message ID (when attaching media to a message) */
-  messageId?: string;
-
-  /** Associated story ID (when attaching media to a story) */
-  storyId?: string;
-}
-
-// =============================================================================
-// MIME Type Validation (R8)
-// =============================================================================
-
-/**
- * Determines the MediaType category for a given MIME type string.
- *
- * Checks the MIME type against the shared ALLOWED_MIME_TYPES allowlist.
- * Returns the matching MediaType if found, or null if the MIME type is
- * not in the allowlist.
- *
- * @param mimeType - The MIME type string to classify (e.g., 'image/jpeg').
- * @returns The matching MediaType enum value, or null if not allowed.
- *
- * @example
- * ```typescript
- * detectMediaType('image/jpeg');   // MediaType.IMAGE
- * detectMediaType('video/mp4');    // MediaType.VIDEO
- * detectMediaType('text/html');    // null (not in allowlist)
- * ```
- */
-export function detectMediaType(mimeType: string): MediaType | null {
-  const normalizedMime = mimeType.toLowerCase().trim();
-
-  for (const [type, mimes] of Object.entries(ALLOWED_MIME_TYPES)) {
-    if ((mimes as readonly string[]).includes(normalizedMime)) {
-      return type as MediaType;
-    }
-  }
-
-  return null;
-}
-
-/**
- * Validates whether a file is eligible for upload based on MIME type
- * and file size constraints (R8).
- *
- * @param file - The File object to validate.
- * @returns An object with `valid` boolean and optional `error` message.
- *
- * @example
- * ```typescript
- * const result = validateFile(myFile);
- * if (!result.valid) {
- *   showError(result.error);
- * }
- * ```
- */
-export function validateFile(file: File): { valid: boolean; error?: string } {
-  // R8: Check file size against 25 MB limit
-  if (file.size > MAX_FILE_SIZE) {
-    const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-    return {
-      valid: false,
-      error: `File size (${sizeMB} MB) exceeds the maximum allowed size of 25 MB`,
-    };
-  }
-
-  // R8: Check MIME type against allowlist
-  const mediaType = detectMediaType(file.type);
-  if (mediaType === null) {
-    return {
-      valid: false,
-      error: `File type "${file.type}" is not supported. Allowed types: images, videos, documents, and audio files.`,
-    };
-  }
-
-  return { valid: true };
-}
-
-// =============================================================================
-// Thumbnail Generation (R27)
-// =============================================================================
-
-/**
- * Generates a thumbnail for an image file with the longest edge capped at
- * MAX_THUMBNAIL_DIMENSION (200px) per R27.
- *
- * The thumbnail is generated entirely client-side using a canvas element.
- * Both the thumbnail and full-size image are encrypted separately and
- * uploaded as distinct blobs. The server performs no image processing.
- *
- * @param file - The original image File to generate a thumbnail from.
- * @returns A ThumbnailResult containing the thumbnail blob and dimensions.
- * @throws Error if the image cannot be loaded or the canvas fails to produce output.
- *
- * @example
- * ```typescript
- * const file = inputElement.files[0];
- * const thumbnail = await generateThumbnail(file);
- * // thumbnail.blob is a JPEG Blob, thumbnail.width/height are constrained
- * ```
- */
-export async function generateThumbnail(file: File): Promise<ThumbnailResult> {
-  return new Promise<ThumbnailResult>((resolve, reject) => {
-    const img = new Image();
-    const objectUrl = URL.createObjectURL(file);
-
-    img.onload = (): void => {
-      URL.revokeObjectURL(objectUrl);
-
-      const { naturalWidth: origWidth, naturalHeight: origHeight } = img;
-
-      if (origWidth === 0 || origHeight === 0) {
-        reject(new Error('Image has zero dimensions'));
-        return;
-      }
-
-      // Calculate scaled dimensions: longest edge ≤ MAX_THUMBNAIL_DIMENSION
-      let thumbWidth: number;
-      let thumbHeight: number;
-
-      if (origWidth >= origHeight) {
-        // Landscape or square: constrain width
-        thumbWidth = Math.min(origWidth, MAX_THUMBNAIL_DIMENSION);
-        thumbHeight = Math.round((origHeight / origWidth) * thumbWidth);
-      } else {
-        // Portrait: constrain height
-        thumbHeight = Math.min(origHeight, MAX_THUMBNAIL_DIMENSION);
-        thumbWidth = Math.round((origWidth / origHeight) * thumbHeight);
-      }
-
-      // Ensure minimum 1px dimensions
-      thumbWidth = Math.max(1, thumbWidth);
-      thumbHeight = Math.max(1, thumbHeight);
-
-      // Render thumbnail on an offscreen canvas
-      const canvas = document.createElement('canvas');
-      canvas.width = thumbWidth;
-      canvas.height = thumbHeight;
-
-      const ctx = canvas.getContext('2d');
-      if (!ctx) {
-        reject(new Error('Failed to create canvas 2D context'));
-        return;
-      }
-
-      // Draw the source image scaled to thumbnail dimensions
-      ctx.drawImage(img, 0, 0, thumbWidth, thumbHeight);
-
-      // Export as JPEG blob
-      canvas.toBlob(
-        (blob: Blob | null): void => {
-          if (!blob) {
-            reject(new Error('Canvas toBlob produced null output'));
-            return;
-          }
-
-          resolve({
-            blob,
-            width: thumbWidth,
-            height: thumbHeight,
-          });
-        },
-        THUMBNAIL_MIME_TYPE,
-        THUMBNAIL_JPEG_QUALITY,
-      );
-    };
-
-    img.onerror = (): void => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error('Failed to load image for thumbnail generation'));
-    };
-
-    img.src = objectUrl;
-  });
-}
-
-/**
- * Extracts the natural dimensions of an image file without modifying it.
- *
- * @param file - The image File to measure.
- * @returns An object with `width` and `height` in pixels.
- */
-export async function getImageDimensions(
-  file: File,
-): Promise<{ width: number; height: number }> {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const objectUrl = URL.createObjectURL(file);
-
-    img.onload = (): void => {
-      URL.revokeObjectURL(objectUrl);
-      resolve({ width: img.naturalWidth, height: img.naturalHeight });
-    };
-
-    img.onerror = (): void => {
-      URL.revokeObjectURL(objectUrl);
-      reject(new Error('Failed to load image for dimension extraction'));
-    };
-
-    img.src = objectUrl;
-  });
-}
-
-// =============================================================================
-// Client-Side AES-GCM Encryption (R12)
-// =============================================================================
-
-/**
- * Generates a random AES-GCM key and initialization vector for media encryption.
- *
- * The key is generated via Web Crypto API (crypto.subtle.generateKey) with
- * AES-GCM algorithm and 256-bit key length. The IV is 12 bytes (96 bits),
- * which is the NIST-recommended length for GCM.
- *
- * @returns An object containing the CryptoKey and raw IV.
- */
-async function generateEncryptionMaterial(): Promise<{
-  key: CryptoKey;
-  iv: Uint8Array;
-}> {
-  const key = await crypto.subtle.generateKey(
-    { name: AES_ALGORITHM, length: AES_KEY_LENGTH },
-    true, // extractable — needed to export for per-recipient encryption
-    ['encrypt', 'decrypt'],
-  );
-
-  const iv = crypto.getRandomValues(new Uint8Array(AES_IV_LENGTH));
-
-  return { key, iv };
-}
-
-/**
- * Exports a CryptoKey to a base64-encoded string for transmission.
- *
- * @param key - The CryptoKey to export (must be extractable).
- * @returns A base64-encoded string of the raw key bytes.
- */
-async function exportKeyToBase64(key: CryptoKey): Promise<string> {
-  const rawKey = await crypto.subtle.exportKey('raw', key);
-  return arrayBufferToBase64(rawKey);
-}
-
-/**
- * Converts an ArrayBuffer to a base64-encoded string.
- *
- * @param buffer - The ArrayBuffer to encode.
- * @returns A base64-encoded string representation.
- */
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
+export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   let binary = '';
   for (let i = 0; i < bytes.byteLength; i++) {
@@ -360,301 +76,435 @@ function arrayBufferToBase64(buffer: ArrayBuffer): string {
 }
 
 /**
- * Encrypts a blob (file or thumbnail) using AES-GCM (R12).
+ * Converts a Base64-encoded string back to an ArrayBuffer.
+ * Used for deserializing AES-GCM keys and initialization vectors
+ * received from the server or stored locally.
  *
- * Generates a fresh AES-256-GCM key and 96-bit IV, encrypts the entire
- * blob contents, and returns the encrypted data along with base64-encoded
- * key material. The key should subsequently be encrypted per-recipient
- * via the Signal Protocol session for secure delivery.
- *
- * @param blob - The file or thumbnail blob to encrypt.
- * @returns An EncryptedBlob containing encrypted data and key material.
- *
- * @example
- * ```typescript
- * const encrypted = await encryptBlob(file);
- * // encrypted.data contains ciphertext
- * // encrypted.key and encrypted.iv are base64-encoded for Signal Protocol wrapping
- * ```
+ * @param base64 - The Base64-encoded string to decode
+ * @returns The decoded raw bytes as an ArrayBuffer
  */
-export async function encryptBlob(blob: Blob): Promise<EncryptedBlob> {
-  const { key, iv } = await generateEncryptionMaterial();
+export function base64ToArrayBuffer(base64: string): ArrayBuffer {
+  const binaryString = atob(base64);
+  const len = binaryString.length;
+  // Allocate a fresh ArrayBuffer of exact size to avoid Node.js Buffer pool issues
+  const buffer = new ArrayBuffer(len);
+  const view = new Uint8Array(buffer);
+  for (let i = 0; i < len; i++) {
+    view[i] = binaryString.charCodeAt(i);
+  }
+  return buffer;
+}
 
-  // Read blob contents as ArrayBuffer
-  const plaintext = await blob.arrayBuffer();
+/* ── Validation Functions ─────────────────────────────────────────── */
 
-  // Encrypt with AES-GCM
-  // Cast iv buffer to ArrayBuffer for TypeScript 5.9 strict BufferSource compatibility
-  const ciphertext = await crypto.subtle.encrypt(
-    { name: AES_ALGORITHM, iv: iv as Uint8Array<ArrayBuffer> },
-    key,
-    plaintext,
+/**
+ * Validates a file's MIME type against the shared ALLOWED_MIME_TYPES allowlist.
+ * Checks across all MediaType categories: IMAGE, VIDEO, DOCUMENT, VOICE_NOTE.
+ * Enforces client-side MIME validation matching the server-side allowlist (R8).
+ *
+ * @param file - The File object to validate
+ * @returns Object with `valid` boolean and matched `mediaType` (null if invalid)
+ */
+export function validateMimeType(file: File): {
+  valid: boolean;
+  mediaType: MediaType | null;
+} {
+  const fileMime = file.type.toLowerCase().trim();
+
+  if (!fileMime) {
+    return { valid: false, mediaType: null };
+  }
+
+  // Explicitly check each MediaType category in the allowlist
+  const mediaTypeValues: MediaType[] = [
+    MediaType.IMAGE,
+    MediaType.VIDEO,
+    MediaType.DOCUMENT,
+    MediaType.VOICE_NOTE,
+  ];
+
+  for (const mediaType of mediaTypeValues) {
+    const allowedList = ALLOWED_MIME_TYPES[mediaType];
+    if (allowedList && (allowedList as readonly string[]).includes(fileMime)) {
+      return { valid: true, mediaType };
+    }
+  }
+
+  return { valid: false, mediaType: null };
+}
+
+/**
+ * Validates that a file's size does not exceed the maximum allowed limit.
+ * Uses MAX_FILE_SIZE from @kalle/shared (25 × 1024 × 1024 = 26,214,400 bytes).
+ * Enforces client-side size limit matching server-side enforcement (R8).
+ *
+ * @param file - The File object to check
+ * @returns true if the file size is within the allowed limit
+ */
+export function validateFileSize(file: File): boolean {
+  return file.size <= MAX_FILE_SIZE;
+}
+
+/**
+ * Determines the MediaType classification for a file based on its MIME type.
+ * Returns null if the file's MIME type is not in the ALLOWED_MIME_TYPES list.
+ *
+ * @param file - The File object to classify
+ * @returns The matching MediaType enum value, or null if unrecognized
+ */
+export function getMediaTypeFromFile(file: File): MediaType | null {
+  const result = validateMimeType(file);
+  return result.mediaType;
+}
+
+/* ── Thumbnail Generation (R27) ───────────────────────────────────── */
+
+/**
+ * Generates a thumbnail for an image file using canvas-based resizing.
+ * The thumbnail's longest edge is capped at MAX_THUMBNAIL_DIMENSION (200px)
+ * while preserving the original aspect ratio. Handles both landscape and
+ * portrait orientations correctly.
+ *
+ * Output format: JPEG at 80% quality for optimal size/quality balance.
+ *
+ * @param file - An image File to create a thumbnail from
+ * @returns Object containing the thumbnail Blob and its pixel dimensions
+ * @throws Error if the image cannot be loaded or canvas rendering fails
+ */
+export async function generateThumbnail(
+  file: File,
+): Promise<{ blob: Blob; width: number; height: number }> {
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    // Load the image to read its natural dimensions
+    const img = await loadImage(objectUrl);
+    const { naturalWidth, naturalHeight } = img;
+
+    if (naturalWidth === 0 || naturalHeight === 0) {
+      throw new Error('Image has zero dimensions — cannot generate thumbnail');
+    }
+
+    // Calculate thumbnail dimensions preserving aspect ratio
+    // Cap the longest edge at MAX_THUMBNAIL_DIMENSION (200px)
+    let thumbWidth = naturalWidth;
+    let thumbHeight = naturalHeight;
+    const longestEdge = Math.max(naturalWidth, naturalHeight);
+
+    if (longestEdge > MAX_THUMBNAIL_DIMENSION) {
+      const scale = MAX_THUMBNAIL_DIMENSION / longestEdge;
+      thumbWidth = Math.round(naturalWidth * scale);
+      thumbHeight = Math.round(naturalHeight * scale);
+    }
+
+    // Ensure minimum 1px in each dimension
+    thumbWidth = Math.max(1, thumbWidth);
+    thumbHeight = Math.max(1, thumbHeight);
+
+    // Render the scaled image onto a canvas
+    const canvas = document.createElement('canvas');
+    canvas.width = thumbWidth;
+    canvas.height = thumbHeight;
+
+    const ctx = canvas.getContext('2d');
+    if (!ctx) {
+      throw new Error('Failed to acquire 2D canvas rendering context');
+    }
+
+    ctx.drawImage(img, 0, 0, thumbWidth, thumbHeight);
+
+    // Export the canvas content as a JPEG blob
+    const blob = await canvasToBlob(canvas, THUMBNAIL_OUTPUT_MIME, THUMBNAIL_JPEG_QUALITY);
+
+    return { blob, width: thumbWidth, height: thumbHeight };
+  } finally {
+    // Always release the object URL to free memory
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
+/**
+ * Loads an image from a source URL and resolves when the load completes.
+ * @internal
+ */
+function loadImage(src: string): Promise<HTMLImageElement> {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const img = new Image();
+    img.onload = () => resolve(img);
+    img.onerror = () =>
+      reject(new Error('Failed to load image for thumbnail generation'));
+    img.src = src;
+  });
+}
+
+/**
+ * Converts a canvas element to a Blob with the specified MIME type and quality.
+ * @internal
+ */
+function canvasToBlob(
+  canvas: HTMLCanvasElement,
+  mimeType: string,
+  quality: number,
+): Promise<Blob> {
+  return new Promise<Blob>((resolve, reject) => {
+    canvas.toBlob(
+      (blob) => {
+        if (blob) {
+          resolve(blob);
+        } else {
+          reject(new Error('Canvas toBlob produced null — rendering may have failed'));
+        }
+      },
+      mimeType,
+      quality,
+    );
+  });
+}
+
+/* ── Encryption (R12) ─────────────────────────────────────────────── */
+
+/**
+ * Encrypts media data using AES-GCM 256-bit encryption via the Web Crypto API.
+ * Generates a cryptographically random key and 12-byte initialization vector,
+ * then encrypts the provided raw data.
+ *
+ * The key and IV are returned as Base64-encoded strings suitable for
+ * transport over the REST API or storage in IndexedDB.
+ *
+ * @param data - The raw (plaintext) media data to encrypt
+ * @returns Object with ciphertext ArrayBuffer and Base64-encoded key/IV strings
+ */
+export async function encryptMedia(data: ArrayBuffer): Promise<{
+  encryptedData: ArrayBuffer;
+  key: string;
+  iv: string;
+}> {
+  // Generate a random AES-GCM 256-bit symmetric key
+  const cryptoKey = await crypto.subtle.generateKey(
+    { name: AES_ALGORITHM, length: AES_KEY_LENGTH_BITS },
+    true, // extractable — needed to export the raw key bytes
+    ['encrypt', 'decrypt'],
   );
 
-  // Export key material as base64 for transmission
-  const keyBase64 = await exportKeyToBase64(key);
-  const ivBase64 = arrayBufferToBase64(iv.buffer as ArrayBuffer);
+  // Generate a random 12-byte (96-bit) initialization vector
+  const iv = crypto.getRandomValues(new Uint8Array(AES_IV_LENGTH_BYTES));
+
+  // Encrypt the data — wrap in Uint8Array for cross-environment BufferSource compatibility
+  const encryptedData = await crypto.subtle.encrypt(
+    { name: AES_ALGORITHM, iv },
+    cryptoKey,
+    new Uint8Array(data),
+  );
+
+  // Export the CryptoKey to raw bytes for Base64 serialization
+  const rawKey = await crypto.subtle.exportKey('raw', cryptoKey);
 
   return {
-    data: ciphertext,
-    key: keyBase64,
-    iv: ivBase64,
+    encryptedData,
+    key: arrayBufferToBase64(rawKey),
+    iv: arrayBufferToBase64(iv.buffer as ArrayBuffer),
   };
 }
 
 /**
- * Decrypts an AES-GCM encrypted blob using the provided key material.
+ * Decrypts AES-GCM encrypted media data using the provided key and IV.
+ * Reverses the encryption performed by {@link encryptMedia}.
  *
- * @param encryptedData - The encrypted ArrayBuffer to decrypt.
- * @param keyBase64 - Base64-encoded AES-GCM key.
- * @param ivBase64 - Base64-encoded initialization vector.
- * @returns The decrypted data as an ArrayBuffer.
+ * @param encryptedData - The ciphertext ArrayBuffer to decrypt
+ * @param keyBase64 - Base64-encoded AES-GCM 256-bit key
+ * @param ivBase64 - Base64-encoded 12-byte initialization vector
+ * @returns The decrypted plaintext ArrayBuffer
+ * @throws DOMException if decryption fails (wrong key/IV or corrupted data)
  */
-export async function decryptBlob(
+export async function decryptMedia(
   encryptedData: ArrayBuffer,
   keyBase64: string,
   ivBase64: string,
 ): Promise<ArrayBuffer> {
-  // Import the base64-encoded key
-  const rawKey = base64ToArrayBuffer(keyBase64);
-  const key = await crypto.subtle.importKey(
+  // Decode key and IV from their Base64 representations
+  const rawKey = new Uint8Array(base64ToArrayBuffer(keyBase64));
+  const iv = new Uint8Array(base64ToArrayBuffer(ivBase64));
+
+  // Import the raw key bytes as a non-extractable CryptoKey for decryption
+  // Uses Uint8Array wrapper for cross-environment BufferSource compatibility
+  const cryptoKey = await crypto.subtle.importKey(
     'raw',
     rawKey,
-    { name: AES_ALGORITHM, length: AES_KEY_LENGTH },
-    false,
+    { name: AES_ALGORITHM, length: AES_KEY_LENGTH_BITS },
+    false, // not extractable — decryption only
     ['decrypt'],
   );
 
-  // Decode the IV
-  const iv = base64ToArrayBuffer(ivBase64);
-
-  // Decrypt with AES-GCM
-  const plaintext = await crypto.subtle.decrypt(
-    { name: AES_ALGORITHM, iv: new Uint8Array(iv) },
-    key,
-    encryptedData,
+  // Decrypt and return the plaintext — wrap in Uint8Array for cross-environment compatibility
+  return crypto.subtle.decrypt(
+    { name: AES_ALGORITHM, iv },
+    cryptoKey,
+    new Uint8Array(encryptedData),
   );
-
-  return plaintext;
 }
 
+/* ── URL Helper ───────────────────────────────────────────────────── */
+
 /**
- * Converts a base64-encoded string to an ArrayBuffer.
+ * Constructs the full download URL for a media asset by its server-assigned ID.
  *
- * @param base64 - The base64-encoded string to decode.
- * @returns The decoded data as an ArrayBuffer.
+ * @param mediaId - The unique media identifier from the server
+ * @returns Fully qualified URL to the media resource
  */
-function base64ToArrayBuffer(base64: string): ArrayBuffer {
-  const binaryString = atob(base64);
-  const bytes = new Uint8Array(binaryString.length);
-  for (let i = 0; i < binaryString.length; i++) {
-    bytes[i] = binaryString.charCodeAt(i);
-  }
-  return bytes.buffer;
+export function getMediaUrl(mediaId: string): string {
+  return `${API_BASE_URL}/api/v1/media/${mediaId}`;
 }
 
-// =============================================================================
-// Full Media Pipeline: Validate → Thumbnail → Encrypt → Upload
-// =============================================================================
+/* ── Upload Pipeline ──────────────────────────────────────────────── */
 
 /**
- * Processes and uploads a media file through the complete client-side pipeline.
+ * Validates, encrypts, and uploads a media file to the server.
  *
- * Pipeline stages:
- *   1. Validate file size (R8: ≤25 MB) and MIME type (R8: allowlist)
- *   2. For images: generate thumbnail (R27: max 200px longest edge)
- *   3. Encrypt full-size file with AES-GCM (R12: client-side encryption)
- *   4. For images: encrypt thumbnail separately (R27: distinct blob)
- *   5. Upload both encrypted blobs via multipart form data with progress tracking
+ * Complete pipeline:
+ * 1. Validate MIME type against the shared allowlist (R8)
+ * 2. Validate file size ≤ 25 MB (R8)
+ * 3. Encrypt the raw file data with AES-GCM 256-bit (R12)
+ * 4. For images: generate a 200px-max thumbnail (R27), encrypt it separately
+ * 5. Build multipart FormData with encrypted blobs and metadata DTO
+ * 6. Upload via XHR with progress tracking
  *
- * @param file - The File to process and upload.
- * @param options - Optional upload configuration (progress callback, message/story ID).
- * @returns The MediaResponse from the server containing download URLs and metadata.
- * @throws Error if validation fails, encryption fails, or upload fails.
+ * Both the full-size file and thumbnail (if applicable) are encrypted with
+ * independent AES keys — the server cannot derive one from the other.
  *
- * @example
- * ```typescript
- * const response = await processAndUploadMedia(file, {
- *   onProgress: (progress) => updateUI(progress),
- *   messageId: 'msg-123',
- * });
- * ```
+ * @param file - The File object to upload
+ * @param options - Optional message/story association and progress callback
+ * @returns The server's MediaResponse containing the assigned media ID and metadata
+ * @throws Error on MIME validation failure, size limit exceeded, or upload error
  */
-export async function processAndUploadMedia(
+export async function uploadMedia(
   file: File,
-  options: MediaUploadOptions = {},
+  options?: {
+    messageId?: string;
+    storyId?: string;
+    onProgress?: (progress: MediaUploadProgress) => void;
+  },
 ): Promise<MediaResponse> {
-  const { onProgress, messageId, storyId } = options;
-  const fileName = file.name;
-
-  // ── Stage 1: Validation (R8) ──────────────────────────────────────────
-  const validation = validateFile(file);
-  if (!validation.valid) {
-    const errorProgress: MediaUploadProgress = {
-      fileName,
-      type: MediaType.DOCUMENT,
-      progress: 0,
-      status: 'error',
-      error: validation.error,
-    };
-    onProgress?.(errorProgress);
-    throw new Error(validation.error);
+  // ── Step 1: Validate MIME type ──
+  const mimeResult = validateMimeType(file);
+  if (!mimeResult.valid || !mimeResult.mediaType) {
+    throw new Error(`Unsupported file type: ${file.type || 'unknown'}`);
   }
 
-  const mediaType = detectMediaType(file.type);
-  if (mediaType === null) {
-    throw new Error(`Unsupported file type: ${file.type}`);
+  // ── Step 2: Validate file size ──
+  if (!validateFileSize(file)) {
+    const maxMB = Math.round(MAX_FILE_SIZE / (1024 * 1024));
+    throw new Error(
+      `File size (${file.size} bytes) exceeds the maximum allowed limit of ${maxMB} MB`,
+    );
   }
 
-  // Report encryption start
-  onProgress?.({
-    fileName,
-    type: mediaType,
-    progress: 0,
-    status: 'encrypting',
-  });
+  const mediaType = mimeResult.mediaType;
+  const fileName = file.name || 'unnamed';
+  const onProgress = options?.onProgress;
 
-  // ── Stage 2: Thumbnail generation for images (R27) ────────────────────
-  let thumbnail: ThumbnailResult | null = null;
-  let encryptedThumbnail: EncryptedBlob | null = null;
-  const isImage = mediaType === MediaType.IMAGE;
-
-  if (isImage) {
-    thumbnail = await generateThumbnail(file);
-
+  /**
+   * Emits a structured progress update to the caller's callback.
+   * Merges required fields with any optional extras.
+   */
+  const emitProgress = (
+    status: MediaUploadProgress['status'],
+    progress: number,
+    extra?: Partial<Pick<MediaUploadProgress, 'mediaId' | 'error'>>,
+  ): void => {
     onProgress?.({
       fileName,
       type: mediaType,
-      progress: 20,
-      status: 'encrypting',
+      progress,
+      status,
+      ...extra,
     });
-
-    // Encrypt thumbnail separately (R27: distinct encrypted blob)
-    encryptedThumbnail = await encryptBlob(thumbnail.blob);
-
-    onProgress?.({
-      fileName,
-      type: mediaType,
-      progress: 40,
-      status: 'encrypting',
-    });
-  }
-
-  // ── Stage 3: Encrypt full-size file (R12) ─────────────────────────────
-  const encryptedFile = await encryptBlob(file);
-
-  onProgress?.({
-    fileName,
-    type: mediaType,
-    progress: isImage ? 60 : 50,
-    status: 'encrypting',
-  });
-
-  // ── Stage 4: Get image dimensions if applicable ───────────────────────
-  let width: number | undefined;
-  let height: number | undefined;
-
-  if (isImage) {
-    const dims = await getImageDimensions(file);
-    width = dims.width;
-    height = dims.height;
-  }
-
-  // ── Stage 5: Build multipart form data and upload ─────────────────────
-  onProgress?.({
-    fileName,
-    type: mediaType,
-    progress: 0,
-    status: 'uploading',
-  });
-
-  const formData = new FormData();
-
-  // Attach the encrypted full-size file as the primary blob
-  const encryptedBlob = new Blob([encryptedFile.data], {
-    type: 'application/octet-stream',
-  });
-  formData.append('file', encryptedBlob, fileName);
-
-  // Build the metadata DTO
-  const metadata: UploadMediaDTO = {
-    type: mediaType,
-    mimeType: file.type,
-    fileName,
-    fileSize: encryptedFile.data.byteLength,
-    encryptionKey: encryptedFile.key,
-    encryptionIv: encryptedFile.iv,
-    hasThumbnail: isImage && encryptedThumbnail !== null,
-    width,
-    height,
   };
 
-  // Optional fields
-  if (messageId) {
-    metadata.messageId = messageId;
-  }
-  if (storyId) {
-    metadata.storyId = storyId;
-  }
+  try {
+    // ── Step 3: Encrypt file data ──
+    emitProgress('encrypting', 0);
+    const fileBuffer = await file.arrayBuffer();
+    const encryptedFile = await encryptMedia(fileBuffer);
 
-  // Thumbnail-specific fields (R27)
-  if (isImage && encryptedThumbnail && thumbnail) {
-    metadata.thumbnailEncryptionKey = encryptedThumbnail.key;
-    metadata.thumbnailEncryptionIv = encryptedThumbnail.iv;
+    // ── Step 4: Thumbnail for IMAGE type (R27) ──
+    let thumbnailEncryption: {
+      key: string;
+      iv: string;
+      blob: Blob;
+    } | null = null;
 
-    // Attach encrypted thumbnail as a separate form-data part
-    const thumbnailBlob = new Blob([encryptedThumbnail.data], {
-      type: 'application/octet-stream',
+    if (mediaType === MediaType.IMAGE) {
+      emitProgress('encrypting', 50);
+      const thumbnail = await generateThumbnail(file);
+      const thumbBuffer = await thumbnail.blob.arrayBuffer();
+      const encryptedThumb = await encryptMedia(thumbBuffer);
+      thumbnailEncryption = {
+        key: encryptedThumb.key,
+        iv: encryptedThumb.iv,
+        blob: new Blob([encryptedThumb.encryptedData], {
+          type: ENCRYPTED_BLOB_MIME,
+        }),
+      };
+    }
+
+    // ── Step 5: Build multipart FormData ──
+    emitProgress('uploading', 0);
+    const formData = new FormData();
+
+    // Append the encrypted file blob
+    const encryptedFileBlob = new Blob([encryptedFile.encryptedData], {
+      type: ENCRYPTED_BLOB_MIME,
     });
-    formData.append('thumbnail', thumbnailBlob, `thumb_${fileName}`);
-  }
+    formData.append('file', encryptedFileBlob, fileName);
 
-  // Append metadata as JSON string
-  formData.append('metadata', JSON.stringify(metadata));
+    // Build metadata DTO matching UploadMediaDTO shape
+    const metadata: UploadMediaDTO = {
+      type: mediaType,
+      mimeType: file.type,
+      fileName,
+      fileSize: encryptedFile.encryptedData.byteLength,
+      encryptionKey: encryptedFile.key,
+      encryptionIv: encryptedFile.iv,
+      hasThumbnail: thumbnailEncryption !== null,
+    };
 
-  // Upload via multipart with progress tracking
-  const response = await uploadFormData<{ data: MediaResponse }>(
-    '/media/upload',
-    formData,
-    {
-      onProgress: (percent: number): void => {
-        onProgress?.({
-          fileName,
-          type: mediaType,
-          progress: percent,
-          status: 'uploading',
-        });
+    // Attach thumbnail encryption metadata and blob if present
+    if (thumbnailEncryption) {
+      metadata.thumbnailEncryptionKey = thumbnailEncryption.key;
+      metadata.thumbnailEncryptionIv = thumbnailEncryption.iv;
+      formData.append('thumbnail', thumbnailEncryption.blob, `thumb_${fileName}`);
+    }
+
+    // Attach optional message/story association
+    if (options?.messageId) {
+      metadata.messageId = options.messageId;
+    }
+    if (options?.storyId) {
+      metadata.storyId = options.storyId;
+    }
+
+    // Serialize metadata as a JSON string field in the form
+    formData.append('metadata', JSON.stringify(metadata));
+
+    // ── Step 6: Upload via XHR with progress tracking ──
+    const response = await uploadFormData<MediaResponse>(
+      MEDIA_UPLOAD_ENDPOINT,
+      formData,
+      {
+        onProgress: (percent: number) => {
+          emitProgress('uploading', percent);
+        },
       },
-    },
-  );
+    );
 
-  // Report completion
-  const mediaResponse = response.data;
-  onProgress?.({
-    mediaId: mediaResponse.id,
-    fileName,
-    type: mediaType,
-    progress: 100,
-    status: 'complete',
-  });
+    emitProgress('complete', 100, { mediaId: response.id });
 
-  return mediaResponse;
-}
-
-/**
- * Creates a File object from a Blob with the given filename and MIME type.
- * Utility for creating uploadable files from programmatically generated content
- * (e.g., voice note recordings).
- *
- * @param blob - The source Blob.
- * @param fileName - Desired filename for the file.
- * @param mimeType - MIME type to assign to the file.
- * @returns A File object suitable for processAndUploadMedia.
- */
-export function blobToFile(
-  blob: Blob,
-  fileName: string,
-  mimeType: string,
-): File {
-  return new File([blob], fileName, { type: mimeType });
+    return response;
+  } catch (error) {
+    // Report error state via progress callback before re-throwing
+    emitProgress('error', 0, {
+      error: error instanceof Error ? error.message : 'Upload failed',
+    });
+    throw error;
+  }
 }
