@@ -258,6 +258,45 @@ describe('UserService', () => {
 
       expect(mockUserRepository.search).toHaveBeenCalledWith('other', expect.any(Object));
     });
+
+    it('should return paginated results with cursor and hasMore', async () => {
+      const paginatedResults = {
+        items: [
+          { id: 'user-3', email: 'user3@example.com', displayName: 'User Three', status: 'ONLINE' as const } as UserSearchResult,
+          { id: 'user-4', email: 'user4@example.com', displayName: 'User Four', status: 'OFFLINE' as const } as UserSearchResult,
+        ],
+        cursor: 'next-page-cursor',
+        hasMore: true,
+      };
+      mockUserRepository.search.mockResolvedValue(paginatedResults);
+
+      const result = await service.searchUsers({
+        query: 'user',
+        currentUserId: 'user-1',
+        limit: 2,
+      });
+
+      expect(result.items).toHaveLength(2);
+      expect(result.cursor).toBe('next-page-cursor');
+      expect(result.hasMore).toBe(true);
+    });
+
+    it('should pass currentUserId to repository for self and blocked user exclusion', async () => {
+      mockUserRepository.search.mockResolvedValue({ items: [], hasMore: false });
+
+      await service.searchUsers({
+        query: 'test',
+        currentUserId: 'user-1',
+      });
+
+      // Repository receives currentUserId which it uses to exclude:
+      // 1. The searching user themselves
+      // 2. Users blocked by the searching user
+      expect(mockUserRepository.search).toHaveBeenCalledWith(
+        'test',
+        expect.objectContaining({ currentUserId: 'user-1' }),
+      );
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -303,6 +342,7 @@ describe('UserService', () => {
       expect(result.userId).toBe('user-2');
       // Should NOT call blockUser again or write audit since already blocked
       expect(mockUserRepository.blockUser).not.toHaveBeenCalled();
+      expect(mockAuditService.log).not.toHaveBeenCalled();
     });
 
     it('should write audit log entry for USER_BLOCK (R32)', async () => {
@@ -474,6 +514,17 @@ describe('UserService', () => {
 
       expect(result).toEqual([]);
       expect(mockUserRepository.findByIds).not.toHaveBeenCalled();
+    });
+
+    it('should return partial results when some IDs are not found', async () => {
+      // Repository silently omits missing IDs — returned array may be shorter
+      mockUserRepository.findByIds.mockResolvedValue([testUser({ id: 'user-1' })]);
+
+      const result = await service.getUsersByIds(['user-1', 'nonexistent']);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe('user-1');
+      expect(mockUserRepository.findByIds).toHaveBeenCalledWith(['user-1', 'nonexistent']);
     });
   });
 });
