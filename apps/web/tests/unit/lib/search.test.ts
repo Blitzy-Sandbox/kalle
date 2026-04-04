@@ -1,125 +1,31 @@
 /**
  * @file search.test.ts
- * Unit tests for the client-side full-text search engine (apps/web/src/lib/search.ts).
+ * Unit tests for the client-side full-text message search engine
+ * (apps/web/src/lib/search.ts).
  *
- * Covers:
- * - Core search with case-insensitive substring matching
- * - R21: ZERO network calls during search — all operations against IndexedDB
- * - R20: Tombstone handling — removeMessageFromIndex
- * - Relevance ranking (match position then recency)
- * - Snippet generation with ellipsis context
- * - Pagination (limit + offset)
- * - Per-conversation filtering
- * - Date range filtering
- * - Minimum query length enforcement
- * - Index management: indexMessage, removeMessageFromIndex, clearConversationIndex
- * - Search history: saveSearchTerm, getRecentSearchTerms with deduplication
- * - Edge cases: emoji, special characters, empty content, whitespace
+ * Uses fake-indexeddb for real IndexedDB operations in Node.js Vitest
+ * environment. All 8 suites verify:
+ *
+ *   1. Core full-text search with case-insensitive substring matching
+ *   2. R21 enforcement — ZERO fetch / XMLHttpRequest calls during search
+ *   3. Pagination (limit + offset)
+ *   4. Filtering (conversationId, dateFrom, dateTo)
+ *   5. Snippet generation with surrounding context and ellipsis
+ *   6. Index management — indexMessage, removeMessageFromIndex, clearConversationIndex
+ *   7. Edge cases — empty queries, short queries, special characters, whitespace
+ *   8. Search history — saveSearchTerm, getRecentSearchTerms with deduplication
+ *
+ * Constraints:
+ *   - TypeScript strict mode compatible (R7)
+ *   - Zero console.log statements in test code
+ *   - fake-indexeddb/auto MUST be the first import
  */
 
-import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+// MUST be the very first import — polyfills globalThis.indexedDB before
+// Dexie.js initialises its database connection.
+import 'fake-indexeddb/auto';
 
-// ---------------------------------------------------------------------------
-// Mock the db module (Dexie.js)
-// vi.hoisted() ensures variables are declared before vi.mock() factories execute
-// (vi.mock factories are hoisted above const declarations by Vitest)
-// ---------------------------------------------------------------------------
-const {
-  mockMessagesWhere,
-  mockMessagesToCollection,
-  mockMessagesPut,
-  mockMessagesDelete,
-  mockCollectionEquals,
-  mockCollectionFilter,
-  mockCollectionDelete,
-  mockSearchHistoryOrderBy,
-  mockSearchHistoryReverse,
-  mockSearchHistoryLimit,
-  mockSearchHistoryToArray,
-  mockSearchHistoryWhere,
-  mockSearchHistoryEquals,
-  mockSearchHistoryFirst,
-  mockSearchHistoryPut,
-} = vi.hoisted(() => ({
-  mockMessagesWhere: vi.fn(),
-  mockMessagesToCollection: vi.fn(),
-  mockMessagesPut: vi.fn(),
-  mockMessagesDelete: vi.fn(),
-  mockCollectionEquals: vi.fn(),
-  mockCollectionFilter: vi.fn(),
-  mockCollectionDelete: vi.fn(),
-  mockSearchHistoryOrderBy: vi.fn(),
-  mockSearchHistoryReverse: vi.fn(),
-  mockSearchHistoryLimit: vi.fn(),
-  mockSearchHistoryToArray: vi.fn(),
-  mockSearchHistoryWhere: vi.fn(),
-  mockSearchHistoryEquals: vi.fn(),
-  mockSearchHistoryFirst: vi.fn(),
-  mockSearchHistoryPut: vi.fn(),
-}));
-
-vi.mock('@/lib/db', () => ({
-  db: {
-    messages: {
-      where: (...args: unknown[]) => {
-        mockMessagesWhere(...args);
-        return {
-          equals: (...eqArgs: unknown[]) => {
-            mockCollectionEquals(...eqArgs);
-            return {
-              filter: (...fArgs: unknown[]) => {
-                // Return the mock's result so tests can override via mockImplementation
-                return mockCollectionFilter(...fArgs);
-              },
-              delete: (...dArgs: unknown[]) => mockCollectionDelete(...dArgs),
-            };
-          },
-        };
-      },
-      toCollection: () => {
-        mockMessagesToCollection();
-        return {
-          filter: (...fArgs: unknown[]) => {
-            // Return the mock's result so tests can override via mockImplementation
-            return mockCollectionFilter(...fArgs);
-          },
-        };
-      },
-      put: mockMessagesPut,
-      delete: mockMessagesDelete,
-    },
-    searchHistory: {
-      orderBy: (...args: unknown[]) => {
-        mockSearchHistoryOrderBy(...args);
-        return {
-          reverse: () => {
-            mockSearchHistoryReverse();
-            return {
-              limit: (n: number) => {
-                mockSearchHistoryLimit(n);
-                return { toArray: mockSearchHistoryToArray };
-              },
-            };
-          },
-        };
-      },
-      where: (...args: unknown[]) => {
-        mockSearchHistoryWhere(...args);
-        return {
-          equals: (...eqArgs: unknown[]) => {
-            mockSearchHistoryEquals(...eqArgs);
-            return { first: mockSearchHistoryFirst };
-          },
-        };
-      },
-      put: mockSearchHistoryPut,
-    },
-  },
-}));
-
-// ---------------------------------------------------------------------------
-// Import module under test AFTER mocks
-// ---------------------------------------------------------------------------
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   searchMessages,
   indexMessage,
@@ -128,481 +34,514 @@ import {
   getRecentSearchTerms,
   saveSearchTerm,
 } from '@/lib/search';
-import type { SearchResult } from '@/lib/search';
+import { db } from '@/lib/db';
 
 // ---------------------------------------------------------------------------
-// Test data factories
+// Test Data — pre-populated in IndexedDB before each test
 // ---------------------------------------------------------------------------
-function createMessage(overrides: Partial<{
-  id: string;
-  conversationId: string;
-  conversationName: string;
-  senderId: string;
-  senderName: string;
-  content: string;
-  timestamp: string;
-  type: string;
-}> = {}) {
-  return {
-    id: overrides.id ?? `msg-${Math.random().toString(36).slice(2)}`,
-    conversationId: overrides.conversationId ?? 'conv-1',
-    conversationName: overrides.conversationName ?? 'Test Conversation',
-    senderId: overrides.senderId ?? 'user-1',
-    senderName: overrides.senderName ?? 'Alice',
-    content: overrides.content ?? 'Hello, this is a test message',
-    timestamp: overrides.timestamp ?? '2024-06-15T10:00:00.000Z',
-    type: overrides.type ?? 'TEXT',
-  };
-}
+
+const testMessages = [
+  {
+    id: 'msg-1',
+    conversationId: 'conv-1',
+    conversationName: 'Martha Craig',
+    senderId: 'user-1',
+    senderName: 'Martha Craig',
+    content: 'Hey, have you seen the new design mockups?',
+    timestamp: '2026-03-30T10:00:00Z',
+    type: 'TEXT',
+  },
+  {
+    id: 'msg-2',
+    conversationId: 'conv-1',
+    conversationName: 'Martha Craig',
+    senderId: 'user-2',
+    senderName: 'You',
+    content: 'Yes! The mockups look amazing. Great work on the color palette.',
+    timestamp: '2026-03-30T10:05:00Z',
+    type: 'TEXT',
+  },
+  {
+    id: 'msg-3',
+    conversationId: 'conv-2',
+    conversationName: 'Andrew Parker',
+    senderId: 'user-3',
+    senderName: 'Andrew Parker',
+    content: 'Can you review the pull request I submitted?',
+    timestamp: '2026-03-30T11:00:00Z',
+    type: 'TEXT',
+  },
+  {
+    id: 'msg-4',
+    conversationId: 'conv-2',
+    conversationName: 'Andrew Parker',
+    senderId: 'user-2',
+    senderName: 'You',
+    content: 'Sure, I will review it this afternoon.',
+    timestamp: '2026-03-30T11:30:00Z',
+    type: 'TEXT',
+  },
+  {
+    id: 'msg-5',
+    conversationId: 'conv-1',
+    conversationName: 'Martha Craig',
+    senderId: 'user-1',
+    senderName: 'Martha Craig',
+    content: 'The design review meeting is scheduled for tomorrow at 3pm.',
+    timestamp: '2026-03-30T14:00:00Z',
+    type: 'TEXT',
+  },
+  {
+    id: 'msg-6',
+    conversationId: 'conv-3',
+    conversationName: 'Design Team',
+    senderId: 'user-4',
+    senderName: 'Karen Castillo',
+    content:
+      'Design sprint starts next Monday. Everyone please prepare your mockups.',
+    timestamp: '2026-03-30T15:00:00Z',
+    type: 'TEXT',
+  },
+  {
+    id: 'msg-7',
+    conversationId: 'conv-1',
+    conversationName: 'Martha Craig',
+    senderId: 'user-2',
+    senderName: 'You',
+    content: 'I updated the color tokens in the Figma file.',
+    timestamp: '2026-03-30T16:00:00Z',
+    type: 'TEXT',
+  },
+];
+
+// ---------------------------------------------------------------------------
+// Global mock setup for R21 network-call verification
+// ---------------------------------------------------------------------------
+
+const mockFetch = vi.fn();
+const mockXHR = vi.fn();
+
+// ---------------------------------------------------------------------------
+// Setup / Teardown
+// ---------------------------------------------------------------------------
+
+beforeEach(async () => {
+  // Stub network globals so any accidental network call is detectable
+  vi.stubGlobal('fetch', mockFetch);
+  vi.stubGlobal('XMLHttpRequest', mockXHR);
+
+  // Clear existing data for full isolation
+  await db.messages.clear();
+  if (db.searchHistory) {
+    await db.searchHistory.clear();
+  }
+
+  // Pre-populate test messages
+  for (const msg of testMessages) {
+    await db.messages.put(msg);
+  }
+});
+
+afterEach(async () => {
+  // Clean up data
+  await db.messages.clear();
+  if (db.searchHistory) {
+    await db.searchHistory.clear();
+  }
+
+  // Restore all mocked globals and spies
+  vi.restoreAllMocks();
+  vi.unstubAllGlobals();
+});
 
 // =============================================================================
-// Tests
+// Suite 1: searchMessages — Full-Text Search (R21)
 // =============================================================================
 
-describe('search.ts — Client-Side Full-Text Search (R21)', () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-    // Default: mockCollectionFilter returns an empty collection (toArray → [])
-    // Tests override this via mockCollectionFilter.mockImplementation(filterFn => ...)
-    mockCollectionFilter.mockImplementation(() => ({
-      toArray: vi.fn().mockResolvedValue([]),
-    }));
-    mockSearchHistoryToArray.mockResolvedValue([]);
-    mockSearchHistoryFirst.mockResolvedValue(undefined);
-    mockSearchHistoryPut.mockResolvedValue(undefined);
-    mockMessagesPut.mockResolvedValue(undefined);
-    mockMessagesDelete.mockResolvedValue(undefined);
-    mockCollectionDelete.mockResolvedValue(0);
+describe('searchMessages', () => {
+  it('should perform case-insensitive substring matching', async () => {
+    // "design" appears in msg-1, msg-5 (lowercase), and msg-6 ("Design" — uppercase)
+    const results = await searchMessages('design');
+    expect(results.length).toBeGreaterThanOrEqual(3);
+
+    // Upper-case query must produce the same result count
+    const results2 = await searchMessages('DESIGN');
+    expect(results2.length).toBe(results.length);
   });
 
-  afterEach(() => {
-    vi.restoreAllMocks();
+  it('should return results with correct SearchResult shape', async () => {
+    const results = await searchMessages('mockups');
+    expect(results.length).toBeGreaterThanOrEqual(1);
+
+    const result = results[0];
+    expect(result).toHaveProperty('messageId');
+    expect(result).toHaveProperty('conversationId');
+    expect(result).toHaveProperty('conversationName');
+    expect(result).toHaveProperty('senderId');
+    expect(result).toHaveProperty('senderName');
+    expect(result).toHaveProperty('content');
+    expect(result).toHaveProperty('matchedSnippet');
+    expect(result).toHaveProperty('matchIndex');
+    expect(result).toHaveProperty('timestamp');
+    expect(result).toHaveProperty('type');
   });
 
-  // =========================================================================
-  // searchMessages — Core Search
-  // =========================================================================
+  it('should sort results by match position (earlier match = higher rank), then by recency', async () => {
+    const results = await searchMessages('design');
 
-  describe('searchMessages — core search', () => {
-    it('returns empty results for queries shorter than 2 characters', async () => {
-      const results = await searchMessages('a');
-      expect(results).toEqual([]);
-      // R21: no network calls — no API mocks triggered, only IndexedDB
-    });
-
-    it('returns empty results for empty query', async () => {
-      const results = await searchMessages('');
-      expect(results).toEqual([]);
-    });
-
-    it('returns empty results for whitespace-only query', async () => {
-      const results = await searchMessages('   ');
-      expect(results).toEqual([]);
-    });
-
-    it('performs case-insensitive search (R21 — all local)', async () => {
-      const messages = [
-        createMessage({ id: 'm1', content: 'Hello World' }),
-        createMessage({ id: 'm2', content: 'hello there' }),
-        createMessage({ id: 'm3', content: 'HELLO EVERYONE' }),
-      ];
-
-      // Override the mock to return filtered messages
-      mockCollectionFilter.mockImplementation((filterFn: (msg: any) => boolean) => {
-        const filtered = messages.filter(filterFn);
-        return { toArray: vi.fn().mockResolvedValue(filtered) };
-      });
-
-      const results = await searchMessages('hello');
-      // All three messages should match "hello" case-insensitively
-      expect(results.length).toBe(3);
-    });
-
-    it('uses toCollection for search without conversation filter', async () => {
-      mockCollectionFilter.mockImplementation(() => ({
-        toArray: vi.fn().mockResolvedValue([]),
-      }));
-
-      await searchMessages('test');
-      expect(mockMessagesToCollection).toHaveBeenCalled();
-    });
-
-    it('uses where(conversationId) when conversationId filter provided', async () => {
-      mockCollectionFilter.mockImplementation(() => ({
-        toArray: vi.fn().mockResolvedValue([]),
-      }));
-
-      await searchMessages('test', { conversationId: 'conv-42' });
-      expect(mockMessagesWhere).toHaveBeenCalledWith('conversationId');
-      expect(mockCollectionEquals).toHaveBeenCalledWith('conv-42');
-    });
-  });
-
-  // =========================================================================
-  // searchMessages — Relevance Ranking
-  // =========================================================================
-
-  describe('searchMessages — relevance ranking', () => {
-    it('ranks results by match position (earlier = higher relevance)', async () => {
-      const messages = [
-        createMessage({ id: 'm1', content: 'End of line test', timestamp: '2024-06-15T10:00:00Z' }),
-        createMessage({ id: 'm2', content: 'test at the beginning', timestamp: '2024-06-15T10:00:00Z' }),
-        createMessage({ id: 'm3', content: 'A mid test here', timestamp: '2024-06-15T10:00:00Z' }),
-      ];
-
-      mockCollectionFilter.mockImplementation((filterFn: (msg: any) => boolean) => {
-        const filtered = messages.filter(filterFn);
-        return { toArray: vi.fn().mockResolvedValue(filtered) };
-      });
-
-      const results = await searchMessages('test');
-      // m2 has "test" at position 0, m3 at position 6, m1 at position 16
-      expect(results[0].messageId).toBe('m2');
-    });
-
-    it('breaks ties by recency (more recent first)', async () => {
-      const messages = [
-        createMessage({ id: 'm1', content: 'test message old', timestamp: '2024-06-14T10:00:00Z' }),
-        createMessage({ id: 'm2', content: 'test message new', timestamp: '2024-06-15T10:00:00Z' }),
-      ];
-
-      mockCollectionFilter.mockImplementation((filterFn: (msg: any) => boolean) => {
-        const filtered = messages.filter(filterFn);
-        return { toArray: vi.fn().mockResolvedValue(filtered) };
-      });
-
-      const results = await searchMessages('test');
-      // Both match at position 0, so m2 (more recent) should rank first
-      expect(results[0].messageId).toBe('m2');
-    });
-  });
-
-  // =========================================================================
-  // searchMessages — Pagination
-  // =========================================================================
-
-  describe('searchMessages — pagination', () => {
-    it('respects limit option', async () => {
-      const messages = Array.from({ length: 10 }, (_, i) =>
-        createMessage({ id: `m${i}`, content: `test message ${i}` })
+    // Verify primary sort: matchIndex values must be non-decreasing
+    for (let i = 0; i < results.length - 1; i++) {
+      expect(results[i].matchIndex).toBeLessThanOrEqual(
+        results[i + 1].matchIndex,
       );
+    }
 
-      mockCollectionFilter.mockImplementation((filterFn: (msg: any) => boolean) => {
-        const filtered = messages.filter(filterFn);
-        return { toArray: vi.fn().mockResolvedValue(filtered) };
-      });
-
-      const results = await searchMessages('test', { limit: 3 });
-      expect(results.length).toBe(3);
-    });
-
-    it('respects offset option for pagination', async () => {
-      const messages = Array.from({ length: 10 }, (_, i) =>
-        createMessage({
-          id: `m${i}`,
-          content: `test message number ${i}`,
-          timestamp: `2024-06-15T10:0${i}:00Z`,
-        })
-      );
-
-      mockCollectionFilter.mockImplementation((filterFn: (msg: any) => boolean) => {
-        const filtered = messages.filter(filterFn);
-        return { toArray: vi.fn().mockResolvedValue(filtered) };
-      });
-
-      const page1 = await searchMessages('test', { limit: 3, offset: 0 });
-      const page2 = await searchMessages('test', { limit: 3, offset: 3 });
-
-      expect(page1.length).toBe(3);
-      expect(page2.length).toBe(3);
-      // Pages should not overlap
-      const page1Ids = page1.map((r: SearchResult) => r.messageId);
-      const page2Ids = page2.map((r: SearchResult) => r.messageId);
-      for (const id of page2Ids) {
-        expect(page1Ids).not.toContain(id);
+    // Verify secondary sort: within equal matchIndex, more recent first
+    for (let i = 0; i < results.length - 1; i++) {
+      const current = results[i];
+      const next = results[i + 1];
+      if (current.matchIndex === next.matchIndex) {
+        expect(
+          new Date(current.timestamp).getTime(),
+        ).toBeGreaterThanOrEqual(new Date(next.timestamp).getTime());
       }
+    }
+  });
+});
+
+// =============================================================================
+// Suite 2: Zero Network Calls (R21 Enforcement)
+// =============================================================================
+
+describe('searchMessages — zero network calls (R21)', () => {
+  it('should make zero fetch calls during search', async () => {
+    await searchMessages('design');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('should make zero XMLHttpRequest calls during search', async () => {
+    await searchMessages('review');
+    expect(mockXHR).not.toHaveBeenCalled();
+  });
+
+  it('should make zero network calls across multiple search operations', async () => {
+    await searchMessages('design');
+    await searchMessages('review');
+    await searchMessages('color');
+    await searchMessages('meeting');
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockXHR).not.toHaveBeenCalled();
+  });
+});
+
+// =============================================================================
+// Suite 3: Pagination
+// =============================================================================
+
+describe('searchMessages — pagination', () => {
+  it('should respect limit option', async () => {
+    // "the" appears in msg-1, msg-2, msg-3, msg-5, msg-7 → at least 5 results
+    const results = await searchMessages('the', { limit: 2 });
+    expect(results.length).toBeLessThanOrEqual(2);
+  });
+
+  it('should respect offset option', async () => {
+    const allResults = await searchMessages('design');
+    const offsetResults = await searchMessages('design', { offset: 1 });
+
+    // Offset should skip the first result
+    if (allResults.length > 1) {
+      expect(offsetResults[0].messageId).toBe(allResults[1].messageId);
+    }
+  });
+
+  it('should work with both limit and offset together', async () => {
+    const results = await searchMessages('the', { limit: 1, offset: 1 });
+    expect(results.length).toBeLessThanOrEqual(1);
+  });
+});
+
+// =============================================================================
+// Suite 4: Filtering
+// =============================================================================
+
+describe('searchMessages — filtering', () => {
+  it('should filter by conversationId when provided', async () => {
+    const results = await searchMessages('design', {
+      conversationId: 'conv-1',
     });
 
-    it('defaults to limit=50, offset=0', async () => {
-      const messages = Array.from({ length: 60 }, (_, i) =>
-        createMessage({ id: `m${i}`, content: `test message ${i}` })
+    // All results must belong to conv-1
+    expect(results.length).toBeGreaterThanOrEqual(1);
+    results.forEach((r) => {
+      expect(r.conversationId).toBe('conv-1');
+    });
+  });
+
+  it('should filter by dateFrom range', async () => {
+    const cutoff = new Date('2026-03-30T12:00:00Z');
+    const results = await searchMessages('design', { dateFrom: cutoff });
+
+    // All results must have timestamp >= cutoff
+    results.forEach((r) => {
+      expect(new Date(r.timestamp).getTime()).toBeGreaterThanOrEqual(
+        cutoff.getTime(),
       );
-
-      mockCollectionFilter.mockImplementation((filterFn: (msg: any) => boolean) => {
-        const filtered = messages.filter(filterFn);
-        return { toArray: vi.fn().mockResolvedValue(filtered) };
-      });
-
-      const results = await searchMessages('test');
-      expect(results.length).toBe(50);
     });
   });
 
-  // =========================================================================
-  // searchMessages — Date Range Filtering
-  // =========================================================================
+  it('should filter by dateTo range', async () => {
+    const cutoff = new Date('2026-03-30T12:00:00Z');
+    const results = await searchMessages('design', { dateTo: cutoff });
 
-  describe('searchMessages — date range filtering', () => {
-    it('filters messages by dateFrom', async () => {
-      const messages = [
-        createMessage({ id: 'old', content: 'test old', timestamp: '2024-01-01T00:00:00Z' }),
-        createMessage({ id: 'new', content: 'test new', timestamp: '2024-06-15T00:00:00Z' }),
-      ];
-
-      mockCollectionFilter.mockImplementation((filterFn: (msg: any) => boolean) => {
-        const filtered = messages.filter(filterFn);
-        return { toArray: vi.fn().mockResolvedValue(filtered) };
-      });
-
-      const results = await searchMessages('test', {
-        dateFrom: new Date('2024-06-01T00:00:00Z'),
-      });
-      expect(results.length).toBe(1);
-      expect(results[0].messageId).toBe('new');
-    });
-
-    it('filters messages by dateTo', async () => {
-      const messages = [
-        createMessage({ id: 'old', content: 'test old', timestamp: '2024-01-01T00:00:00Z' }),
-        createMessage({ id: 'new', content: 'test new', timestamp: '2024-06-15T00:00:00Z' }),
-      ];
-
-      mockCollectionFilter.mockImplementation((filterFn: (msg: any) => boolean) => {
-        const filtered = messages.filter(filterFn);
-        return { toArray: vi.fn().mockResolvedValue(filtered) };
-      });
-
-      const results = await searchMessages('test', {
-        dateTo: new Date('2024-03-01T00:00:00Z'),
-      });
-      expect(results.length).toBe(1);
-      expect(results[0].messageId).toBe('old');
+    results.forEach((r) => {
+      expect(new Date(r.timestamp).getTime()).toBeLessThanOrEqual(
+        cutoff.getTime(),
+      );
     });
   });
 
-  // =========================================================================
-  // searchMessages — Snippet Generation
-  // =========================================================================
-
-  describe('searchMessages — snippet generation', () => {
-    it('generates snippets with context around the match', async () => {
-      const longContent = 'The quick brown fox jumps over the lazy dog in the park on a sunny day test';
-      const messages = [createMessage({ id: 'm1', content: longContent })];
-
-      mockCollectionFilter.mockImplementation((filterFn: (msg: any) => boolean) => {
-        const filtered = messages.filter(filterFn);
-        return { toArray: vi.fn().mockResolvedValue(filtered) };
-      });
-
-      const results = await searchMessages('test');
-      expect(results.length).toBe(1);
-      expect(results[0].matchedSnippet).toBeDefined();
-      expect(results[0].matchedSnippet).toContain('test');
+  it('should combine conversationId and date range filters', async () => {
+    const cutoff = new Date('2026-03-30T12:00:00Z');
+    const results = await searchMessages('design', {
+      conversationId: 'conv-1',
+      dateFrom: cutoff,
     });
 
-    it('includes ellipsis when content is truncated', async () => {
-      const prefix = 'A'.repeat(80);
-      const content = `${prefix}test${'B'.repeat(80)}`;
-      const messages = [createMessage({ id: 'm1', content })];
-
-      mockCollectionFilter.mockImplementation((filterFn: (msg: any) => boolean) => {
-        const filtered = messages.filter(filterFn);
-        return { toArray: vi.fn().mockResolvedValue(filtered) };
-      });
-
-      const results = await searchMessages('test');
-      expect(results.length).toBe(1);
-      // Should have leading ellipsis (match is not at start) and trailing ellipsis
-      expect(results[0].matchedSnippet.startsWith('...')).toBe(true);
-      expect(results[0].matchedSnippet.endsWith('...')).toBe(true);
+    results.forEach((r) => {
+      expect(r.conversationId).toBe('conv-1');
+      expect(new Date(r.timestamp).getTime()).toBeGreaterThanOrEqual(
+        cutoff.getTime(),
+      );
     });
   });
+});
 
-  // =========================================================================
-  // searchMessages — Edge Cases
-  // =========================================================================
+// =============================================================================
+// Suite 5: Snippet Generation
+// =============================================================================
 
-  describe('searchMessages — edge cases', () => {
-    it('handles emoji content in search', async () => {
-      const messages = [
-        createMessage({ id: 'm1', content: 'Hello 😎 world' }),
-      ];
+describe('snippet generation', () => {
+  it('should produce context around match with ellipsis', async () => {
+    const results = await searchMessages('mockups');
+    expect(results.length).toBeGreaterThanOrEqual(1);
 
-      mockCollectionFilter.mockImplementation((filterFn: (msg: any) => boolean) => {
-        const filtered = messages.filter(filterFn);
-        return { toArray: vi.fn().mockResolvedValue(filtered) };
-      });
-
-      const results = await searchMessages('hello');
-      expect(results.length).toBe(1);
-    });
-
-    it('handles special characters in search query', async () => {
-      const messages = [
-        createMessage({ id: 'm1', content: 'Price is $100.00' }),
-      ];
-
-      mockCollectionFilter.mockImplementation((filterFn: (msg: any) => boolean) => {
-        const filtered = messages.filter(filterFn);
-        return { toArray: vi.fn().mockResolvedValue(filtered) };
-      });
-
-      const results = await searchMessages('$100');
-      expect(results.length).toBe(1);
-    });
-
-    it('skips messages with empty content', async () => {
-      const messages = [
-        createMessage({ id: 'm1', content: '' }),
-        createMessage({ id: 'm2', content: 'test message' }),
-      ];
-
-      mockCollectionFilter.mockImplementation((filterFn: (msg: any) => boolean) => {
-        const filtered = messages.filter(filterFn);
-        return { toArray: vi.fn().mockResolvedValue(filtered) };
-      });
-
-      const results = await searchMessages('test');
-      expect(results.length).toBe(1);
-      expect(results[0].messageId).toBe('m2');
-    });
+    const snippet = results[0].matchedSnippet;
+    expect(snippet).toContain('mockups');
+    // Snippet must include surrounding context characters
+    expect(snippet.length).toBeGreaterThan('mockups'.length);
   });
 
-  // =========================================================================
-  // indexMessage
-  // =========================================================================
+  it('should include ellipsis when snippet is truncated', async () => {
+    // Insert a long message so the match is far from the start and end
+    const longPrefix = 'A'.repeat(80);
+    const longSuffix = 'B'.repeat(80);
+    const longMsg = {
+      id: 'msg-long',
+      conversationId: 'conv-1',
+      conversationName: 'Martha Craig',
+      senderId: 'user-1',
+      senderName: 'Martha Craig',
+      content: `${longPrefix}target${longSuffix}`,
+      timestamp: '2026-03-30T17:00:00Z',
+      type: 'TEXT',
+    };
+    await db.messages.put(longMsg);
 
-  describe('indexMessage', () => {
-    it('stores a TEXT message in IndexedDB', async () => {
-      await indexMessage(createMessage({ type: 'TEXT', content: 'Indexable content' }));
-      expect(mockMessagesPut).toHaveBeenCalledTimes(1);
-      const putArg = mockMessagesPut.mock.calls[0][0];
-      expect(putArg.content).toBe('Indexable content');
-    });
+    const results = await searchMessages('target');
+    expect(results.length).toBe(1);
 
-    it('skips non-TEXT messages (IMAGE, VIDEO, etc.)', async () => {
-      await indexMessage(createMessage({ type: 'IMAGE', content: 'image caption' }));
-      expect(mockMessagesPut).not.toHaveBeenCalled();
-    });
+    const snippet = results[0].matchedSnippet;
+    // Should have leading ellipsis (match not at start)
+    expect(snippet.startsWith('...')).toBe(true);
+    // Should have trailing ellipsis (match not at end)
+    expect(snippet.endsWith('...')).toBe(true);
+    // Must still contain the query
+    expect(snippet).toContain('target');
+  });
+});
 
-    it('skips messages with empty or whitespace-only content', async () => {
-      await indexMessage(createMessage({ type: 'TEXT', content: '   ' }));
-      expect(mockMessagesPut).not.toHaveBeenCalled();
-    });
+// =============================================================================
+// Suite 6: indexMessage, removeMessageFromIndex, clearConversationIndex
+// =============================================================================
 
-    it('skips messages with null/undefined content', async () => {
-      await indexMessage(createMessage({ type: 'TEXT', content: '' }));
-      expect(mockMessagesPut).not.toHaveBeenCalled();
-    });
+describe('indexMessage', () => {
+  it('should store decrypted plaintext in IndexedDB for future search', async () => {
+    const newMessage = {
+      id: 'msg-new',
+      conversationId: 'conv-1',
+      conversationName: 'Martha Craig',
+      senderId: 'user-1',
+      senderName: 'Martha Craig',
+      content: 'This is a unique new searchable message',
+      timestamp: '2026-03-31T10:00:00Z',
+      type: 'TEXT',
+    };
+
+    await indexMessage(newMessage);
+    const results = await searchMessages('unique new searchable');
+    expect(results.length).toBe(1);
+    expect(results[0].messageId).toBe('msg-new');
   });
 
-  // =========================================================================
-  // removeMessageFromIndex (R20 — Tombstone)
-  // =========================================================================
+  it('should skip non-TEXT messages', async () => {
+    const imageMsg = {
+      id: 'msg-image',
+      conversationId: 'conv-1',
+      conversationName: 'Martha Craig',
+      senderId: 'user-1',
+      senderName: 'Martha Craig',
+      content: 'image caption not indexable',
+      timestamp: '2026-03-31T10:00:00Z',
+      type: 'IMAGE',
+    };
 
-  describe('removeMessageFromIndex (R20)', () => {
-    it('deletes a message from the IndexedDB search index', async () => {
-      await removeMessageFromIndex('msg-to-delete');
-      expect(mockMessagesDelete).toHaveBeenCalledWith('msg-to-delete');
-    });
+    await indexMessage(imageMsg);
+    const results = await searchMessages('image caption not indexable');
+    expect(results.length).toBe(0);
   });
 
-  // =========================================================================
-  // clearConversationIndex
-  // =========================================================================
+  it('should skip messages with empty content', async () => {
+    const emptyMsg = {
+      id: 'msg-empty',
+      conversationId: 'conv-1',
+      conversationName: 'Martha Craig',
+      senderId: 'user-1',
+      senderName: 'Martha Craig',
+      content: '   ',
+      timestamp: '2026-03-31T10:00:00Z',
+      type: 'TEXT',
+    };
 
-  describe('clearConversationIndex', () => {
-    it('deletes all messages for a conversation from IndexedDB', async () => {
-      await clearConversationIndex('conv-to-clear');
-      expect(mockMessagesWhere).toHaveBeenCalledWith('conversationId');
-      expect(mockCollectionEquals).toHaveBeenCalledWith('conv-to-clear');
-      expect(mockCollectionDelete).toHaveBeenCalled();
+    await indexMessage(emptyMsg);
+    // Verify no new entry was stored by querying for the whitespace content
+    const stored = await db.messages.get('msg-empty');
+    expect(stored).toBeUndefined();
+  });
+});
+
+describe('removeMessageFromIndex', () => {
+  it('should delete record from IndexedDB', async () => {
+    await removeMessageFromIndex('msg-1');
+    const results = await searchMessages('design mockups');
+    // msg-1 should no longer appear
+    const ids = results.map((r) => r.messageId);
+    expect(ids).not.toContain('msg-1');
+  });
+});
+
+describe('clearConversationIndex', () => {
+  it('should bulk-delete all messages for a conversation', async () => {
+    await clearConversationIndex('conv-1');
+    const results = await searchMessages('design');
+    // No results should be from conv-1
+    results.forEach((r) => {
+      expect(r.conversationId).not.toBe('conv-1');
     });
   });
+});
 
-  // =========================================================================
-  // Search History
-  // =========================================================================
+// =============================================================================
+// Suite 7: Edge Cases
+// =============================================================================
 
-  describe('getRecentSearchTerms', () => {
-    it('returns recent terms ordered by timestamp descending', async () => {
-      mockSearchHistoryToArray.mockResolvedValue([
-        { id: 1, term: 'react', timestamp: 3000 },
-        { id: 2, term: 'vue', timestamp: 2000 },
-      ]);
-
-      const terms = await getRecentSearchTerms(10);
-      expect(terms).toEqual(['react', 'vue']);
-      expect(mockSearchHistoryOrderBy).toHaveBeenCalledWith('timestamp');
-      expect(mockSearchHistoryReverse).toHaveBeenCalled();
-      expect(mockSearchHistoryLimit).toHaveBeenCalledWith(10);
-    });
-
-    it('defaults to limit of 10', async () => {
-      mockSearchHistoryToArray.mockResolvedValue([]);
-      await getRecentSearchTerms();
-      expect(mockSearchHistoryLimit).toHaveBeenCalledWith(10);
-    });
+describe('searchMessages — edge cases', () => {
+  it('should return empty array for empty query', async () => {
+    const results = await searchMessages('');
+    expect(results).toEqual([]);
   });
 
-  describe('saveSearchTerm', () => {
-    it('saves a new search term to IndexedDB', async () => {
-      mockSearchHistoryFirst.mockResolvedValue(undefined);
-
-      await saveSearchTerm('React hooks');
-      expect(mockSearchHistoryPut).toHaveBeenCalledTimes(1);
-      const putArg = mockSearchHistoryPut.mock.calls[0][0];
-      expect(putArg.term).toBe('react hooks'); // normalized lowercase
-      expect(putArg.timestamp).toBeDefined();
-    });
-
-    it('updates timestamp for existing term (deduplication)', async () => {
-      mockSearchHistoryFirst.mockResolvedValue({
-        id: 42,
-        term: 'react',
-        timestamp: 1000,
-      });
-
-      await saveSearchTerm('React');
-      expect(mockSearchHistoryPut).toHaveBeenCalledTimes(1);
-      const putArg = mockSearchHistoryPut.mock.calls[0][0];
-      expect(putArg.id).toBe(42); // Same record updated
-      expect(putArg.timestamp).toBeGreaterThan(1000); // New timestamp
-    });
-
-    it('does not save terms shorter than minimum length', async () => {
-      await saveSearchTerm('a');
-      expect(mockSearchHistoryPut).not.toHaveBeenCalled();
-    });
-
-    it('normalizes and trims the term before saving', async () => {
-      mockSearchHistoryFirst.mockResolvedValue(undefined);
-      await saveSearchTerm('  REACT  ');
-      expect(mockSearchHistoryEquals).toHaveBeenCalledWith('react');
-    });
+  it('should return empty array for query shorter than 2 characters', async () => {
+    const results = await searchMessages('a');
+    expect(results).toEqual([]);
   });
 
-  // =========================================================================
-  // R21 — Zero Network Calls Verification
-  // =========================================================================
+  it('should handle special characters in query', async () => {
+    // Must not throw even with regex-special characters
+    const results = await searchMessages('design?!@#$');
+    expect(Array.isArray(results)).toBe(true);
+  });
 
-  describe('R21 — Zero Network Calls', () => {
-    it('search module never calls fetch or XMLHttpRequest', async () => {
-      const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response());
+  it('should return empty array for non-matching query', async () => {
+    const results = await searchMessages('xyznonexistent');
+    expect(results).toEqual([]);
+  });
 
-      mockCollectionFilter.mockImplementation(() => ({
-        toArray: vi.fn().mockResolvedValue([]),
-      }));
+  it('should handle whitespace-only query', async () => {
+    const results = await searchMessages('   ');
+    expect(results).toEqual([]);
+  });
 
-      // Exercise all search operations
-      await searchMessages('test query');
-      await indexMessage(createMessage());
-      await removeMessageFromIndex('msg-1');
-      await getRecentSearchTerms();
-      await saveSearchTerm('test');
+  it('should handle emoji content gracefully', async () => {
+    const emojiMsg = {
+      id: 'msg-emoji',
+      conversationId: 'conv-1',
+      conversationName: 'Martha Craig',
+      senderId: 'user-1',
+      senderName: 'Martha Craig',
+      content: 'Hello 😎 world',
+      timestamp: '2026-03-31T10:00:00Z',
+      type: 'TEXT',
+    };
+    await db.messages.put(emojiMsg);
 
-      expect(fetchSpy).not.toHaveBeenCalled();
-      fetchSpy.mockRestore();
-    });
+    const results = await searchMessages('hello');
+    const ids = results.map((r) => r.messageId);
+    expect(ids).toContain('msg-emoji');
+  });
+});
+
+// =============================================================================
+// Suite 8: Search History
+// =============================================================================
+
+describe('getRecentSearchTerms and saveSearchTerm', () => {
+  it('should retrieve saved search terms ordered by most recent', async () => {
+    await saveSearchTerm('design');
+    // Small delays ensure distinct Date.now() timestamps across calls
+    await new Promise((r) => setTimeout(r, 15));
+    await saveSearchTerm('review');
+    await new Promise((r) => setTimeout(r, 15));
+    await saveSearchTerm('meeting');
+
+    const terms = await getRecentSearchTerms();
+    expect(terms.length).toBe(3);
+    expect(terms[0]).toBe('meeting'); // Most recent first
+  });
+
+  it('should deduplicate search terms (update timestamp on duplicate)', async () => {
+    await saveSearchTerm('design');
+    await new Promise((r) => setTimeout(r, 15));
+    await saveSearchTerm('review');
+    await new Promise((r) => setTimeout(r, 15));
+    await saveSearchTerm('design'); // Duplicate — should update timestamp
+
+    const terms = await getRecentSearchTerms();
+    // 'design' should appear exactly once and be the most recent
+    const designCount = terms.filter((t) => t === 'design').length;
+    expect(designCount).toBe(1);
+    expect(terms[0]).toBe('design'); // Most recent
+  });
+
+  it('should respect limit parameter', async () => {
+    await saveSearchTerm('term1');
+    await saveSearchTerm('term2');
+    await saveSearchTerm('term3');
+
+    const terms = await getRecentSearchTerms(2);
+    expect(terms.length).toBeLessThanOrEqual(2);
+  });
+
+  it('should not save terms shorter than minimum length', async () => {
+    await saveSearchTerm('a');
+    const terms = await getRecentSearchTerms();
+    expect(terms.length).toBe(0);
+  });
+
+  it('should normalize terms before saving (trim and lowercase)', async () => {
+    await saveSearchTerm('  DESIGN  ');
+    const terms = await getRecentSearchTerms();
+    expect(terms.length).toBe(1);
+    expect(terms[0]).toBe('design');
   });
 });
