@@ -5,7 +5,7 @@ CREATE TYPE "ConversationType" AS ENUM ('DIRECT', 'GROUP');
 CREATE TYPE "ParticipantRole" AS ENUM ('ADMIN', 'MEMBER');
 
 -- CreateEnum
-CREATE TYPE "MessageType" AS ENUM ('TEXT', 'IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE_NOTE');
+CREATE TYPE "MessageType" AS ENUM ('TEXT', 'IMAGE', 'VIDEO', 'DOCUMENT', 'VOICE_NOTE', 'SYSTEM');
 
 -- CreateEnum
 CREATE TYPE "MessageDeliveryStatus" AS ENUM ('SENT', 'DELIVERED', 'READ');
@@ -75,6 +75,7 @@ CREATE TABLE "messages" (
     "isDeleted" BOOLEAN NOT NULL DEFAULT false,
     "editedAt" TIMESTAMP(3),
     "deletedAt" TIMESTAMP(3),
+    "linkPreview" JSONB,
     "serverTimestamp" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "clientTimestamp" TIMESTAMP(3),
 

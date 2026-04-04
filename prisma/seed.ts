@@ -43,7 +43,7 @@ const prisma = new PrismaClient();
  * password hashes, satisfying the "run twice produces identical state" requirement.
  * This salt is ONLY used in the seed script — production code uses random salts.
  */
-const FIXED_SALT = '$2b$10$KalleSeedDeterministic';
+const FIXED_SALT = '$2b$12$KalleSeedDeterministic';
 
 /** Stable prefix for all deterministic generation, ensuring cross-run consistency. */
 const SEED_PREFIX = 'kalle-seed-v1';

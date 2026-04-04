@@ -49,6 +49,7 @@ enum MessageType {
   VIDEO
   DOCUMENT
   VOICE_NOTE
+  SYSTEM
 }
 
 /// Delivery lifecycle status of a message for a given recipient.
@@ -175,8 +176,8 @@ model Message {
   editedAt        DateTime?
   deletedAt       DateTime?
   linkPreview     Json?
-  serverTimestamp  DateTime    @default(now())
-  clientTimestamp  DateTime?
+  serverTimestamp DateTime    @default(now())
+  clientTimestamp DateTime?
 
   // Relations
   conversation Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
@@ -212,24 +213,24 @@ model MessageStatus {
 /// size is in bytes; the application enforces a 25 MB (26 214 400 bytes) limit (R8).
 /// Encryption key/IV fields store the client-side encryption metadata for E2E (R12).
 model Media {
-  id                      String   @id @default(uuid())
-  userId                  String
-  messageId               String?
-  storyId                 String?
-  mimeType                String
-  encryptedUrl            String
-  thumbnailUrl            String?
-  size                    Int
-  filename                String
-  encryptionKey           String?
-  encryptionIv            String?
-  thumbnailEncryptionKey  String?
-  thumbnailEncryptionIv   String?
-  width                   Int?
-  height                  Int?
-  duration                Int?
-  waveform                String?
-  createdAt               DateTime @default(now())
+  id                     String   @id @default(uuid())
+  userId                 String
+  messageId              String?
+  storyId                String?
+  mimeType               String
+  encryptedUrl           String
+  thumbnailUrl           String?
+  size                   Int
+  filename               String
+  encryptionKey          String?
+  encryptionIv           String?
+  thumbnailEncryptionKey String?
+  thumbnailEncryptionIv  String?
+  width                  Int?
+  height                 Int?
+  duration               Int?
+  waveform               String?
+  createdAt              DateTime @default(now())
 
   // Relations
   user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
