@@ -139,9 +139,9 @@ function testUserWithPassword(overrides?: Partial<UserWithPassword>): UserWithPa
     displayName: 'Test User',
     passwordHash: '$2a$12$storedhashedpassword',
     status: 'OFFLINE' as UserWithPassword['status'],
-    lastSeenAt: null,
-    createdAt: now,
-    updatedAt: now,
+    lastSeen: undefined,
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
     ...overrides,
   };
 }

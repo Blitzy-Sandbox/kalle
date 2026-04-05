@@ -30,7 +30,7 @@ import type { IQueueProvider } from '../../../src/domain/interfaces/IQueueProvid
 import { NotFoundError } from '../../../src/errors/NotFoundError';
 import { AuthorizationError } from '../../../src/errors/AuthorizationError';
 import { ValidationError } from '../../../src/errors/ValidationError';
-import { MessageStatusEnum } from '@kalle/shared';
+import { MessageStatusEnum, MessageType } from '@kalle/shared';
 import type { MessageResponse, MessageStatusUpdate } from '@kalle/shared';
 
 /* ────────────────────────────────────────────────────────────────────────────
@@ -129,7 +129,7 @@ function testMessageResponse(
     senderName: 'Test User',
     senderAvatar: 'https://example.com/avatar.jpg',
     ciphertext: 'base64ciphertext==',
-    type: 'TEXT',
+    type: MessageType.TEXT,
     clientMessageId: 'client-msg-1',
     serverTimestamp: now.toISOString(),
     isEdited: false,
@@ -180,7 +180,7 @@ describe('MessageService', () => {
     mockConversationRepo.resetUnreadCount.mockResolvedValue(undefined);
     mockCache.get.mockResolvedValue(null); // No cached participants
     mockCache.set.mockResolvedValue(undefined);
-    mockQueue.enqueue.mockResolvedValue(undefined);
+    mockQueue.enqueue.mockResolvedValue({ id: 'job-1', name: 'test-job', createdAt: Date.now() });
   });
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -193,7 +193,7 @@ describe('MessageService', () => {
       senderId: 'user-1',
       senderName: 'Test User',
       ciphertext: 'base64ciphertext==',
-      type: 'TEXT' as const,
+      type: MessageType.TEXT,
       clientMessageId: 'client-msg-1',
     };
 
@@ -238,7 +238,7 @@ describe('MessageService', () => {
           senderId: 'user-1',
           senderName: 'Test User',
           ciphertext: 'base64ciphertext==',
-          type: 'TEXT',
+          type: MessageType.TEXT,
           clientMessageId: 'client-msg-1',
         }),
       );
@@ -341,7 +341,7 @@ describe('MessageService', () => {
         testMessageResponse({
           ciphertext: 'newCiphertext==',
           isEdited: true,
-          editedAt: now.toISOString() as unknown as null,
+          editedAt: now.toISOString(),
         }),
       );
     });
@@ -449,7 +449,7 @@ describe('MessageService', () => {
         testMessageResponse({
           ciphertext: null as unknown as string,
           isDeleted: true,
-          deletedAt: now.toISOString() as unknown as null,
+          deletedAt: now.toISOString(),
         }),
       );
     });

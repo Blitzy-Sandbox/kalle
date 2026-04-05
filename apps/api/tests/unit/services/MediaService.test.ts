@@ -47,7 +47,7 @@ import { UnsupportedMediaTypeError } from '../../../src/errors/UnsupportedMediaT
 import { NotFoundError } from '../../../src/errors/NotFoundError';
 
 import { MediaType, ALLOWED_MIME_TYPES, MAX_FILE_SIZE } from '@kalle/shared';
-import type { MediaResponse, ThumbnailMetadata } from '@kalle/shared';
+import type { MediaResponse } from '@kalle/shared';
 
 /* ────────────────────────────────────────────────────────────────────────────
  * Constants
@@ -796,7 +796,7 @@ describe('MediaService', () => {
         url: 'https://storage/media/blob',
       });
       // Ensure thumbnail is explicitly undefined
-      delete (media as Record<string, unknown>).thumbnail;
+      delete (media as unknown as Record<string, unknown>).thumbnail;
       mockMediaRepository.findById.mockResolvedValue(media);
       mockStorageProvider.delete.mockResolvedValue(undefined);
       mockMediaRepository.delete.mockResolvedValue(undefined);

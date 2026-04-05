@@ -38,6 +38,7 @@ import type {
   ConversationListItem,
   CreateConversationDTO,
   MuteSettings,
+  UserResponse,
 } from '@kalle/shared';
 
 // =============================================================================
@@ -174,13 +175,14 @@ function createGroupConversation(
   };
 }
 
-function createMinimalUser(userId: string) {
+function createMinimalUser(userId: string): UserResponse {
   return {
     id: userId,
     email: `${userId.slice(0, 4)}@test.com`,
     displayName: `User-${userId.slice(0, 4)}`,
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    status: 'OFFLINE' as UserResponse['status'],
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
   };
 }
 
