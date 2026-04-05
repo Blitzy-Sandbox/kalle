@@ -48,6 +48,7 @@ import React, {
   useState,
 } from 'react';
 import type { MessageResponse } from '@kalle/shared';
+import { MessageType, MessageStatusEnum } from '@kalle/shared';
 import ChatHeader from './ChatHeader';
 import MessageBubble from './MessageBubble';
 import MessageInput from './MessageInput';
@@ -159,6 +160,61 @@ const LOAD_MORE_DEBOUNCE_MS = 500;
 // =============================================================================
 // Helper Functions
 // =============================================================================
+
+/**
+ * Format an ISO-8601 timestamp to a short "HH:MM" display string for
+ * message bubble timestamps (Figma: 11px, bottom-right of bubble).
+ */
+function formatMessageTime(isoTimestamp: string): string {
+  try {
+    const d = new Date(isoTimestamp);
+    if (Number.isNaN(d.getTime())) return '';
+    const h = d.getHours();
+    const m = d.getMinutes();
+    return `${h}:${m.toString().padStart(2, '0')}`;
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Map the shared-package `MessageStatusEnum` to the lowercase string union
+ * expected by `MessageBubbleProps.status`.
+ */
+function mapMessageStatus(
+  status: MessageStatusEnum,
+): 'sent' | 'delivered' | 'read' {
+  switch (status) {
+    case MessageStatusEnum.READ:
+      return 'read';
+    case MessageStatusEnum.DELIVERED:
+      return 'delivered';
+    case MessageStatusEnum.SENT:
+    default:
+      return 'sent';
+  }
+}
+
+/**
+ * Map `MessageType` to the `replyTo.mediaType` union expected by
+ * `MessageBubbleProps`.
+ */
+function mapMediaType(
+  type: MessageType,
+): 'image' | 'video' | 'document' | 'voice' | undefined {
+  switch (type) {
+    case MessageType.IMAGE:
+      return 'image';
+    case MessageType.VIDEO:
+      return 'video';
+    case MessageType.DOCUMENT:
+      return 'document';
+    case MessageType.VOICE_NOTE:
+      return 'voice';
+    default:
+      return undefined;
+  }
+}
 
 /**
  * Groups messages by date for rendering DateSeparator components between
@@ -468,13 +524,48 @@ export default function ChatView({
                   return (
                     <MessageBubble
                       key={message.id}
-                      message={message}
-                      decryptedContent={decryptedContent}
-                      isSent={isSent}
-                      showSenderName={isGroup && !isSent}
-                      decryptedReplyContent={decryptedReply}
-                      onReplyClick={onReplyClick}
-                      onLongPress={onMessageLongPress}
+                      id={message.id}
+                      content={decryptedContent}
+                      timestamp={formatMessageTime(message.serverTimestamp)}
+                      isOwnMessage={isSent}
+                      status={isSent ? mapMessageStatus(message.status) : undefined}
+                      isEdited={message.isEdited}
+                      isDeleted={message.isDeleted}
+                      replyTo={
+                        message.replyTo
+                          ? {
+                              senderName: message.replyTo.senderName,
+                              content: decryptedReply ?? '',
+                              mediaType: mapMediaType(message.replyTo.type),
+                            }
+                          : undefined
+                      }
+                      linkPreview={
+                        message.linkPreview
+                          ? {
+                              url: message.linkPreview.url,
+                              title: message.linkPreview.title ?? '',
+                              description: message.linkPreview.description,
+                              image: message.linkPreview.imageUrl,
+                              siteName: message.linkPreview.siteName,
+                            }
+                          : undefined
+                      }
+                      onLongPress={
+                        onMessageLongPress
+                          ? () => onMessageLongPress(message)
+                          : undefined
+                      }
+                      onReply={
+                        onReplyClick
+                          ? () => onReplyClick(message.id)
+                          : undefined
+                      }
+                      onSwipeReply={
+                        onReplyClick
+                          ? () => onReplyClick(message.id)
+                          : undefined
+                      }
                     />
                   );
                 })}
