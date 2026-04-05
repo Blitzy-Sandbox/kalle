@@ -104,6 +104,13 @@ export interface JWTPayload {
    */
   jti: string;
 
+  /**
+   * Token type discriminator — distinguishes access tokens from other token types.
+   * Access tokens carry `type: 'access'`; this field is checked by WebSocket
+   * authentication middleware to reject non-access tokens during connection handshake.
+   */
+  type?: string;
+
   /** Issued-at timestamp in Unix epoch seconds (RFC 7519 registered claim). */
   iat: number;
 

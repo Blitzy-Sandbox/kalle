@@ -11,14 +11,44 @@
  * - R37: /api/v1/health exposes health status; this service provides the data.
  * - R28: Zero console.log calls — structured logging only.
  * - R7 : Zero warnings build — TypeScript strict mode.
- * - R17 exception: HealthService receives raw PrismaClient and Redis instances
- *   (not domain interfaces) because health checks probe infrastructure directly.
+ * - R16: Depends on IDatabaseClient and IRedisClient interfaces — never imports
+ *   concrete PrismaClient or ioredis directly. Concrete instances injected by
+ *   the composition root (server.ts).
  */
 
-import type { PrismaClient } from '@prisma/client';
-import type Redis from 'ioredis';
 import { access } from 'node:fs/promises';
 import { constants } from 'node:fs';
+
+// ---------------------------------------------------------------------------
+// Infrastructure Interfaces (Rule R16 Compliance)
+// ---------------------------------------------------------------------------
+// HealthService MUST NOT import concrete database drivers (PrismaClient,
+// ioredis) directly. Instead, it depends on minimal interfaces describing
+// only the operations needed for health probing. The concrete instances
+// (PrismaClient, Redis) satisfy these interfaces and are injected by the
+// composition root (server.ts).
+
+/**
+ * Minimal interface for database connectivity health probing.
+ * Satisfied by PrismaClient which exposes `$queryRaw`.
+ */
+export interface IDatabaseClient {
+  $queryRaw(query: TemplateStringsArray, ...values: unknown[]): Promise<unknown>;
+}
+
+/**
+ * Minimal interface for Redis connectivity and memory health probing.
+ * Satisfied by ioredis Redis client which exposes `ping` and `info`.
+ *
+ * The `info` method signature uses `(...args: any[])` to remain compatible
+ * with ioredis's overloaded `info()` signature which accepts both positional
+ * section strings and a trailing callback.
+ */
+export interface IRedisClient {
+  ping(): Promise<string>;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- ioredis `info()` has complex overloads
+  info(...args: unknown[]): Promise<string>;
+}
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -103,12 +133,14 @@ export class HealthService {
   private readonly startTime: number;
 
   /**
-   * @param prisma - Prisma ORM client for PostgreSQL connectivity checks.
-   * @param redis  - ioredis client for Redis connectivity and memory checks.
+   * @param prisma - Database client satisfying IDatabaseClient for connectivity checks.
+   *   In production this is a PrismaClient instance, injected by the composition root.
+   * @param redis  - Redis client satisfying IRedisClient for connectivity and memory checks.
+   *   In production this is an ioredis Redis instance, injected by the composition root.
    */
   constructor(
-    private readonly prisma: PrismaClient,
-    private readonly redis: Redis
+    private readonly prisma: IDatabaseClient,
+    private readonly redis: IRedisClient,
   ) {
     this.startTime = Date.now();
   }

@@ -211,7 +211,51 @@ export function errorHandler(
   }
 
   // ------------------------------------------------------------------
-  // Step 3: Safety-net for uncaught Zod validation errors.
+  // Step 3: Handle Prisma unique constraint violation (P2002).
+  //
+  // When concurrent requests bypass the service-layer uniqueness check
+  // (e.g., two simultaneous registrations with the same email), the
+  // database enforces the unique constraint and Prisma throws a
+  // PrismaClientKnownRequestError with code 'P2002'. Without this
+  // handler, such errors fall through to the generic 500 catch-all.
+  //
+  // We detect the error by class name and `code` property to avoid
+  // importing @prisma/client in this middleware, keeping it
+  // dependency-light and framework-agnostic.
+  // ------------------------------------------------------------------
+  const prismaErr = err as Error & { code?: string; meta?: { target?: string[] } };
+  if (
+    (err.constructor?.name === 'PrismaClientKnownRequestError' ||
+     err.name === 'PrismaClientKnownRequestError') &&
+    prismaErr.code === 'P2002'
+  ) {
+    // Extract the constraint field(s) from Prisma error metadata
+    const targetFields = Array.isArray(prismaErr.meta?.target)
+      ? prismaErr.meta!.target
+      : [];
+    const fieldDescription = targetFields.length > 0
+      ? targetFields.join(', ')
+      : 'unknown field';
+
+    if (req.log) {
+      req.log.warn(
+        { correlationId, constraint: fieldDescription },
+        'Unique constraint violation (P2002)'
+      );
+    }
+
+    res.status(409).json({
+      error: {
+        code: 'CONFLICT',
+        message: `A record with the same ${fieldDescription} already exists`,
+        ...(correlationId !== undefined && { correlationId }),
+      },
+    });
+    return;
+  }
+
+  // ------------------------------------------------------------------
+  // Step 4: Safety-net for uncaught Zod validation errors.
   //
   // Normally, the validation middleware wraps ZodErrors into a
   // ValidationError (DomainError subclass) before they propagate.

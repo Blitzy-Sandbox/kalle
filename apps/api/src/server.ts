@@ -52,6 +52,9 @@ import { getCorsOptions } from './config/cors';
 // ─── App Factory Import ────────────────────────────────────────────────────────
 import { createApp } from './app';
 
+// ─── Middleware Imports ────────────────────────────────────────────────────────
+import { configureRedisStore } from './middleware/rate-limiter';
+
 // ─── Repository Imports (Concrete Classes — Rule R17: ONLY imported here) ──────
 import { UserRepository } from './repositories/UserRepository';
 import { ConversationRepository } from './repositories/ConversationRepository';
@@ -159,6 +162,13 @@ async function bootstrap(): Promise<void> {
   await redis.ping();
   logger.info('Redis connected');
 
+  // Configure Redis-backed rate limiting for horizontal scalability.
+  // This replaces the default in-memory MemoryStore with a Redis-backed
+  // store so that rate limit counters persist across server restarts and
+  // are shared across multiple API instances behind a load balancer.
+  configureRedisStore(redis);
+  logger.info('Rate limiter configured with Redis store');
+
   // ─── Step 4: Repository Construction (Rule R17) ──────────────────────────
   // Each repository receives the Prisma client and implements a domain
   // interface (IUserRepository, IConversationRepository, etc.). This is
@@ -229,9 +239,9 @@ async function bootstrap(): Promise<void> {
   const storyService = new StoryService(storyRepository, storageProvider);
   const encryptionKeyService = new EncryptionKeyService(keyRepository, auditService);
 
-  // HealthService intentionally receives raw Prisma and Redis clients
-  // rather than interfaces — an architectural exception that enables
-  // direct infrastructure health probes (documented in HealthService).
+  // HealthService depends on IDatabaseClient and IRedisClient interfaces.
+  // PrismaClient and ioredis Redis both satisfy these interfaces, so they
+  // are passed directly — the HealthService never imports concrete types.
   const healthService = new HealthService(prisma, redis);
 
   // MetricsService is self-contained — it initializes the OpenTelemetry
@@ -294,6 +304,7 @@ async function bootstrap(): Promise<void> {
     corsOptions,
     v1Router,
     pinoHttpMiddleware: pinoHttpMiddleware as unknown as import('express').RequestHandler,
+    metricsService,
   });
 
   // ─── Step 11: HTTP Server + Socket.IO Setup ──────────────────────────────

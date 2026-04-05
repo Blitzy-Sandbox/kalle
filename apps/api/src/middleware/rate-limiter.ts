@@ -1,6 +1,7 @@
 /**
  * @file apps/api/src/middleware/rate-limiter.ts
- * @description HTTP rate limiting middleware using `express-rate-limit`.
+ * @description HTTP rate limiting middleware using `express-rate-limit` with
+ * optional Redis-backed persistence via `rate-limit-redis`.
  *
  * Provides a factory function (`createRateLimiter`) that returns configured
  * Express middleware instances for IP-based request throttling. Three
@@ -16,6 +17,11 @@
  * and produces the standardized R22-compliant error shape:
  * `{ error: { code: 'RATE_LIMIT_EXCEEDED', message: '...', details: { retryAfter, limit, window } } }`
  *
+ * **Redis-backed store:** Call `configureRedisStore(redisClient)` during
+ * server bootstrap to switch all rate limiters from MemoryStore to a
+ * Redis-backed store. This ensures rate limit counters persist across
+ * server restarts and are shared across horizontal replicas.
+ *
  * This is the **HTTP-side** rate limiter only. WebSocket rate limiting
  * is handled separately in `websocket/middleware/ws-rate-limiter.ts`
  * per Rule R25.
@@ -27,16 +33,59 @@
  * - R28 (Structured Logging Only): Zero `console.log` calls.
  * - R7  (Zero Warnings Build): Compiles under `tsc --noEmit --strict` with
  *        zero warnings. All parameters are used or prefixed with `_`.
- * - R38 (Zero External Dependencies): Uses the built-in MemoryStore for
- *        Docker single-instance dev environment. No Redis store required
- *        for local development.
  * - R23 (Log Hygiene): Error details contain only rate limit metadata
  *        (retryAfter, limit, window) — no tokens, passwords, or secrets.
  */
 
 import { rateLimit } from 'express-rate-limit';
+import type { Store } from 'express-rate-limit';
+import { RedisStore } from 'rate-limit-redis';
 import type { Request, Response, NextFunction } from 'express';
+import type Redis from 'ioredis';
 import { RateLimitError } from '../errors/RateLimitError';
+
+// ---------------------------------------------------------------------------
+// Module-Level Redis Store Configuration
+// ---------------------------------------------------------------------------
+// Stores a reference to the Redis client provided by `configureRedisStore()`.
+// When set, all rate limiters created by `createRateLimiter()` use a
+// Redis-backed store rather than the default MemoryStore. This enables
+// rate limit persistence across server restarts and sharing across replicas.
+// ---------------------------------------------------------------------------
+let redisClient: Redis | null = null;
+
+/**
+ * Configures all rate limiters to use a Redis-backed store.
+ *
+ * Call this ONCE during server bootstrap after the Redis client is connected
+ * and verified healthy. All subsequent `createRateLimiter()` calls will use
+ * Redis for counter storage, enabling persistent and horizontally-shared
+ * rate limit counters.
+ *
+ * @param client - Connected ioredis client instance from `config/redis.ts`
+ */
+export function configureRedisStore(client: Redis): void {
+  redisClient = client;
+}
+
+/**
+ * Creates a Redis-backed store for express-rate-limit using the configured
+ * ioredis client. Returns undefined if no Redis client has been configured.
+ *
+ * @param prefix - Redis key prefix to isolate this limiter's counters
+ * @returns RedisStore instance or undefined (fallback to MemoryStore)
+ */
+function createRedisStoreInstance(prefix: string): Store | undefined {
+  if (!redisClient) {
+    return undefined;
+  }
+  return new RedisStore({
+    // Use ioredis sendCommand interface for rate-limit-redis v4 compatibility
+    sendCommand: (...args: string[]) =>
+      redisClient!.call(args[0], ...args.slice(1)) as never,
+    prefix: `rl:${prefix}:`,
+  });
+}
 
 /**
  * Configuration options for the rate limiter factory.
@@ -45,6 +94,7 @@ import { RateLimitError } from '../errors/RateLimitError';
  * - `windowMs` defaults to 60 000 ms (1 minute)
  * - `max` defaults to 100 requests per window
  * - `message` defaults to a generic "Too many requests" string
+ * - `keyPrefix` defaults to 'default' — used for Redis key namespacing
  */
 export interface RateLimiterOptions {
   /** Duration of the rate limit window in milliseconds. */
@@ -53,6 +103,8 @@ export interface RateLimiterOptions {
   max?: number;
   /** Human-readable message included in the RateLimitError. */
   message?: string;
+  /** Redis key prefix to isolate this limiter's counters (default: 'default'). */
+  keyPrefix?: string;
 }
 
 /**
@@ -95,12 +147,19 @@ export function createRateLimiter(options?: RateLimiterOptions) {
   const windowMs = options?.windowMs ?? 60 * 1000; // 1-minute default window
   const max = options?.max ?? 100;                  // 100 requests per window default
   const message = options?.message ?? 'Too many requests, please try again later';
+  const keyPrefix = options?.keyPrefix ?? 'default';
+
+  // Attempt to create a Redis-backed store. Falls back to the built-in
+  // MemoryStore when no Redis client has been configured (e.g. in tests
+  // or before server.ts calls configureRedisStore()).
+  const store = createRedisStoreInstance(keyPrefix);
 
   return rateLimit({
     windowMs,
     limit: max,
     standardHeaders: true,   // Return rate limit info in `RateLimit-*` headers (RFC 6585)
     legacyHeaders: false,    // Disable deprecated `X-RateLimit-*` headers
+    ...(store !== undefined && { store }),  // Use Redis store when available
 
     /**
      * Custom handler invoked when a client exceeds the rate limit.
@@ -164,12 +223,23 @@ export function createRateLimiter(options?: RateLimiterOptions) {
  *
  * Window: 15 minutes (900 000 ms)
  * Limit:  20 requests
+ *
+ * Uses lazy initialization to ensure the Redis store (configured via
+ * `configureRedisStore()` during server bootstrap) is available when
+ * the limiter is first invoked.
  */
-export const authRateLimiter = createRateLimiter({
-  windowMs: 15 * 60 * 1000,  // 15-minute window
-  max: 20,                     // 20 login/register attempts per 15 min
-  message: 'Too many authentication attempts, please try again later',
-});
+let _authLimiter: ReturnType<typeof createRateLimiter> | null = null;
+export const authRateLimiter = (req: Request, res: Response, next: NextFunction): void => {
+  if (!_authLimiter) {
+    _authLimiter = createRateLimiter({
+      windowMs: 15 * 60 * 1000,
+      max: 20,
+      message: 'Too many authentication attempts, please try again later',
+      keyPrefix: 'auth',
+    });
+  }
+  _authLimiter(req, res, next);
+};
 
 /**
  * Rate limiter for general API endpoints.
@@ -180,11 +250,20 @@ export const authRateLimiter = createRateLimiter({
  *
  * Window: 1 minute (60 000 ms)
  * Limit:  100 requests
+ *
+ * Uses lazy initialization to ensure the Redis store is available.
  */
-export const apiRateLimiter = createRateLimiter({
-  windowMs: 60 * 1000,  // 1-minute window
-  max: 100,              // 100 requests per minute
-});
+let _apiLimiter: ReturnType<typeof createRateLimiter> | null = null;
+export const apiRateLimiter = (req: Request, res: Response, next: NextFunction): void => {
+  if (!_apiLimiter) {
+    _apiLimiter = createRateLimiter({
+      windowMs: 60 * 1000,
+      max: 100,
+      keyPrefix: 'api',
+    });
+  }
+  _apiLimiter(req, res, next);
+};
 
 /**
  * Rate limiter for media upload endpoints.
@@ -195,9 +274,18 @@ export const apiRateLimiter = createRateLimiter({
  *
  * Window: 1 minute (60 000 ms)
  * Limit:  30 requests
+ *
+ * Uses lazy initialization to ensure the Redis store is available.
  */
-export const uploadRateLimiter = createRateLimiter({
-  windowMs: 60 * 1000,  // 1-minute window
-  max: 30,               // 30 uploads per minute
-  message: 'Too many upload requests, please try again later',
-});
+let _uploadLimiter: ReturnType<typeof createRateLimiter> | null = null;
+export const uploadRateLimiter = (req: Request, res: Response, next: NextFunction): void => {
+  if (!_uploadLimiter) {
+    _uploadLimiter = createRateLimiter({
+      windowMs: 60 * 1000,
+      max: 30,
+      message: 'Too many upload requests, please try again later',
+      keyPrefix: 'upload',
+    });
+  }
+  _uploadLimiter(req, res, next);
+};

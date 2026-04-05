@@ -59,10 +59,14 @@ import type { AuthController } from '../../controllers/AuthController.js';
  * - `phoneNumber` — Optional string
  */
 const registerSchema = z.object({
-  email: z.string().email('Invalid email format'),
-  password: z.string().min(8, 'Password must be at least 8 characters'),
+  email: z.string().email('Invalid email format').toLowerCase().trim(),
+  password: z
+    .string()
+    .min(8, 'Password must be at least 8 characters')
+    .max(128, 'Password must be at most 128 characters'),
   displayName: z
     .string()
+    .trim()
     .min(1, 'Display name is required')
     .max(100, 'Display name too long'),
   phoneNumber: z.string().optional(),
@@ -176,13 +180,17 @@ export function createAuthRoutes(
    * Implements refresh token rotation: the old refresh token is invalidated
    * after use, and the old access token JTI is blacklisted in Redis (R33).
    *
-   * Middleware: authMiddleware → validateBody(refreshSchema) → controller
+   * NOTE: This endpoint does NOT require authMiddleware because its purpose is
+   * to obtain a NEW access token when the current one has expired. The refresh
+   * token itself provides authentication — its validity is verified by the
+   * AuthService.refreshToken() method against the database.
+   *
+   * Middleware: validateBody(refreshSchema) → controller
    * Response:   200 OK with { data: { tokens: TokenPair } }
    * Errors:     400 (validation), 401 (invalid/expired refresh token)
    */
   router.post(
     '/refresh',
-    authMiddleware,
     validateBody(refreshSchema),
     authController.refresh,
   );

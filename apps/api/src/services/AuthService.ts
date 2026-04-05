@@ -58,7 +58,7 @@ import type {
   SessionRecord,
   CreateRefreshTokenData,
   RefreshTokenRecord,
-} from '../repositories/SessionRepository.js';
+} from '../domain/interfaces/ISessionRepository.js';
 
 import type { ICacheProvider } from '../domain/interfaces/ICacheProvider.js';
 import type { AuditService, AuditLogParams } from './AuditService.js';
@@ -102,6 +102,29 @@ const SALT_ROUNDS = 12;
  * Full key format: `blacklist:<jti>` with TTL = remaining token expiry.
  */
 const BLACKLIST_PREFIX = 'blacklist:';
+
+/**
+ * Pre-computed bcrypt hash of a dummy password.
+ * Used for constant-time login responses when the email does not exist,
+ * preventing user enumeration via timing side-channels (Issue 6).
+ * The hash corresponds to an arbitrary 32-character random string so it never
+ * matches any real user input.
+ */
+const DUMMY_PASSWORD_HASH: string =
+  '$2a$12$LJ3m4ys3Lz0mHQqGZq0Oue1J5FfB0Oj2yFh9KjYx7N3mBz6L8CXXW';
+
+/**
+ * Optional request context forwarded from the controller for audit log enrichment.
+ * Contains correlation ID, client IP, and user-agent (R29, R32).
+ */
+export interface RequestContext {
+  /** UUID v4 correlation ID assigned by the correlation-id middleware (R29). */
+  correlationId?: string;
+  /** Client IP address extracted from the request. */
+  ipAddress?: string;
+  /** Client User-Agent header value. */
+  userAgent?: string;
+}
 
 // =============================================================================
 // AuthService Class
@@ -161,15 +184,27 @@ export class AuthService {
    * 6. Write audit log entry (R32: `USER_REGISTER`)
    * 7. Return sanitised user profile + token pair
    *
-   * @param dto - Registration payload (email, password, displayName, phoneNumber?)
+   * @param dto     - Registration payload (email, password, displayName, phoneNumber?)
+   * @param context - Optional request context for audit log enrichment (R29, R32)
    * @returns AuthResponse with sanitised user info and fresh token pair
    * @throws ConflictError (409) if email is already registered
    */
-  async register(dto: RegisterDTO): Promise<AuthResponse> {
-    // Step 1 — Check for duplicate email
-    const emailExists: boolean = await this.userRepository.existsByEmail(
-      dto.email,
+  async register(
+    dto: RegisterDTO,
+    context?: RequestContext,
+  ): Promise<AuthResponse> {
+    // Normalize email to lowercase for case-insensitive uniqueness (RFC 5321)
+    const normalizedEmail: string = dto.email.toLowerCase().trim();
+
+    // Sanitize displayName — strip HTML tags to prevent stored XSS
+    const sanitizedDisplayName: string = dto.displayName.replace(
+      /<[^>]*>/g,
+      '',
     );
+
+    // Step 1 — Check for duplicate email (using normalized email)
+    const emailExists: boolean =
+      await this.userRepository.existsByEmail(normalizedEmail);
     if (emailExists) {
       throw new ConflictError('Email already registered', { field: 'email' });
     }
@@ -177,11 +212,11 @@ export class AuthService {
     // Step 2 — Hash password (R23: NEVER log password or hash)
     const passwordHash: string = await bcrypt.hash(dto.password, SALT_ROUNDS);
 
-    // Step 3 — Create user record
+    // Step 3 — Create user record (with normalized email and sanitized displayName)
     const createData: CreateUserData = {
-      email: dto.email,
+      email: normalizedEmail,
       passwordHash,
-      displayName: dto.displayName,
+      displayName: sanitizedDisplayName,
       phoneNumber: dto.phoneNumber,
     };
     const user: UserResponse = await this.userRepository.create(createData);
@@ -213,11 +248,14 @@ export class AuthService {
     };
     await this.sessionRepository.createRefreshToken(refreshData);
 
-    // Step 6 — Audit log (R32: immutable audit entry)
+    // Step 6 — Audit log (R32: immutable audit entry, R29: correlation ID)
     const auditParams: AuditLogParams = {
       action: AuditAction.USER_REGISTER,
       actorId: user.id,
       metadata: { email: user.email },
+      correlationId: context?.correlationId,
+      ipAddress: context?.ipAddress,
+      userAgent: context?.userAgent,
     };
     await this.auditService.log(auditParams);
 
@@ -251,18 +289,26 @@ export class AuthService {
    * prevent email enumeration attacks. Neither "user not found" nor "wrong
    * password" is disclosed.
    *
-   * @param dto - Login payload (email, password)
+   * @param dto     - Login payload (email, password)
+   * @param context - Optional request context for audit log enrichment (R29, R32)
    * @returns AuthResponse with sanitised user info and fresh token pair
    * @throws AuthenticationError (401) on invalid credentials
    */
-  async login(dto: LoginDTO): Promise<AuthResponse> {
-    // Step 1 — Find user by email (includes passwordHash for bcrypt comparison)
-    const user: UserWithPassword | null = await this.userRepository.findByEmail(
-      dto.email,
-    );
+  async login(
+    dto: LoginDTO,
+    context?: RequestContext,
+  ): Promise<AuthResponse> {
+    // Normalize email to lowercase for case-insensitive lookup (RFC 5321)
+    const normalizedEmail: string = dto.email.toLowerCase().trim();
 
-    // Generic error message to prevent email enumeration (R23)
+    // Step 1 — Find user by email (includes passwordHash for bcrypt comparison)
+    const user: UserWithPassword | null =
+      await this.userRepository.findByEmail(normalizedEmail);
+
+    // Constant-time response: always perform bcrypt compare even when user not
+    // found, preventing timing-based email enumeration (Issue 6).
     if (!user) {
+      await bcrypt.compare(dto.password, DUMMY_PASSWORD_HASH);
       throw new AuthenticationError('Invalid credentials');
     }
 
@@ -273,11 +319,14 @@ export class AuthService {
     );
 
     if (!isPasswordValid) {
-      // Audit failed login BEFORE throwing (R32)
+      // Audit failed login BEFORE throwing (R32, R29)
       await this.auditService.log({
         action: AuditAction.USER_LOGIN_FAILED,
         actorId: user.id,
         metadata: { reason: 'invalid_password' },
+        correlationId: context?.correlationId,
+        ipAddress: context?.ipAddress,
+        userAgent: context?.userAgent,
       });
       throw new AuthenticationError('Invalid credentials');
     }
@@ -308,10 +357,13 @@ export class AuthService {
     };
     await this.sessionRepository.createRefreshToken(refreshData);
 
-    // Step 5 — Audit successful login (R32)
+    // Step 5 — Audit successful login (R32, R29)
     await this.auditService.log({
       action: AuditAction.USER_LOGIN,
       actorId: user.id,
+      correlationId: context?.correlationId,
+      ipAddress: context?.ipAddress,
+      userAgent: context?.userAgent,
     });
 
     // Step 6 — Return response (R23: exclude passwordHash from UserWithPassword)
@@ -469,10 +521,15 @@ export class AuthService {
    *
    * @param accessToken - The raw JWT access token to revoke
    * @param userId      - ID of the user requesting revocation (ownership check)
+   * @param context     - Optional request context for audit log enrichment (R29, R32)
    * @throws NotFoundError (404) if no session matches the token's JTI
    * @throws AuthenticationError (401) if session doesn't belong to the user
    */
-  async revokeSession(accessToken: string, userId: string): Promise<void> {
+  async revokeSession(
+    accessToken: string,
+    userId: string,
+    context?: RequestContext,
+  ): Promise<void> {
     // Step 1 — Extract JTI and expiry from the access token
     const payload: JWTPayload = this.extractTokenPayload(accessToken);
     const { jti, exp } = payload;
@@ -513,11 +570,14 @@ export class AuthService {
     await this.sessionRepository.revokeSessionByJti(jti);
     await this.sessionRepository.revokeRefreshTokensBySessionId(session.id);
 
-    // Step 7 — Audit log (R32: immutable audit entry)
+    // Step 7 — Audit log (R32: immutable audit entry, R29: correlation ID)
     await this.auditService.log({
       action: AuditAction.SESSION_REVOKE,
       actorId: userId,
       metadata: { sessionId: session.id },
+      correlationId: context?.correlationId,
+      ipAddress: context?.ipAddress,
+      userAgent: context?.userAgent,
     });
   }
 
@@ -534,10 +594,14 @@ export class AuthService {
    * This is the "nuclear option" — invalidates every active session across
    * all devices. The user must re-authenticate on every device.
    *
-   * @param userId - ID of the user whose sessions should be revoked
+   * @param userId  - ID of the user whose sessions should be revoked
+   * @param context - Optional request context for audit log enrichment (R29, R32)
    * @returns Number of sessions that were revoked
    */
-  async revokeAllSessions(userId: string): Promise<number> {
+  async revokeAllSessions(
+    userId: string,
+    context?: RequestContext,
+  ): Promise<number> {
     // Step 1 — Get all active sessions for the user
     const activeSessions: SessionRecord[] =
       await this.sessionRepository.findActiveSessionsByUserId(userId);
@@ -564,11 +628,14 @@ export class AuthService {
       await this.sessionRepository.revokeAllSessionsByUserId(userId);
     await this.sessionRepository.revokeRefreshTokensByUserId(userId);
 
-    // Step 4 — Audit log (R32: immutable audit entry)
+    // Step 4 — Audit log (R32: immutable audit entry, R29: correlation ID)
     await this.auditService.log({
       action: AuditAction.SESSION_REVOKE_ALL,
       actorId: userId,
       metadata: { revokedCount },
+      correlationId: context?.correlationId,
+      ipAddress: context?.ipAddress,
+      userAgent: context?.userAgent,
     });
 
     return revokedCount;
@@ -600,12 +667,15 @@ export class AuthService {
       this.env.JWT_ACCESS_TOKEN_EXPIRY,
     );
 
-    // Build payload matching the JWTPayload interface (iat and exp added by jwt.sign)
+    // Build payload matching the JWTPayload interface (iat and exp added by jwt.sign).
+    // The `type: 'access'` discriminator is required by WebSocket auth middleware
+    // (ws-auth.ts) to validate that only access tokens are used for WS connections.
     const payload: Omit<JWTPayload, 'iat' | 'exp'> = {
       sub: userId,
       email,
       displayName,
       jti,
+      type: 'access',
     };
 
     const token: string = jwt.sign(payload, this.env.JWT_SECRET, {

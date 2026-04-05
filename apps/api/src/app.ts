@@ -31,8 +31,9 @@ import helmet from 'helmet';
 import compression from 'compression';
 
 import { correlationIdMiddleware } from './middleware/correlation-id';
-import { metricsMiddleware } from './middleware/metrics';
+import { createMetricsMiddleware } from './middleware/metrics';
 import { errorHandler } from './middleware/error-handler';
+import type { MetricsService } from './services/MetricsService';
 
 // ---------------------------------------------------------------------------
 // AppDependencies Interface
@@ -85,6 +86,16 @@ export interface AppDependencies {
    * entry's request identifier.
    */
   pinoHttpMiddleware: express.RequestHandler;
+
+  /**
+   * MetricsService instance for Prometheus-compatible HTTP request
+   * instrumentation (Rule R37). Used by createMetricsMiddleware() to record
+   * request counts, duration histograms, and active request gauges.
+   *
+   * Created by `server.ts` and passed here to wire the Prometheus exporter
+   * into the HTTP middleware chain at step 9.
+   */
+  metricsService: MetricsService;
 }
 
 // ---------------------------------------------------------------------------
@@ -209,14 +220,21 @@ export function createApp(deps: AppDependencies): Application {
   // Step 9: HTTP Metrics Instrumentation (Rule R37)
   //
   // Instruments HTTP request/response cycles for Prometheus-compatible
-  // metrics. Tracks request count, duration histogram, and active request
-  // gauge with normalised route labels to prevent high-cardinality explosion.
+  // metrics using the injected MetricsService instance. The factory
+  // createMetricsMiddleware() wires the middleware directly to MetricsService's
+  // OpenTelemetry instruments (counters, histograms, gauges), ensuring all
+  // HTTP metrics flow through a single MeterProvider and reach the
+  // /api/v1/metrics Prometheus scrape endpoint.
+  //
+  // Tracks: http_requests_total (counter), http_request_duration_seconds
+  // (histogram), http_active_requests (gauge) — all with normalised
+  // route labels to prevent high-cardinality label explosion.
   //
   // Placed after the logger so that logging occurs even if metrics recording
   // fails, and before routes so the duration measurement captures the full
   // route handler execution time.
   // -------------------------------------------------------------------------
-  app.use(metricsMiddleware);
+  app.use(createMetricsMiddleware(deps.metricsService));
 
   // -------------------------------------------------------------------------
   // Step 10: API Routes — All Versioned Endpoints (Rule R30)

@@ -47,7 +47,7 @@
  */
 
 import { Request, Response, NextFunction } from 'express';
-import type { AuthService } from '../services/AuthService.js';
+import type { AuthService, RequestContext } from '../services/AuthService.js';
 import type {
   RegisterDTO,
   LoginDTO,
@@ -55,6 +55,25 @@ import type {
   AuthResponse,
   TokenPair,
 } from '@kalle/shared';
+
+// =============================================================================
+// Helper — Extract RequestContext from Express Request
+// =============================================================================
+
+/**
+ * Builds a {@link RequestContext} from the Express request to propagate
+ * correlation ID, client IP, and user-agent into audit log entries (R29, R32).
+ *
+ * @param req - The Express request object (with correlationId set by middleware)
+ * @returns A RequestContext with correlationId, ipAddress, and userAgent fields
+ */
+function extractRequestContext(req: Request): RequestContext {
+  return {
+    correlationId: req.correlationId,
+    ipAddress: req.ip || req.socket?.remoteAddress || '',
+    userAgent: req.headers['user-agent'] || '',
+  };
+}
 
 // NOTE: AuthResponse.user conforms to a subset of the UserResponse interface
 // from @kalle/shared/types/user (id, email, displayName, avatar, phoneNumber).
@@ -147,7 +166,8 @@ export class AuthController {
   ): Promise<void> {
     try {
       const dto: RegisterDTO = req.body as RegisterDTO;
-      const result: AuthResponse = await this.authService.register(dto);
+      const context: RequestContext = extractRequestContext(req);
+      const result: AuthResponse = await this.authService.register(dto, context);
       res.status(201).json({ data: result });
     } catch (error) {
       next(error);
@@ -182,7 +202,8 @@ export class AuthController {
   ): Promise<void> {
     try {
       const dto: LoginDTO = req.body as LoginDTO;
-      const result: AuthResponse = await this.authService.login(dto);
+      const context: RequestContext = extractRequestContext(req);
+      const result: AuthResponse = await this.authService.login(dto, context);
       res.status(200).json({ data: result });
     } catch (error) {
       next(error);
@@ -272,7 +293,8 @@ export class AuthController {
       const authHeader: string = req.headers.authorization as string;
       const accessToken: string = authHeader.replace('Bearer ', '');
 
-      await this.authService.revokeSession(accessToken, userId);
+      const context: RequestContext = extractRequestContext(req);
+      await this.authService.revokeSession(accessToken, userId, context);
       res
         .status(200)
         .json({ data: { message: 'Session revoked successfully' } });
@@ -310,8 +332,9 @@ export class AuthController {
   ): Promise<void> {
     try {
       const userId: string = req.user!.userId;
+      const context: RequestContext = extractRequestContext(req);
       const revokedCount: number =
-        await this.authService.revokeAllSessions(userId);
+        await this.authService.revokeAllSessions(userId, context);
       res.status(200).json({
         data: {
           message: 'All sessions revoked successfully',

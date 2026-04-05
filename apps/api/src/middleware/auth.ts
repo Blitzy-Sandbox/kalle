@@ -163,10 +163,11 @@ export function createAuthMiddleware(
       // -----------------------------------------------------------
       // Step 3: Validate required claims
       // -----------------------------------------------------------
-      // The JWT must contain userId and jti claims. Without userId,
-      // downstream services cannot identify the requester. Without jti,
-      // the blacklist check (Step 4) cannot be performed.
-      if (!decoded.userId || !decoded.jti) {
+      // The JWT `sub` claim contains the user ID (standard JWT subject
+      // per RFC 7519). Without `sub`, downstream services cannot identify
+      // the requester. Without `jti`, the blacklist check (Step 4) cannot
+      // be performed.
+      if (!decoded.sub || !decoded.jti) {
         throw new AuthenticationError('Token missing required claims');
       }
 
@@ -191,7 +192,7 @@ export function createAuthMiddleware(
       // Controllers and downstream middleware access req.user to
       // identify the authenticated user and their session.
       req.user = {
-        userId: decoded.userId,
+        userId: decoded.sub,
         email: decoded.email,
         jti: decoded.jti,
         iat: decoded.iat as number,

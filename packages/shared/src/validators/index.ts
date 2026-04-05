@@ -77,9 +77,9 @@ export type Password = z.infer<typeof passwordSchema>;
  */
 export const displayNameSchema = z
   .string()
+  .trim()
   .min(1, 'Display name is required')
-  .max(100, 'Display name must be at most 100 characters')
-  .trim();
+  .max(100, 'Display name must be at most 100 characters');
 
 /** Inferred DisplayName type from displayNameSchema */
 export type DisplayName = z.infer<typeof displayNameSchema>;
