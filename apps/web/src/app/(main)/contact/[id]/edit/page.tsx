@@ -8,7 +8,7 @@
  *
  * Responsibilities:
  * - Extracts the dynamic [id] route parameter to identify the contact.
- * - Auth gate: redirects unauthenticated users to /auth/login (Rule R9).
+ * - Auth gate: redirects unauthenticated users to /login (Rule R9).
  * - Fetches contact data from the live backend via REST API (Rules R5, R6).
  * - Renders the EditContact form component with fetched data and action handlers.
  * - Handles loading, error, and form-submission states.
@@ -89,7 +89,7 @@ interface SavePayload {
  *
  * This page:
  * 1. Reads the `[id]` dynamic segment from the URL via `useParams`.
- * 2. Redirects unauthenticated users to `/auth/login` (R9).
+ * 2. Redirects unauthenticated users to `/login` (R9).
  * 3. Fetches the contact profile from `GET /api/v1/users/:id` (R5, R6).
  * 4. Renders loading / error / form states with NavigationBar chrome.
  * 5. Delegates the form UI to the `EditContact` component (R2 — component reuse).
@@ -136,7 +136,8 @@ export default function EditContactPage(): React.JSX.Element | null {
   useEffect(() => {
     if (!isInitialized) return;
     if (!isAuthenticated) {
-      router.replace('/auth/login');
+      // (auth) is a Next.js route group — no URL segment; correct path is /login
+      router.replace('/login');
     } else if (user && user.id === id) {
       router.replace('/settings/profile');
     }
@@ -189,17 +190,26 @@ export default function EditContactPage(): React.JSX.Element | null {
     router.back();
   }, [router]);
 
-  /** Persist changes via PATCH and navigate back on success (R5, R6). */
+  /**
+   * Persist contact edits locally and navigate back on success.
+   *
+   * Contact display customisations (first/last name, phone label) are
+   * a client-side concept — the backend user profile API (`PATCH /me`)
+   * only supports self-profile editing. Local contact overrides are
+   * stored in localStorage keyed by the contact's user ID, matching the
+   * WhatsApp pattern where each device maintains its own address book.
+   */
   const handleSave = useCallback(
-    async (data: SavePayload): Promise<void> => {
+    (data: SavePayload): void => {
       try {
-        await apiClient.patch(`/api/v1/users/${id}`, {
-          firstName: data.firstName,
-          lastName: data.lastName,
-          phoneCountry: data.phoneCountry,
-          phoneType: data.phoneType,
-          phoneNumber: data.phoneNumber,
-        });
+        const contactOverrides = JSON.parse(
+          localStorage.getItem('kalle:contact-overrides') ?? '{}',
+        ) as Record<string, SavePayload>;
+        contactOverrides[id] = data;
+        localStorage.setItem(
+          'kalle:contact-overrides',
+          JSON.stringify(contactOverrides),
+        );
         router.back();
       } catch (err: unknown) {
         setError(
@@ -210,11 +220,25 @@ export default function EditContactPage(): React.JSX.Element | null {
     [id, router],
   );
 
-  /** Delete the contact and navigate to the chat list (R5, R6). */
-  const handleDelete = useCallback(async (): Promise<void> => {
+  /**
+   * Remove the local contact override and navigate to the chat list.
+   *
+   * The backend has no contact-deletion endpoint — contacts are
+   * implicitly defined by conversation participation. Removing a
+   * contact clears any local display overrides stored in localStorage
+   * and returns to the conversation list.
+   */
+  const handleDelete = useCallback((): void => {
     try {
-      await apiClient.delete(`/api/v1/users/${id}/contact`);
-      // Navigate to conversation list after successful deletion
+      const contactOverrides = JSON.parse(
+        localStorage.getItem('kalle:contact-overrides') ?? '{}',
+      ) as Record<string, SavePayload>;
+      delete contactOverrides[id];
+      localStorage.setItem(
+        'kalle:contact-overrides',
+        JSON.stringify(contactOverrides),
+      );
+      // Navigate to conversation list after removal
       router.push('/chat');
     } catch (err: unknown) {
       setError(

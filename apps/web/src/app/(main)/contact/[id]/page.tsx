@@ -14,7 +14,7 @@
  *
  * Responsibilities:
  * - Extract dynamic [id] route parameter via useParams
- * - Auth gate: redirect unauthenticated users to /auth/login (R9)
+ * - Auth gate: redirect unauthenticated users to /login (R9)
  * - Fetch contact/user data from REST API via apiClient.get() (R6)
  * - Manage loading, error, and empty states with skeleton UI
  * - Wire navigation handlers: back, edit, message, video call, phone call
@@ -369,7 +369,8 @@ export default function ContactInfoPage() {
   // ─── Auth Gate (R9): redirect unauthenticated users ──────────────────
   useEffect(() => {
     if (!isAuthenticated) {
-      router.replace('/auth/login');
+      // (auth) is a Next.js route group — no URL segment; correct path is /login
+      router.replace('/login');
     }
   }, [isAuthenticated, router]);
 

@@ -414,12 +414,12 @@ export default function ChatConversationPage() {
   if (!isAuthenticated || !user || !accessToken) {
     return (
       <div
-        className="flex h-full items-center justify-center bg-[#EFEFF4]"
+        className="flex h-full items-center justify-center bg-surface"
         role="status"
         aria-busy="true"
         aria-label="Redirecting to login"
       >
-        <div className="h-8 w-8 animate-spin rounded-full border-4 border-[#007AFF] border-t-transparent" />
+        <div className="h-8 w-8 animate-spin rounded-full border-4 border-blue-ios border-t-transparent" />
       </div>
     );
   }
@@ -433,16 +433,16 @@ export default function ChatConversationPage() {
         aria-label="Loading conversation"
       >
         {/* Skeleton header — matches Figma header 88 px */}
-        <div className="flex h-[88px] items-center bg-[#F6F6F6] px-4 shadow-[0_0.33px_0_rgba(166,166,170,1)]">
-          <div className="h-9 w-9 animate-pulse rounded-full bg-[#D1D1D6]" />
+        <div className="flex h-[88px] items-center bg-nav px-4 shadow-nav-bottom">
+          <div className="h-9 w-9 animate-pulse rounded-full bg-disabled" />
           <div className="ml-3 space-y-1.5">
-            <div className="h-4 w-28 animate-pulse rounded bg-[#D1D1D6]" />
-            <div className="h-3 w-20 animate-pulse rounded bg-[#D1D1D6]" />
+            <div className="h-4 w-28 animate-pulse rounded bg-disabled" />
+            <div className="h-3 w-20 animate-pulse rounded bg-disabled" />
           </div>
         </div>
         {/* Skeleton body */}
         <div className="flex flex-1 items-center justify-center">
-          <div className="h-8 w-8 animate-spin rounded-full border-4 border-[#007AFF] border-t-transparent" />
+          <div className="h-8 w-8 animate-spin rounded-full border-4 border-blue-ios border-t-transparent" />
         </div>
       </div>
     );
@@ -456,11 +456,11 @@ export default function ChatConversationPage() {
         aria-label="Chat initialisation error"
       >
         {/* Minimal header with back button */}
-        <div className="flex h-[88px] items-center bg-[#F6F6F6] px-4 shadow-[0_0.33px_0_rgba(166,166,170,1)]">
+        <div className="flex h-[88px] items-center bg-nav px-4 shadow-nav-bottom">
           <button
             type="button"
             onClick={() => router.back()}
-            className="font-normal text-[17px] leading-[1.29em] text-[#007AFF] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#007AFF]"
+            className="font-normal text-[17px] leading-[1.29em] text-blue-ios focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-ios"
             aria-label="Back to chat list"
           >
             ← Back
@@ -468,7 +468,7 @@ export default function ChatConversationPage() {
         </div>
         {/* Error message + retry */}
         <div className="flex flex-1 flex-col items-center justify-center gap-4 px-4">
-          <p className="text-center text-[15px] leading-[1.33em] text-[#8E8E93]">
+          <p className="text-center text-[15px] leading-[1.33em] text-secondary">
             {initError}
           </p>
           <button
@@ -478,7 +478,7 @@ export default function ChatConversationPage() {
               setupCompleteRef.current = false;
               setIsPageReady(false);
             }}
-            className="rounded-lg bg-[#007AFF] px-6 py-2.5 text-[15px] font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#007AFF]"
+            className="rounded-lg bg-blue-ios px-6 py-2.5 text-[15px] font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-ios"
           >
             Retry
           </button>
@@ -502,7 +502,7 @@ export default function ChatConversationPage() {
       {/* ── Connection status banner ─────────────────────────────────── */}
       {!isConnected && (
         <div
-          className="flex items-center justify-center bg-[#FF3B30] px-4 py-1.5"
+          className="flex items-center justify-center bg-red-ios px-4 py-1.5"
           role="alert"
           aria-live="assertive"
         >
@@ -515,7 +515,7 @@ export default function ChatConversationPage() {
       {/* ── Upload progress bar (R8, R27) ────────────────────────────── */}
       {uploadState.isUploading && (
         <div
-          className="h-1 w-full bg-[#D1D1D6]"
+          className="h-1 w-full bg-disabled"
           role="progressbar"
           aria-valuenow={uploadState.progress}
           aria-valuemin={0}
@@ -523,7 +523,7 @@ export default function ChatConversationPage() {
           aria-label="File upload progress"
         >
           <div
-            className="h-full bg-[#007AFF] transition-all duration-300 ease-out"
+            className="h-full bg-blue-ios transition-all duration-300 ease-out"
             style={{ width: `${uploadState.progress}%` }}
           />
         </div>

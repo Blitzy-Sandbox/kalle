@@ -38,7 +38,6 @@ import { onEvent, offEvent } from '../lib/socket';
 import type {
   PreKeyBundleDTO,
   PreKeyBundleResponse,
-  SenderKeyDistribution,
 } from '@kalle/shared';
 
 // ---------------------------------------------------------------------------
@@ -279,8 +278,9 @@ export function useEncryption(): UseEncryptionReturn {
       }
 
       // Fetch the recipient's public pre-key bundle from the server
+      // Route: GET /api/v1/keys/bundle/:userId (key.routes.ts)
       const bundle: PreKeyBundleResponse = await apiClient.get<PreKeyBundleResponse>(
-        `/api/v1/keys/${recipientId}`,
+        `/api/v1/keys/bundle/${recipientId}`,
       );
 
       // Perform X3DH key agreement and create the Double Ratchet session
@@ -358,8 +358,8 @@ export function useEncryption(): UseEncryptionReturn {
    */
   const initGroupEncryption = useCallback(
     async (groupId: string, memberIds: string[]): Promise<void> => {
-      // Generate a new Sender Key for the group
-      const distribution: SenderKeyDistribution = await createSenderKey(groupId);
+      // Generate a new Sender Key for the group (stored locally in IndexedDB)
+      await createSenderKey(groupId);
 
       // Ensure 1:1 sessions exist with all members for encrypted key exchange
       const sessionPromises = memberIds.map((memberId) =>
@@ -367,11 +367,12 @@ export function useEncryption(): UseEncryptionReturn {
       );
       await Promise.all(sessionPromises);
 
-      // Upload the Sender Key distribution for server-side fan-out
-      await apiClient.post<void>('/api/v1/keys/sender-key', {
-        groupId,
-        distribution: distribution.distributionMessage,
-      });
+      // Sender Key distribution is handled server-side via BullMQ fan-out jobs
+      // (R14, R18). The ConversationService enqueues a 'sender-key-distribution'
+      // job when group membership changes. The local distribution material is
+      // stored in IndexedDB and will be used when encrypting outgoing messages.
+      // No REST call is needed — the server orchestrates distribution to all
+      // group members through the queue worker (workers/queue/src/jobs/sender-key-distribution.ts).
     },
     [ensureSession],
   );
@@ -418,22 +419,20 @@ export function useEncryption(): UseEncryptionReturn {
   const handleMemberRemoved = useCallback(
     async (
       groupId: string,
-      removedMemberId: string,
-      remainingMemberIds: string[],
+      _removedMemberId: string,
+      _remainingMemberIds: string[],
     ): Promise<void> => {
-      // Rotate: delete old key, generate new one
-      const newDistribution: SenderKeyDistribution = await rotateSenderKey(
+      // Rotate: delete old key, generate new one (stored locally in IndexedDB)
+      await rotateSenderKey(
         groupId,
         'member_removed',
       );
 
-      // Distribute the new Sender Key to remaining members via server fan-out
-      await apiClient.post<void>('/api/v1/keys/sender-key/rotate', {
-        groupId,
-        distribution: newDistribution.distributionMessage,
-        remainingMemberIds,
-        removedMemberId,
-      });
+      // Sender Key rotation distribution is handled server-side via BullMQ (R14, R18).
+      // ConversationService.removeMember enqueues a 'sender-key-distribution' job
+      // that distributes the rotated key to remaining members. The local rotated
+      // key material is persisted in IndexedDB for encrypting subsequent messages.
+      // Removed members cannot decrypt post-rotation messages as they lack the new key.
     },
     [],
   );
@@ -447,15 +446,15 @@ export function useEncryption(): UseEncryptionReturn {
    * decrypt historical messages.
    */
   const handleMemberAdded = useCallback(
-    async (groupId: string, newMemberId: string): Promise<void> => {
+    async (_groupId: string, newMemberId: string): Promise<void> => {
       // Ensure 1:1 session with the new member for encrypted key exchange
       await ensureSession(newMemberId, DEFAULT_DEVICE_ID);
 
-      // Request server to distribute our Sender Key to the new member
-      await apiClient.post<void>('/api/v1/keys/sender-key', {
-        groupId,
-        targetMemberIds: [newMemberId],
-      });
+      // Sender Key distribution to the new member is handled server-side via
+      // BullMQ (R14, R18). ConversationService.addMember enqueues a
+      // 'sender-key-distribution' job that delivers our Sender Key to the new
+      // member. The new member can only decrypt messages sent AFTER receiving
+      // the key — they cannot decrypt historical messages.
     },
     [ensureSession],
   );

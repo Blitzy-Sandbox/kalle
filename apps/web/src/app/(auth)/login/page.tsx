@@ -405,7 +405,7 @@ export default function LoginPage(): JSX.Element {
           aria-live="polite"
         >
           {error && (
-            <p className="text-center font-sans text-sm text-[#FF3B30]">
+            <p className="text-center font-sans text-sm text-red-ios">
               {error}
             </p>
           )}

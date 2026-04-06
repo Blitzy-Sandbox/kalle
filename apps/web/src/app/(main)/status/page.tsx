@@ -13,7 +13,7 @@
 //   FEED            → VIEWER  (story tap)     → FEED (on close)
 //
 // Data Flow:
-//   mount → apiClient.get(/api/v1/stories) → setStoriesFeed(feed)
+//   mount → apiClient.get(/api/v1/stories/feed) + .get(/api/v1/stories/me) → setStoriesFeed + setMyStory
 //   socket story events  → addStory / deleteStory / viewStory
 //   unmount → clearAll()
 //
@@ -90,6 +90,7 @@ export default function StatusPage(): React.JSX.Element {
   const removeExpiredStories = useStoryStore((s) => s.removeExpiredStories);
   const setActiveStoryUser = useStoryStore((s) => s.setActiveStoryUser);
   const clearAll = useStoryStore((s) => s.clearAll);
+  const setMyStory = useStoryStore((s) => s.setMyStory);
 
   // ===========================================================================
   // Store Selectors — authStore & uiStore
@@ -122,8 +123,13 @@ export default function StatusPage(): React.JSX.Element {
   /**
    * Effect 2 — Fetch Stories Feed on Mount
    *
-   * Calls GET /api/v1/stories to retrieve the current story feed.
-   * Sets the result into the storyStore via setStoriesFeed.
+   * Calls two separate backend endpoints (story.routes.ts):
+   * - GET /api/v1/stories/feed  → contacts' grouped story feed
+   * - GET /api/v1/stories/me    → current user's own active stories
+   *
+   * Results are merged: feed goes to storyStore, myStatus used for the
+   * "My Status" row in Figma Screen 8.
+   *
    * Stories are NOT encrypted (Rule R12) — responses are plaintext.
    * No mock data — all data from live backend (Rule R5).
    */
@@ -132,18 +138,31 @@ export default function StatusPage(): React.JSX.Element {
 
     const fetchStories = async (): Promise<void> => {
       try {
-        const response = await apiClient.get<{
-          feed: StoryFeedItem[];
-          myStatus: {
-            hasStatus: boolean;
-            stories: StoryResponse[];
-            lastUpdated?: string;
-          };
-        }>('/api/v1/stories');
+        // Fetch contacts' story feed and current user's stories in parallel
+        const [feedResponse, myStoriesResponse] = await Promise.all([
+          apiClient.get<{ data: StoryFeedItem[] }>('/api/v1/stories/feed'),
+          apiClient.get<{ data: StoryResponse[] }>('/api/v1/stories/me'),
+        ]);
 
         if (cancelled) return;
 
-        setStoriesFeed(response.feed ?? []);
+        // Set the contacts' story feed into the store
+        const feed = feedResponse.data ?? feedResponse as unknown as StoryFeedItem[];
+        setStoriesFeed(Array.isArray(feed) ? feed : []);
+
+        // Build MyStatusInfo and set into store for the "My Status" row
+        const myStoriesList = myStoriesResponse.data ?? myStoriesResponse as unknown as StoryResponse[];
+        const activeMyStories = Array.isArray(myStoriesList) ? myStoriesList : [];
+        if (activeMyStories.length > 0) {
+          const sortedByDate = [...activeMyStories].sort(
+            (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+          );
+          setMyStory({
+            hasStatus: true,
+            stories: sortedByDate,
+            lastUpdated: sortedByDate[sortedByDate.length - 1]?.createdAt,
+          });
+        }
       } catch {
         if (cancelled) return;
         showToast('Failed to load status updates', 'error');
@@ -159,7 +178,7 @@ export default function StatusPage(): React.JSX.Element {
     return () => {
       cancelled = true;
     };
-  }, [setStoriesFeed, showToast]);
+  }, [setStoriesFeed, setMyStory, showToast]);
 
   /**
    * Effect 3 — Periodic Expired Story Removal
@@ -458,7 +477,7 @@ export default function StatusPage(): React.JSX.Element {
                 My Status
               </p>
               <p
-                className="mt-[4px] font-normal text-[14px] leading-[1.14em] tracking-[-0.015em] text-[#8E8E93]"
+                className="mt-[4px] font-normal text-[14px] leading-[1.14em] tracking-[-0.015em] text-secondary"
               >
                 {myStory?.hasStatus
                   ? `${myStory.stories.length} ${myStory.stories.length === 1 ? 'update' : 'updates'} posted`

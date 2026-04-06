@@ -418,8 +418,9 @@ export function useMessages(): UseMessagesReturn {
         const sessionExists = await hasSession(recipientId, DEFAULT_DEVICE_ID);
         if (!sessionExists) {
           // Fetch the recipient's prekey bundle from the server
+          // Route: GET /api/v1/keys/bundle/:userId (key.routes.ts)
           const bundle = await apiClient.get<PreKeyBundleResponse>(
-            `/api/v1/keys/${recipientId}`,
+            `/api/v1/keys/bundle/${recipientId}`,
           );
           await createSession(recipientId, DEFAULT_DEVICE_ID, bundle);
         }
@@ -676,8 +677,9 @@ export function useMessages(): UseMessagesReturn {
           queryParams.set('cursor', cursor);
         }
 
+        // Route: GET /api/v1/messages/conversations/:cId/messages (message.routes.ts)
         const response = await apiClient.get<GetMessagesResponse>(
-          `/api/v1/conversations/${conversationId}/messages?${queryParams.toString()}`,
+          `/api/v1/messages/conversations/${conversationId}/messages?${queryParams.toString()}`,
         );
 
         const fetchedMessages = response.data;
