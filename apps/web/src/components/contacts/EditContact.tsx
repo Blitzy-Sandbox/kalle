@@ -68,7 +68,7 @@ const ChevronRight: React.FC = () => (
 const inputClasses = [
   'w-full h-[50px]',
   'ps-4',
-  'text-[16px] font-normal leading-[1.3125em] tracking-[-0.033em]',
+  'text-[16px] font-normal leading-[1.3125em] tracking-[-0.021em]',
   'text-black bg-white',
   'border-none outline-none',
   'focus-visible:ring-2 focus-visible:ring-blue-ios focus-visible:ring-inset',
@@ -76,7 +76,7 @@ const inputClasses = [
 
 /* Shared Tailwind classes for section labels — "Name", "Phone" (SF Pro Text 600, 16px) */
 const sectionLabelClasses = [
-  'text-[16px] font-semibold leading-[1.3125em] tracking-[-0.033em]',
+  'text-[16px] font-semibold leading-[1.3125em] tracking-[-0.021em]',
   'text-black',
 ].join(' ');
 
@@ -84,7 +84,7 @@ const sectionLabelClasses = [
 const actionRowClasses = [
   'flex items-center w-full h-[50px]',
   'ps-4',
-  'text-[16px] font-normal leading-[1.3125em] tracking-[-0.033em]',
+  'text-[16px] font-normal leading-[1.3125em] tracking-[-0.021em]',
   'bg-white',
   'focus-visible:ring-2 focus-visible:ring-blue-ios focus-visible:ring-inset',
 ].join(' ');
@@ -243,7 +243,7 @@ const EditContact: FC<EditContactProps> = ({
                 className={[
                   'flex items-center justify-between w-full h-[50px]',
                   'ps-4 pe-4',
-                  'text-[16px] font-normal leading-[1.3125em] tracking-[-0.033em]',
+                  'text-[16px] font-normal leading-[1.3125em] tracking-[-0.021em]',
                   'text-black bg-white',
                   'focus-visible:ring-2 focus-visible:ring-blue-ios focus-visible:ring-inset',
                 ].join(' ')}
@@ -270,7 +270,7 @@ const EditContact: FC<EditContactProps> = ({
               ].join(' ')}
               aria-label={`Phone type: ${formState.phoneType}. Tap to change`}
             >
-              <span className="text-[16px] font-normal leading-[1.3125em] tracking-[-0.033em] text-blue-ios">
+              <span className="text-[16px] font-normal leading-[1.3125em] tracking-[-0.021em] text-blue-ios">
                 {formState.phoneType}
               </span>
               <ChevronRight />

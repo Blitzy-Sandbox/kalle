@@ -126,11 +126,11 @@ const config: Config = {
        *
        * Gap Resolution (Section 0.6.4): SF Pro Text uses percentage-based
        * negative tracking. Converted to em for Tailwind compatibility.
-       * -2.35% ≈ -0.04em, -1.875% ≈ -0.03em
+       * Conversion: divide percentage by 100 (e.g. -2.35% / 100 = -0.0235em ≈ -0.024em).
        * ============================================================ */
       letterSpacing: {
-        'tight-ios': '-0.04em',       /* primary SF Pro Text tracking (-2.35%) */
-        'tighter-ios': '-0.03em',     /* secondary tracking (-1.875%) for 16px text */
+        'tight-ios': '-0.024em',      /* primary SF Pro Text tracking (-2.35% / 100 ≈ -0.024em) */
+        'tighter-ios': '-0.019em',    /* secondary tracking (-1.875% / 100 ≈ -0.019em) for 16px text */
       },
 
       /* ============================================================

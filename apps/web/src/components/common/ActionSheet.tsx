@@ -229,17 +229,16 @@ export const ActionSheet: React.FC<ActionSheetProps> = ({
                   {item.label}
                 </button>
 
-                {/* Separator between items: 0.33px in #C6C6C8 */}
-                {/* NOTE: This color is specific to action sheets — NOT the standard */}
-                {/*        separator token rgba(60,60,67,0.29)                       */}
+                {/* Separator after every item (including last — bottom edge): 0.33px in #C6C6C8 */}
+                {/* Figma nodes 0:10274–0:10278 show N separators for N items.         */}
+                {/* NOTE: This color is specific to action sheets — NOT the standard    */}
+                {/*        separator token rgba(60,60,67,0.29)                          */}
                 {/* BLITZY [DESIGN_SYSTEM_GAP]: Figma #C6C6C8 (action sheet separator) differs from standard separator token. Used arbitrary value. */}
-                {idx < items.length - 1 && (
-                  <div
-                    className="h-[0.33px] w-full bg-[#C6C6C8]"
-                    role="separator"
-                    aria-hidden="true"
-                  />
-                )}
+                <div
+                  className="h-[0.33px] w-full bg-[#C6C6C8]"
+                  role="separator"
+                  aria-hidden="true"
+                />
               </React.Fragment>
             ))}
           </div>
@@ -248,7 +247,7 @@ export const ActionSheet: React.FC<ActionSheetProps> = ({
           {/* Cancel button — separate card below with ~8px gap (mt-2)       */}
           {/* Figma node 0:10284: 355px × 57px, bg white, borderRadius 14px */}
           {/* Text: SF Pro Text 600, 19px, lineHeight 1.263em,               */}
-          {/*        letterSpacing -2.37% ≈ -0.045em, color #007AFF          */}
+          {/*        letterSpacing -2.37% / 100 = -0.024em, color #007AFF    */}
           {/* -------------------------------------------------------------- */}
           <button
             type="button"
@@ -256,7 +255,7 @@ export const ActionSheet: React.FC<ActionSheetProps> = ({
             className={[
               'mt-2 flex w-full items-center justify-center',
               'h-[57px] rounded-[14px] bg-white',
-              'text-[19px] font-semibold leading-[1.263em] tracking-[-0.045em]',
+              'text-[19px] font-semibold leading-[1.263em] tracking-[-0.024em]',
               'font-sans text-blue-ios',
               'active:bg-gray-100',
               'focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-ios focus-visible:ring-offset-1',

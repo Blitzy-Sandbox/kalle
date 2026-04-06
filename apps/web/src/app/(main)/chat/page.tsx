@@ -730,11 +730,16 @@ export default function ChatListPage() {
           >
             Archive
           </button>
-          {/* BLITZY [STATE]: Figma shows Read All as disabled (#C7C7CC) when nothing selected, but AAP Phase 9 specifies "always available". Following AAP directive. */}
+          {/* Figma fill_LRANRD (#C7C7CC) — all three toolbar buttons are gray when nothing selected.
+               Read All remains always clickable (no disabled) per AAP, but visually matches siblings per Figma R1. */}
           <button
             type="button"
             onClick={handleReadAll}
-            className="text-[17px] font-normal leading-[1.19em] tracking-tight-ios text-blue-ios focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-ios focus-visible:outline-offset-2"
+            className={`text-[17px] font-normal leading-[1.19em] tracking-tight-ios focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-ios focus-visible:outline-offset-2 ${
+              hasSelection
+                ? 'text-blue-ios'
+                : 'text-[#C7C7CC]'
+            }`}
             aria-label="Mark all conversations as read"
           >
             Read All

@@ -238,8 +238,8 @@ export const SettingsRow: React.FC<SettingsRowProps> = ({
             hasIcon ? 'ml-[15px]' : 'ml-0',
             /* Flex-grow to fill available space, pushing right content to edge */
             'flex-1 truncate',
-            /* Typography: SF Pro Text 400, 16px, lineHeight 1.375em, tracking -0.033em */
-            'font-sans font-normal text-[16px] leading-[1.375em] tracking-[-0.033em]',
+            /* Typography: SF Pro Text 400, 16px, lineHeight 1.375em, tracking -0.021em (-2.06% / 100) */
+            'font-sans font-normal text-[16px] leading-[1.375em] tracking-[-0.021em]',
             /* Label color variant */
             resolvedLabelColor,
           ].join(' ')}
@@ -251,7 +251,7 @@ export const SettingsRow: React.FC<SettingsRowProps> = ({
         <div className="flex items-center gap-2 flex-shrink-0 ml-2">
           {/* Optional value text (secondary gray, right-aligned before chevron) */}
           {value && (
-            <span className="font-sans font-normal text-[16px] leading-[1.375em] tracking-[-0.033em] text-secondary">
+            <span className="font-sans font-normal text-[16px] leading-[1.375em] tracking-[-0.021em] text-secondary">
               {value}
             </span>
           )}

@@ -307,14 +307,14 @@ const ContactInfo: FC<ContactInfoProps> = ({
         leftAction={
           <span className="inline-flex items-center gap-[5px] text-blue-ios">
             <BackChevron />
-            <span className="font-sans font-normal text-[17px] leading-[1.294em] tracking-[-0.04em] max-w-[90px] truncate">
+            <span className="font-sans font-normal text-[17px] leading-[1.294em] tracking-[-0.024em] max-w-[90px] truncate">
               {name}
             </span>
           </span>
         }
         onLeftAction={handleBack}
         rightAction={
-          <span className="font-sans font-normal text-[17px] leading-[1.294em] tracking-[-0.04em] text-blue-ios">
+          <span className="font-sans font-normal text-[17px] leading-[1.294em] tracking-[-0.024em] text-blue-ios">
             Edit
           </span>
         }
@@ -352,7 +352,7 @@ const ContactInfo: FC<ContactInfoProps> = ({
           <div className="relative flex items-start justify-between pl-[15px] pr-[15px] pt-[11px] h-[66px]">
             {/* Left: Name + Phone */}
             <div className="flex flex-col min-w-0">
-              <span className="font-sans font-medium text-[18px] leading-[1.278em] tracking-[-0.04em] text-black truncate">
+              <span className="font-sans font-medium text-[18px] leading-[1.278em] tracking-[-0.024em] text-black truncate">
                 {name}
               </span>
               <span className="font-sans font-normal text-[12px] leading-[1.333em] text-secondary mt-[6px]">
@@ -416,11 +416,11 @@ const ContactInfo: FC<ContactInfoProps> = ({
                Date at (15,34.5): 12px/1.333em, #8E8E93 */}
           <div className="px-[15px] pt-[11px] pb-[14px]">
             {statusText ? (
-              <p className="font-sans font-normal text-[14px] leading-[1.143em] tracking-[-0.02em] text-black">
+              <p className="font-sans font-normal text-[14px] leading-[1.143em] tracking-[-0.014em] text-black">
                 {statusText}
               </p>
             ) : (
-              <p className="font-sans font-normal text-[14px] leading-[1.143em] tracking-[-0.02em] text-secondary">
+              <p className="font-sans font-normal text-[14px] leading-[1.143em] tracking-[-0.014em] text-secondary">
                 No status
               </p>
             )}
@@ -579,7 +579,7 @@ const ContactInfo: FC<ContactInfoProps> = ({
 
             {/* Label + description, stacked vertically */}
             <div className="flex-1 min-w-0">
-              <span className="block font-sans font-normal text-[16px] leading-[1.375em] tracking-[-0.033em] text-black">
+              <span className="block font-sans font-normal text-[16px] leading-[1.375em] tracking-[-0.021em] text-black">
                 Encryption
               </span>
               <span className="block font-sans font-normal text-[11px] leading-[1.273em] tracking-[-0.002em] text-secondary mt-[2px]">
