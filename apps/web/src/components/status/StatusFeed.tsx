@@ -55,6 +55,10 @@ import iconEditPencil from '@/assets/icons/icon-edit-pencil.svg';
 export interface StatusFeedProps {
   /** Additional CSS class names for the root container. */
   className?: string;
+  /** Callback invoked when the pencil/text status button is pressed. */
+  onTextStatusPress?: () => void;
+  /** Callback invoked when the camera status button is pressed. */
+  onCameraPress?: () => void;
 }
 
 // =============================================================================
@@ -85,7 +89,7 @@ const CLEANUP_INTERVAL_MS = 60_000;
  * - Semantic roles on list containers
  * - Motion-safe transitions
  */
-const StatusFeed: FC<StatusFeedProps> = ({ className }) => {
+const StatusFeed: FC<StatusFeedProps> = ({ className, onTextStatusPress, onCameraPress }) => {
   /* ── Store Selectors ─────────────────────────────────────────────────── */
 
   const stories = useStoryStore((s) => s.stories);
@@ -157,14 +161,14 @@ const StatusFeed: FC<StatusFeedProps> = ({ className }) => {
   /** Handle camera action-button press (stops propagation to the row). */
   const handleCameraPress = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
-    /* Opens camera for photo/video status */
-  }, []);
+    onCameraPress?.();
+  }, [onCameraPress]);
 
-  /** Handle pencil/text action-button press. */
+  /** Handle pencil/text action-button press — opens text status composer. */
   const handleTextStatusPress = useCallback((e: React.MouseEvent) => {
     e.stopPropagation();
-    /* Opens text-status composer */
-  }, []);
+    onTextStatusPress?.();
+  }, [onTextStatusPress]);
 
   /** Handle a contact's status row press — opens the story viewer. */
   const handleStatusItemClick = useCallback(

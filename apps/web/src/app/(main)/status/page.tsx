@@ -500,7 +500,7 @@ export default function StatusPage(): React.JSX.Element {
   // StatusBar → NavigationBar → My Status row → Recent Updates/Empty State.
   // It manages its own layout, ARIA landmarks, and interaction handlers.
   // Communication flows through the storyStore (activeStoryUserId) and
-  // direct handler stubs (camera/pencil — to be wired via store in future).
+  // callback props (onTextStatusPress triggers the composer overlay).
   return (
     <section
       aria-label="Status"
@@ -513,7 +513,7 @@ export default function StatusPage(): React.JSX.Element {
           {`You have ${myStory.stories.length} active ${myStory.stories.length === 1 ? 'status' : 'statuses'}`}
         </div>
       )}
-      <StatusFeed />
+      <StatusFeed onTextStatusPress={() => setShowComposer(true)} />
     </section>
   );
 }
