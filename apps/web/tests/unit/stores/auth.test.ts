@@ -32,11 +32,11 @@ const mockSetTokenAccessor = vi.fn();
 vi.mock('@/lib/api', () => ({
   setTokenAccessor: mockSetTokenAccessor,
   apiClient: {
-    get: vi.fn(),
-    post: vi.fn(),
-    patch: vi.fn(),
-    put: vi.fn(),
-    delete: vi.fn(),
+    get: vi.fn().mockResolvedValue(undefined),
+    post: vi.fn().mockResolvedValue(undefined),
+    patch: vi.fn().mockResolvedValue(undefined),
+    put: vi.fn().mockResolvedValue(undefined),
+    delete: vi.fn().mockResolvedValue(undefined),
   },
   ApiError: class extends Error {
     status: number;
@@ -134,6 +134,21 @@ describe('authStore', () => {
 
     // Re-import store fresh for each test to get clean Zustand state
     vi.resetModules();
+
+    // Re-import the mocked API module and re-apply mockResolvedValue.
+    // vi.restoreAllMocks() in afterEach strips mockResolvedValue from
+    // vi.fn() instances; re-applying here ensures apiClient methods
+    // always return Promises (required by updateProfile's .then() chain).
+    const apiMod = (await import('@/lib/api')) as Record<string, unknown>;
+    const client = apiMod.apiClient as Record<string, ReturnType<typeof vi.fn>>;
+    if (client) {
+      client.get.mockResolvedValue(undefined);
+      client.post.mockResolvedValue(undefined);
+      client.patch.mockResolvedValue(undefined);
+      client.put.mockResolvedValue(undefined);
+      client.delete.mockResolvedValue(undefined);
+    }
+
     const mod = await import('@/stores/authStore');
     useAuthStore = mod.useAuthStore;
     selectIsAuthenticated = mod.selectIsAuthenticated;

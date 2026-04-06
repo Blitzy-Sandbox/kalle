@@ -589,7 +589,7 @@ export default function ChatListPage() {
         </button>
         <button
           type="button"
-          onClick={() => !isEditMode && router.push('/chat/new-group')}
+          onClick={() => !isEditMode && router.push('/chat/new?type=group')}
           disabled={isEditMode}
           className={`text-[17px] font-normal leading-[1.19em] tracking-tight-ios focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-ios focus-visible:outline-offset-2 ${
             isEditMode

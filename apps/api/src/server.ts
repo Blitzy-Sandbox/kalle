@@ -236,7 +236,7 @@ async function bootstrap(): Promise<void> {
   );
 
   const mediaService = new MediaService(mediaRepository, storageProvider);
-  const storyService = new StoryService(storyRepository, storageProvider);
+  const storyService = new StoryService(storyRepository, storageProvider, conversationRepository);
   const encryptionKeyService = new EncryptionKeyService(keyRepository, auditService);
 
   // HealthService depends on IDatabaseClient and IRedisClient interfaces.

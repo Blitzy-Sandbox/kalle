@@ -41,7 +41,7 @@
 import { create } from 'zustand';
 import { persist, createJSONStorage } from 'zustand/middleware';
 import type { UserResponse, TokenPair, UpdateProfileDTO } from '@kalle/shared';
-import { setTokenAccessor } from '../lib/api';
+import { setTokenAccessor, apiClient } from '../lib/api';
 
 // =============================================================================
 // State Interface
@@ -291,12 +291,31 @@ export const useAuthStore = create<AuthState>()(
           updates.phoneNumber = partial.phoneNumber;
         }
 
+        // Optimistic local update — immediately reflects in the UI.
         set({
           user: {
             ...user,
             ...updates,
           },
         });
+
+        // Persist to backend via PATCH /api/v1/users/me (R5 + R6).
+        // Fire-and-forget: the backend call runs in the background.
+        // On failure, revert the local optimistic update.
+        // Note: apiClient.patch<T> already unwraps the `data` envelope
+        // from the API response, so the returned value is UserResponse.
+        apiClient
+          .patch<UserResponse>('/api/v1/users/me', partial)
+          .then((serverUser) => {
+            // Sync with server response to ensure consistency
+            if (serverUser) {
+              set({ user: serverUser });
+            }
+          })
+          .catch(() => {
+            // Revert to the original user state on backend failure
+            set({ user });
+          });
       },
 
       setUser: (user: UserResponse): void => {

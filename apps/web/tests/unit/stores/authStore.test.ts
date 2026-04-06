@@ -30,9 +30,13 @@ import { UserStatus } from '@kalle/shared';
 // ---------------------------------------------------------------------------
 
 const mockSetTokenAccessor = vi.hoisted(() => vi.fn());
+const mockApiClient = vi.hoisted(() => ({
+  patch: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock('@/lib/api', () => ({
   setTokenAccessor: mockSetTokenAccessor,
+  apiClient: mockApiClient,
 }));
 
 // ---------------------------------------------------------------------------

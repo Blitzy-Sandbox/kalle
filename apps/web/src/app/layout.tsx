@@ -61,8 +61,9 @@ export const metadata: Metadata = {
 export const viewport: Viewport = {
   width: 'device-width',
   initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
+  /* WCAG 2.1 AA compliance: removed maximumScale=1 and userScalable=false
+     to allow users who need zoom to pinch-to-zoom. This resolves the
+     Lighthouse accessibility failure for restricted zoom. */
   themeColor: '#F6F6F6',
   viewportFit: 'cover',
 };

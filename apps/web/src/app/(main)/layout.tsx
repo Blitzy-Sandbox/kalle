@@ -125,7 +125,9 @@ export default function MainLayout({
   const { clearAll: clearPresence } = usePresenceStore();
   const router = useRouter();
   const pathname = usePathname();
-  const { connect, disconnect } = useSocket();
+  // useSocket() manages the Socket.IO lifecycle internally (auto-connect on
+  // auth, auto-disconnect on logout). We invoke it here to activate the hook.
+  useSocket();
   const { isMobile, isTablet, isDesktop } = useResponsive();
 
   // Activate presence tracking (online/offline, typing indicators).
@@ -156,25 +158,14 @@ export default function MainLayout({
   }, [isInitialized, isAuthenticated, user, router]);
 
   // ---------------------------------------------------------------------------
-  // Effect 2 — Socket.IO Connection Lifecycle
-  //
-  // Manually triggers WebSocket connect when the user is authenticated.
-  // The useSocket hook also auto-connects internally, but the explicit
-  // connect() call ensures immediate connection on layout mount. The
-  // cleanup function disconnects on unmount or when auth state changes.
+  // NOTE: Socket.IO connection lifecycle is managed entirely by useSocket()
+  // hook internally (Effect 1 in useSocket.ts). A redundant connect/disconnect
+  // effect here was removed because it caused duplicate connection attempts
+  // that cascaded into 300+ failed WebSocket connections (Issue #5 fix).
   // ---------------------------------------------------------------------------
-  useEffect(() => {
-    if (isAuthenticated) {
-      connect();
-      return () => {
-        disconnect();
-      };
-    }
-    return undefined;
-  }, [isAuthenticated, connect, disconnect]);
 
   // ---------------------------------------------------------------------------
-  // Effect 3 — Presence State Cleanup
+  // Effect 2 — Presence State Cleanup
   //
   // Clears all cached presence data (online users, typing indicators,
   // last-seen timestamps) when the layout unmounts (e.g., user navigates
@@ -184,7 +175,7 @@ export default function MainLayout({
     return () => {
       clearPresence();
     };
-  }, [clearPresence]);
+  }, []);
 
   // ---------------------------------------------------------------------------
   // Auth Loading State

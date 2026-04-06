@@ -355,8 +355,17 @@ async function request<T>(
     try {
       await refreshAccessToken();
       return request<T>(endpoint, options, true);
-    } catch {
-      // Refresh failed — fall through to throw the original 401 error
+    } catch (_refreshError: unknown) {
+      // Refresh failed — clear auth state and redirect to login
+      tokenAccessor?.clearTokens();
+      if (typeof window !== 'undefined') {
+        window.location.href = '/login';
+      }
+      throw new ApiError(
+        'AUTHENTICATION_ERROR',
+        'Session expired. Please log in again.',
+        401,
+      );
     }
   }
 

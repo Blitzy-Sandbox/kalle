@@ -37,9 +37,17 @@ const SOCKET_URL: string =
   process.env.NEXT_PUBLIC_WS_URL ?? 'http://localhost:3001';
 
 /**
+ * Maximum Socket.IO reconnection attempts before giving up.
+ * A finite limit (5) prevents the client from generating hundreds of rapid
+ * failed connections that trigger the server's rate limiter (R25) and degrade
+ * the browser. Users can retry manually by navigating or refreshing.
+ */
+const MAX_RECONNECT_ATTEMPTS = 5;
+
+/**
  * Socket.IO client options:
  * - autoConnect: false — socket must be explicitly connected after auth token is set
- * - reconnection: true with Infinity attempts — required for R13 offline reconciliation
+ * - reconnection: true with limited attempts — prevents connection storms
  * - reconnectionDelay: 1 s initial, 5 s max (exponential backoff)
  * - timeout: 10 s connection handshake timeout
  * - transports: WebSocket preferred, long-polling fallback
@@ -47,7 +55,7 @@ const SOCKET_URL: string =
 const SOCKET_OPTIONS: Parameters<typeof io>[1] = {
   autoConnect: false,
   reconnection: true,
-  reconnectionAttempts: Infinity,
+  reconnectionAttempts: MAX_RECONNECT_ATTEMPTS,
   reconnectionDelay: 1_000,
   reconnectionDelayMax: 5_000,
   timeout: 10_000,
@@ -65,6 +73,15 @@ let socket: TypedSocket | null = null;
  * reconnection events.
  */
 let hasBeenConnected = false;
+
+/**
+ * Guards against duplicate `connectSocket()` calls that fire before the
+ * previous handshake completes. Set to true in `connectSocket()`, cleared
+ * on 'connect' or 'connect_error' events. Without this guard, React
+ * StrictMode double-effects or multiple hooks could fire simultaneous
+ * connection attempts that compound into hundreds of retries (Issue #5).
+ */
+let isConnecting = false;
 
 /* ─── Singleton Accessor ───────────────────────────────────────────────── */
 
@@ -91,16 +108,45 @@ export function getSocket(): TypedSocket {
  * If the socket is already connected, it is disconnected first so that the
  * new token takes effect on the subsequent handshake.
  *
+ * Includes a connection guard (`isConnecting`) to prevent duplicate connect
+ * calls from React double-effects or multiple hooks racing (Issue #5 fix).
+ *
  * @param accessToken - A valid JWT access token
  * @returns The (re-)connected TypedSocket instance
  */
 export function connectSocket(accessToken: string): TypedSocket {
   const s = getSocket();
-  s.auth = { token: accessToken };
 
+  // Guard: if a connection attempt is in-flight but not yet established, skip.
+  // This prevents React StrictMode double-effects and multiple hooks from
+  // compounding into hundreds of simultaneous retry storms (Issue #5).
+  if (!s.connected && isConnecting) {
+    s.auth = { token: accessToken };
+    return s;
+  }
+
+  // If already connected, disconnect first so the new token takes effect
+  // on the subsequent handshake (supports token refresh scenarios).
   if (s.connected) {
     s.disconnect();
   }
+
+  s.auth = { token: accessToken };
+  isConnecting = true;
+
+  // Register one-time listeners to reset the connecting guard.
+  // When 'connect' fires, we also remove the 'connect_error' listener (and vice versa)
+  // to prevent stale handlers from accumulating.
+  const resetGuard = (): void => {
+    isConnecting = false;
+    s.off('connect_error', resetGuardOnError);
+  };
+  const resetGuardOnError = (): void => {
+    isConnecting = false;
+    s.off('connect', resetGuard);
+  };
+  s.once('connect', resetGuard);
+  s.once('connect_error', resetGuardOnError);
 
   s.connect();
   return s;
@@ -110,9 +156,11 @@ export function connectSocket(accessToken: string): TypedSocket {
  * Gracefully disconnects the socket without destroying the singleton.
  * The socket instance remains available for a later reconnection via
  * connectSocket(). Called during user-initiated disconnect scenarios.
+ * Also resets the connection guard to allow future connect() calls.
  */
 export function disconnectSocket(): void {
-  if (socket && socket.connected) {
+  isConnecting = false;
+  if (socket?.connected) {
     socket.disconnect();
   }
 }
@@ -120,9 +168,11 @@ export function disconnectSocket(): void {
 /**
  * Fully destroys the socket singleton: removes all event listeners,
  * disconnects, and nulls the module reference. Resets the reconnection
- * tracking flag. Called during logout or full app teardown.
+ * tracking flag and connection guard. Called during logout or full app
+ * teardown.
  */
 export function destroySocket(): void {
+  isConnecting = false;
   if (socket) {
     socket.removeAllListeners();
     socket.disconnect();

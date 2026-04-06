@@ -46,6 +46,15 @@ function createMockSocket() {
       if (!listeners[event]) listeners[event] = [];
       listeners[event].push(handler);
     }),
+    once: vi.fn((event: string, handler: (...args: unknown[]) => void) => {
+      if (!listeners[event]) listeners[event] = [];
+      // Wrap the handler so it auto-removes after first invocation
+      const wrapped = (...args: unknown[]) => {
+        listeners[event] = (listeners[event] ?? []).filter((h) => h !== wrapped);
+        handler(...args);
+      };
+      listeners[event].push(wrapped);
+    }),
     off: vi.fn((event: string, handler?: (...args: unknown[]) => void) => {
       if (handler) {
         listeners[event] = (listeners[event] ?? []).filter((h) => h !== handler);
@@ -304,7 +313,8 @@ describe('socket.ts — Socket.IO Client Singleton', () => {
       mockSocketInstance.connected = true;
 
       // Use type assertion since we're testing the generic wrapper
-      socketModule.emitEvent('message:send' as never, { data: 'test' } as never);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (socketModule.emitEvent as any)('message:send', { data: 'test' });
       expect(mockSocketInstance.emit).toHaveBeenCalledWith('message:send', { data: 'test' });
     });
 
@@ -313,7 +323,8 @@ describe('socket.ts — Socket.IO Client Singleton', () => {
       mockSocketInstance.connected = false;
 
       expect(() => {
-        socketModule.emitEvent('message:send' as never, {} as never);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (socketModule.emitEvent as any)('message:send', {});
       }).toThrow('socket is not connected');
     });
   });
@@ -451,11 +462,13 @@ describe('socket.ts — Socket.IO Client Singleton', () => {
 
       // 2. Register event handlers
       const messageHandler = vi.fn();
-      socketModule.onEvent('message:new' as never, messageHandler as never);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (socketModule.onEvent as any)('message:new', messageHandler);
 
       // 3. Emit events (simulate connected state)
       mockSocketInstance.connected = true;
-      socketModule.emitEvent('message:send' as never, {} as never);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      (socketModule.emitEvent as any)('message:send', {});
       expect(mockSocketInstance.emit).toHaveBeenCalledTimes(1);
 
       // 4. Graceful disconnect
@@ -484,7 +497,8 @@ describe('socket.ts — Socket.IO Client Singleton', () => {
       mockSocketInstance.connected = false;
 
       expect(() => {
-        socketModule.emitEvent('typing:start' as never, {} as never);
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        (socketModule.emitEvent as any)('typing:start', {});
       }).toThrow('typing:start');
     });
   });

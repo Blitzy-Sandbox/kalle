@@ -14,7 +14,7 @@ import React from 'react';
  * - Top shadow: 0px -0.33px 0px rgba(166,166,170,1) (shadow-tab)
  * - Tab cells: 75×49px each, bg rgba(249,249,249,0.94)
  * - Active: #007AFF (text-blue-ios)
- * - Inactive: rgba(84,84,88,0.65)
+ * - Inactive: #6E6E73 (WCAG AA compliant — ≥4.5:1 on #F6F6F6)
  * - Labels: SF Pro Text 500, 10px, lineHeight 1.193em, letterSpacing 1%
  * ============================================================ */
 
@@ -175,7 +175,7 @@ const TAB_CONFIG: ReadonlyArray<{
  *
  * Renders the iOS-style tab bar present on all main application screens.
  * Active tab is indicated by blue (#007AFF) icon and label.
- * Inactive tabs use rgba(84,84,88,0.65) gray.
+ * Inactive tabs use #6E6E73 gray (WCAG AA compliant).
  *
  * Accessibility:
  * - Wrapped in `<nav>` with `aria-label="Main navigation"`
@@ -215,7 +215,7 @@ export const TabBar: React.FC<TabBarProps> = ({
           const isActive = activeTab === tab.id;
           const colorClass = isActive
             ? 'text-blue-ios'
-            : 'text-[rgba(84,84,88,0.65)]';
+            : 'text-[#6E6E73]'; /* WCAG 2.1 AA: darkened from rgba(84,84,88,0.65) to #6E6E73 for ≥4.5:1 contrast on #F6F6F6 background */
 
           return (
             <button

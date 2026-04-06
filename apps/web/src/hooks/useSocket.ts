@@ -134,11 +134,26 @@ export function useSocket(): UseSocketReturn {
   }, []);
 
   // ---------------------------------------------------------------------------
+  // Ref: keep a stable reference to the latest access token so the effect
+  // below does NOT re-run on every token change (prevents connection storms).
+  // The token ref is updated synchronously on render so it is always fresh
+  // when connectSocket reads it, but it does NOT appear in the deps array.
+  // ---------------------------------------------------------------------------
+  const accessTokenRef = useRef(accessToken);
+  accessTokenRef.current = accessToken;
+
+  // ---------------------------------------------------------------------------
   // Effect 1: Auto-connect / disconnect on auth state changes (R9)
+  //
+  // Depends ONLY on `isAuthenticated` (boolean). Token changes update the
+  // ref above but do NOT trigger a reconnection cycle — the token is read
+  // from `accessTokenRef.current` inside the effect. This prevents the
+  // 300+ rapid connection storms observed in Issue #5.
   // ---------------------------------------------------------------------------
   useEffect(() => {
-    if (isAuthenticated && accessToken) {
-      connectSocket(accessToken);
+    const token = accessTokenRef.current;
+    if (isAuthenticated && token) {
+      connectSocket(token);
       connectedRef.current = true;
     } else {
       disconnectSocket();
@@ -152,7 +167,7 @@ export function useSocket(): UseSocketReturn {
       usePresenceStore.getState().clearAll();
       connectedRef.current = false;
     };
-  }, [isAuthenticated, accessToken]);
+  }, [isAuthenticated]);
 
   // ---------------------------------------------------------------------------
   // Effect 2: Reconnection handler for offline-to-online sync (R13)

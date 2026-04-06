@@ -28,6 +28,7 @@
 import { StoryService } from '../../../src/services/StoryService';
 import type { IStoryRepository } from '../../../src/domain/interfaces/IStoryRepository';
 import type { IStorageProvider } from '../../../src/domain/interfaces/IStorageProvider';
+import type { IConversationRepository } from '../../../src/domain/interfaces/IConversationRepository';
 import { NotFoundError } from '../../../src/errors/NotFoundError';
 import { AuthorizationError } from '../../../src/errors/AuthorizationError';
 import { ValidationError } from '../../../src/errors/ValidationError';
@@ -54,6 +55,29 @@ function createMockStoryRepository(): jest.Mocked<IStoryRepository> {
     deleteExpired: jest.fn(),
     delete: jest.fn(),
     hasActiveStories: jest.fn(),
+  };
+}
+
+/**
+ * Create a fully typed mock of IConversationRepository.
+ * Used by StoryService to resolve contact IDs for the story feed (Issue #6 fix).
+ */
+function createMockConversationRepository(): jest.Mocked<IConversationRepository> {
+  return {
+    create: jest.fn(),
+    findById: jest.fn(),
+    findByUserId: jest.fn().mockResolvedValue({ items: [], hasMore: false }),
+    findDirectConversation: jest.fn(),
+    addParticipant: jest.fn(),
+    removeParticipant: jest.fn(),
+    updateParticipantRole: jest.fn(),
+    updateParticipantSettings: jest.fn(),
+    updateGroupDetails: jest.fn(),
+    getParticipantIds: jest.fn().mockResolvedValue([]),
+    isParticipant: jest.fn(),
+    getUnreadCounts: jest.fn(),
+    resetUnreadCount: jest.fn(),
+    incrementUnreadCount: jest.fn(),
   };
 }
 
@@ -131,12 +155,14 @@ describe('StoryService', () => {
   let service: StoryService;
   let mockStoryRepository: jest.Mocked<IStoryRepository>;
   let mockStorageProvider: jest.Mocked<IStorageProvider>;
+  let mockConversationRepository: jest.Mocked<IConversationRepository>;
 
   beforeEach(() => {
     jest.clearAllMocks();
     mockStoryRepository = createMockStoryRepository();
     mockStorageProvider = createMockStorageProvider();
-    service = new StoryService(mockStoryRepository, mockStorageProvider);
+    mockConversationRepository = createMockConversationRepository();
+    service = new StoryService(mockStoryRepository, mockStorageProvider, mockConversationRepository);
   });
 
   // =========================================================================
@@ -451,12 +477,19 @@ describe('StoryService', () => {
       expect(result).toEqual([]);
     });
 
-    it('should return empty array when contactIds is empty', async () => {
-      mockStoryRepository.findFeed.mockResolvedValue([]);
+    it('should return empty array when contactIds is empty and user has no conversations', async () => {
+      // When contactIds is empty, the service resolves contacts from conversations.
+      // With no conversations, resolveContactIds returns [] and the service short-circuits.
+      mockConversationRepository.findByUserId.mockResolvedValue({ items: [], hasMore: false });
 
       const result = await service.getStoryFeed('user-1', []);
 
-      expect(mockStoryRepository.findFeed).toHaveBeenCalledWith('user-1', []);
+      // findFeed should NOT be called because the service short-circuits on zero resolved contacts
+      expect(mockStoryRepository.findFeed).not.toHaveBeenCalled();
+      expect(mockConversationRepository.findByUserId).toHaveBeenCalledWith('user-1', {
+        limit: 500,
+        includeArchived: true,
+      });
       expect(result).toEqual([]);
     });
   });
@@ -906,10 +939,11 @@ describe('StoryService', () => {
   // =========================================================================
 
   describe('constructor and dependency injection (R17)', () => {
-    it('should create service with two interface-driven dependencies', () => {
+    it('should create service with three interface-driven dependencies', () => {
       const repo = createMockStoryRepository();
       const storage = createMockStorageProvider();
-      const svc = new StoryService(repo, storage);
+      const convRepo = createMockConversationRepository();
+      const svc = new StoryService(repo, storage, convRepo);
 
       expect(svc).toBeInstanceOf(StoryService);
     });
@@ -920,6 +954,14 @@ describe('StoryService', () => {
       mockStoryRepository.findFeed.mockResolvedValue([]);
       mockStoryRepository.findByAuthor.mockResolvedValue([]);
       mockStoryRepository.hasActiveStories.mockResolvedValue(true);
+
+      // Mock conversationRepository so resolveContactIds returns a contact
+      // (required because getStoryFeed now auto-resolves contacts when [] is passed)
+      mockConversationRepository.findByUserId.mockResolvedValue({
+        items: [{ id: 'conv-1' } as never],
+        hasMore: false,
+      });
+      mockConversationRepository.getParticipantIds.mockResolvedValue(['user-1', 'user-contact']);
 
       await service.getStoryById('story-1', 'user-1');
       await service.getStoryFeed('user-1', []);

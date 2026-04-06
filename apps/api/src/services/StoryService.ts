@@ -36,6 +36,7 @@ import type {
   ExpiredStoryInfo,
 } from '../domain/interfaces/IStoryRepository';
 import type { IStorageProvider } from '../domain/interfaces/IStorageProvider';
+import type { IConversationRepository } from '../domain/interfaces/IConversationRepository';
 
 import { NotFoundError } from '../errors/NotFoundError';
 import { AuthorizationError } from '../errors/AuthorizationError';
@@ -120,10 +121,14 @@ export class StoryService {
    *
    * @param storyRepository - Story persistence abstraction (R17)
    * @param storageProvider - File storage abstraction for media blob cleanup (R17)
+   * @param conversationRepository - Conversation persistence abstraction (R17) —
+   *        used to resolve contact IDs for the story feed from the user's
+   *        conversation participant lists.
    */
   constructor(
     private readonly storyRepository: IStoryRepository,
     private readonly storageProvider: IStorageProvider,
+    private readonly conversationRepository: IConversationRepository,
   ) {}
 
   // -------------------------------------------------------------------------
@@ -180,15 +185,61 @@ export class StoryService {
    * contains all active stories from a single user plus metadata for
    * rendering the feed (avatar, hasUnviewed indicator, latest timestamp).
    *
+   * When `contactIds` is empty the service resolves the user's contacts
+   * automatically by extracting participant IDs from all conversations
+   * the user belongs to.  This ensures the controller stays thin (R16)
+   * and the story feed always reflects the user's actual conversation
+   * partners.
+   *
    * The repository automatically filters out expired stories (expiresAt < now)
-   * and only includes authors present in the `contactIds` list.
+   * and only includes authors present in the resolved contact list.
    *
    * @param userId - The viewing user's ID (for hasUnviewed computation)
-   * @param contactIds - Contact user IDs whose stories to include
+   * @param contactIds - Contact user IDs whose stories to include.
+   *        When empty, contacts are resolved from the user's conversations.
    * @returns Story feed grouped by author, sorted by most recently updated
    */
   async getStoryFeed(userId: string, contactIds: string[]): Promise<StoryFeedItem[]> {
-    return this.storyRepository.findFeed(userId, contactIds);
+    let resolvedContactIds = contactIds;
+
+    // If no contact IDs were provided, resolve from the user's conversations
+    if (resolvedContactIds.length === 0) {
+      resolvedContactIds = await this.resolveContactIds(userId);
+    }
+
+    // Short-circuit if the user has no contacts (avoids unnecessary DB query)
+    if (resolvedContactIds.length === 0) {
+      return [];
+    }
+
+    return this.storyRepository.findFeed(userId, resolvedContactIds);
+  }
+
+  /**
+   * Resolve the set of unique contact user IDs for a given user by
+   * enumerating all conversations the user participates in and
+   * collecting the other participants.
+   *
+   * @param userId - The user whose contacts to resolve
+   * @returns Deduplicated array of contact user IDs (excluding the user)
+   */
+  private async resolveContactIds(userId: string): Promise<string[]> {
+    const result = await this.conversationRepository.findByUserId(userId, {
+      limit: 500,
+      includeArchived: true,
+    });
+
+    const contactIdSet = new Set<string>();
+    for (const conv of result.items) {
+      const participantIds = await this.conversationRepository.getParticipantIds(conv.id);
+      for (const pid of participantIds) {
+        if (pid !== userId) {
+          contactIdSet.add(pid);
+        }
+      }
+    }
+
+    return Array.from(contactIdSet);
   }
 
   // -------------------------------------------------------------------------
