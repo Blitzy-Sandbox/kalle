@@ -200,12 +200,20 @@ export function createRateLimiter(options?: RateLimiterOptions) {
     /**
      * Generate the rate limit key from the client's IP address.
      *
-     * Uses `req.ip` which respects the Express `trust proxy` setting
-     * configured in `app.ts`. Falls back to `req.socket.remoteAddress`
-     * and finally to `'unknown'` for robustness in edge cases.
+     * Defense-in-depth: Uses `req.socket.remoteAddress` (the actual TCP
+     * connection source IP) as the primary key. This value cannot be
+     * spoofed via X-Forwarded-For headers, preventing rate limiter
+     * bypass when the API is accessed directly without a reverse proxy.
+     *
+     * In production behind a properly configured reverse proxy (e.g.,
+     * nginx), `req.socket.remoteAddress` will be the proxy's IP — rate
+     * limiting per end-user should then be enforced at the proxy level
+     * or via a more granular key. For the Docker development environment
+     * where the API is directly accessible, this ensures spoofed
+     * X-Forwarded-For headers do not create separate rate limit buckets.
      */
     keyGenerator: (req: Request, _res: Response): string => {
-      return req.ip ?? req.socket.remoteAddress ?? 'unknown';
+      return req.socket.remoteAddress ?? req.ip ?? 'unknown';
     },
   });
 }

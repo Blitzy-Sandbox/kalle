@@ -27,8 +27,11 @@ GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO kalle_app;
 -- =============================================================================
 -- AUDIT LOG IMMUTABILITY (R32)
 -- =============================================================================
--- Revoke UPDATE and DELETE specifically on the audit_logs table.
--- Because kalle_app is NOT a superuser, this REVOKE is enforced.
+-- Revoke UPDATE, DELETE, and TRUNCATE specifically on the audit_logs table.
+-- Because kalle_app is NOT a superuser, these REVOKEs are enforced.
 -- The app role can only INSERT (write new audit entries) and SELECT (read).
+--
+-- TRUNCATE is explicitly revoked because it bypasses row-level access
+-- controls and could destroy the entire audit trail in a single operation.
 -- =============================================================================
-REVOKE UPDATE, DELETE ON audit_logs FROM kalle_app;
+REVOKE UPDATE, DELETE, TRUNCATE ON audit_logs FROM kalle_app;

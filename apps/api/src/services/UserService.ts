@@ -201,8 +201,23 @@ export class UserService {
       });
     }
 
+    // -----------------------------------------------------------------------
+    // Defense-in-depth: HTML sanitization on user-controlled text fields.
+    // Mirrors the sanitization applied during registration in AuthService.
+    // React JSX escaping protects the primary client, but stored HTML tags
+    // could be exploited by future API consumers (mobile apps, email
+    // templates, etc.) that render content without framework-level escaping.
+    // -----------------------------------------------------------------------
+    const sanitizedData: UpdateProfileDTO = { ...data };
+    if (sanitizedData.displayName !== undefined) {
+      sanitizedData.displayName = sanitizedData.displayName.replace(/<[^>]*>/g, '');
+    }
+    if (sanitizedData.about !== undefined) {
+      sanitizedData.about = sanitizedData.about.replace(/<[^>]*>/g, '');
+    }
+
     // Delegate persistence to repository (R16: zero business logic in repo)
-    const updatedUser = await this.userRepository.update(userId, data);
+    const updatedUser = await this.userRepository.update(userId, sanitizedData);
     return updatedUser;
   }
 

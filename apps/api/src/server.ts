@@ -285,6 +285,59 @@ async function bootstrap(): Promise<void> {
   // log entries with component: 'http'. The underlying logger's redaction
   // config (from LoggerProvider) ensures authorization headers, tokens,
   // and other sensitive fields are never logged (Rule R23).
+  // -----------------------------------------------------------------------
+  // Sensitive query parameter redaction for request URL logging (R23).
+  // Tokens passed in URL query strings (e.g., ?token=eyJ...) must be
+  // redacted from log entries even though the application correctly
+  // rejects query-string authentication. The standard pino-http req
+  // serializer logs req.url verbatim — this custom serializer strips
+  // known sensitive parameter values before the URL reaches the log.
+  // -----------------------------------------------------------------------
+  const SENSITIVE_QUERY_PARAMS = new Set([
+    'token',
+    'access_token',
+    'refresh_token',
+    'api_key',
+    'apikey',
+    'secret',
+    'password',
+    'jwt',
+    'authorization',
+  ]);
+
+  /**
+   * Redact sensitive query parameter values from a URL string.
+   *
+   * Replaces the *values* of parameters whose names (case-insensitive)
+   * appear in `SENSITIVE_QUERY_PARAMS` with `[REDACTED]`.  Parameter
+   * names are preserved so operators can still observe which parameter
+   * was sent.
+   *
+   * @example
+   *   redactSensitiveQueryParams('/api/v1/users/me?token=eyJhb...&page=1')
+   *   // → '/api/v1/users/me?token=[REDACTED]&page=1'
+   */
+  const redactSensitiveQueryParams = (url: string | undefined): string | undefined => {
+    if (!url || !url.includes('?')) return url;
+    try {
+      const [pathname, queryString] = url.split('?', 2);
+      if (!queryString) return url;
+      const params = new URLSearchParams(queryString);
+      let redacted = false;
+      for (const key of params.keys()) {
+        if (SENSITIVE_QUERY_PARAMS.has(key.toLowerCase())) {
+          params.set(key, '[REDACTED]');
+          redacted = true;
+        }
+      }
+      return redacted ? `${pathname}?${params.toString()}` : url;
+    } catch {
+      // If URL parsing fails, return the original URL rather than
+      // breaking the logging pipeline.
+      return url;
+    }
+  };
+
   const pinoHttpMiddleware = pinoHttp({
     logger: loggerProvider.createLogger('http'),
     autoLogging: true,
@@ -292,6 +345,29 @@ async function bootstrap(): Promise<void> {
       if (res.statusCode >= 500 || err) return 'error';
       if (res.statusCode >= 400) return 'warn';
       return 'info';
+    },
+    serializers: {
+      req: (raw: Record<string, unknown>) => {
+        // Custom req serializer that redacts sensitive query parameters
+        // from the URL field before logging (R23: log hygiene).
+        // Builds a clean serialized object mirroring pino-http defaults
+        // while ensuring tokens in query strings are never persisted.
+        const req = raw as unknown as {
+          id?: string;
+          method?: string;
+          url?: string;
+          headers?: Record<string, string>;
+          remoteAddress?: string;
+          remotePort?: number;
+        };
+        return {
+          id: req.id,
+          method: req.method,
+          url: redactSensitiveQueryParams(req.url),
+          remoteAddress: req.remoteAddress,
+          remotePort: req.remotePort,
+        };
+      },
     },
   });
 
