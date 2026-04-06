@@ -257,11 +257,12 @@ export function createApp(deps: AppDependencies): Application {
   // the standardized error response shape (Rule R22) so clients receive
   // consistent error payloads regardless of the error type.
   // -------------------------------------------------------------------------
-  app.use((_req: Request, res: Response) => {
+  app.use((req: Request, res: Response) => {
     res.status(404).json({
       error: {
         code: 'NOT_FOUND',
         message: 'Route not found',
+        ...(req.correlationId !== undefined && { correlationId: req.correlationId }),
       },
     });
   });

@@ -340,6 +340,37 @@ export function errorHandler(
   }
 
   // ------------------------------------------------------------------
+  // Step 5b: Handle Multer file-size limit errors (Rule R8).
+  //
+  // When a multipart file upload exceeds the `limits.fileSize` value
+  // configured on the multer instance (26 MB — see media.routes.ts),
+  // multer throws a `MulterError` with `code === 'LIMIT_FILE_SIZE'`.
+  //
+  // Unlike Express body-parser errors (which carry `type` and `status`
+  // properties), Multer errors are instances of `multer.MulterError`
+  // identified by `err.name === 'MulterError'` and a machine-readable
+  // `code` string. We detect them by name+code to avoid importing
+  // the multer package directly, keeping this middleware dependency-light.
+  //
+  // Maps to HTTP 413 with the R22-compliant standardized error shape.
+  // ------------------------------------------------------------------
+  const multerErr = err as Error & { code?: string };
+  if (multerErr.name === 'MulterError' && multerErr.code === 'LIMIT_FILE_SIZE') {
+    if (req.log) {
+      req.log.warn({ correlationId }, 'File upload exceeds size limit (multer)');
+    }
+
+    res.status(413).json({
+      error: {
+        code: 'PAYLOAD_TOO_LARGE',
+        message: 'File size exceeds 25MB limit',
+        ...(correlationId !== undefined && { correlationId }),
+      },
+    });
+    return;
+  }
+
+  // ------------------------------------------------------------------
   // Step 6: Unknown / unexpected errors → 500 Internal Server Error.
   //
   // CRITICAL SECURITY (Rule R23): NEVER expose internal error details,
