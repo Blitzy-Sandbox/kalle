@@ -142,7 +142,7 @@ export default function EditProfilePage() {
       />
 
       {/* ── Scrollable content area ── */}
-      <main className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" role="region" aria-label="Edit profile">
         {/* Hidden file input for avatar upload — visually hidden but accessible */}
         <input
           ref={fileInputRef}
@@ -254,7 +254,7 @@ export default function EditProfilePage() {
             />
           </div>
         </section>
-      </main>
+      </div>
     </div>
   );
 }

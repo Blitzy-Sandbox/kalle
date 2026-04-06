@@ -33,7 +33,6 @@
 import React, { FC, useState, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { NavigationBar } from '@/components/common/NavigationBar';
-import { TabBar } from '@/components/common/TabBar';
 import { SettingsRow } from '@/components/common/SettingsRow';
 import { Separator } from '@/components/common/Separator';
 import { StatusBar } from '@/components/common/StatusBar';
@@ -153,10 +152,14 @@ export interface ChatSettingsProps {
  */
 const ChatSettings: FC<ChatSettingsProps> = ({
   onBack,
-  activeTab = 'settings',
-  onTabPress,
+  activeTab: _activeTab = 'settings',
+  onTabPress: _onTabPress,
   className = '',
 }) => {
+  // Note: activeTab and onTabPress retained in the interface for backward
+  // compatibility but no longer used — parent (main) layout owns TabBar (Issue #11 fix).
+  void _activeTab;
+  void _onTabPress;
   /* Next.js App Router navigation — fallback for onBack when prop not provided */
   const router = useRouter();
 
@@ -187,8 +190,8 @@ const ChatSettings: FC<ChatSettingsProps> = ({
 
   return (
     <div className={`flex flex-col min-h-screen bg-surface ${className}`}>
-      {/* Visually hidden heading for screen readers — WCAG 2.1 AA (R34) */}
-      <h1 className="sr-only">Chat Settings</h1>
+      {/* Visually hidden heading — <h2> because NavigationBar owns the page-level <h1> (R34) */}
+      <h2 className="sr-only">Chat Settings</h2>
 
       {/* Simulated iOS status bar — decorative, hidden on small viewports */}
       <StatusBar />
@@ -206,7 +209,7 @@ const ChatSettings: FC<ChatSettingsProps> = ({
       />
 
       {/* Scrollable content area — pb-[83px] accounts for fixed TabBar height */}
-      <main className="flex-1 overflow-y-auto pb-[83px]">
+      <div className="flex-1 overflow-y-auto pb-[83px]" role="region" aria-label="Chat settings options">
         <div className="pt-[35px]">
           {/* ===========================================================
            * Group 1 — Change Wallpaper
@@ -285,13 +288,8 @@ const ChatSettings: FC<ChatSettingsProps> = ({
             />
           </RowGroup>
         </div>
-      </main>
+      </div>
 
-      {/* Fixed bottom tab bar — Settings tab active */}
-      <TabBar
-        activeTab={activeTab}
-        onTabPress={(tab) => onTabPress?.(tab)}
-      />
     </div>
   );
 };

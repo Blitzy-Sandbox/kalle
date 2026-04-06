@@ -17,7 +17,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuthStore } from '@/stores/authStore';
-import { apiClient } from '@/lib/api';
+import { apiClient, ApiError } from '@/lib/api';
 import { StatusBar } from '@/components/common/StatusBar';
 import { NavigationBar } from '@/components/common/NavigationBar';
 
@@ -244,8 +244,37 @@ export default function LoginPage(): JSX.Element {
       );
 
       router.replace('/chat');
-    } catch {
-      setError('Failed to register. Please try again.');
+    } catch (err: unknown) {
+      /* If registration returns 409 Conflict (user already exists),
+         fall back to login with the same derived credentials so that
+         existing seed users and returning users can authenticate
+         through the UI without a dead-end error. */
+      if (err instanceof ApiError && err.status === 409) {
+        try {
+          const fullPhone = `${countryCode}${phoneNumber}`;
+          const sanitizedDigits = phoneNumber.replace(/\D/g, '');
+
+          const loginResponse = await apiClient.post<AuthRegistrationResponse>(
+            '/api/v1/auth/login',
+            {
+              email: `${sanitizedDigits}@kalle.demo`,
+              password: fullPhone,
+            },
+          );
+
+          login(
+            loginResponse.tokens as Parameters<typeof login>[0],
+            loginResponse.user as Parameters<typeof login>[1],
+          );
+
+          router.replace('/chat');
+          return;
+        } catch {
+          setError('Invalid credentials. Please try again.');
+        }
+      } else {
+        setError('Failed to register. Please try again.');
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -284,17 +313,9 @@ export default function LoginPage(): JSX.Element {
             ════════════════════════════════════════════════════════════ */}
         <NavigationBar
           title="Phone number"
-          rightAction={
-            <span
-              className={`font-semibold text-[17px] leading-[1.29em] tracking-[-0.024em] ${
-                isDoneEnabled ? 'text-blue-ios' : 'text-disabled pointer-events-none'
-              }`}
-              aria-disabled={!isDoneEnabled}
-            >
-              Done
-            </span>
-          }
+          rightAction="Done"
           onRightAction={isDoneEnabled ? handleDone : undefined}
+          rightActionDisabled={!isDoneEnabled}
         />
 
         {/* ═══════════════════════════════════════════════════════════════

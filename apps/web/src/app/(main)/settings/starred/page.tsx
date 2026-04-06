@@ -67,7 +67,7 @@ export default function StarredMessagesPage() {
       />
 
       {/* Empty state content — vertically and horizontally centered in remaining space */}
-      <main className="flex-1 flex items-center justify-center">
+      <div className="flex-1 flex items-center justify-center" role="region" aria-label="Starred messages content">
         <div className="flex flex-col items-center mx-6">
           {/* Circular illustration — 132×132px with border, shadow, and rounded clip.
               Figma node 0:8852. Image: img-starred-empty.png (imageRef 35177d93c…). */}
@@ -86,11 +86,11 @@ export default function StarredMessagesPage() {
 
           {/* Heading — SF Pro Text 600, 16px, line-height 1.3125em, tracking -0.03em.
               25px gap below illustration. Color rgba(60,60,67,0.6). Node 0:8854. */}
-          <h1
+          <h2
             className="font-semibold text-[16px] leading-[1.3125em] tracking-tighter-ios text-[rgba(60,60,67,0.6)] mt-[25px]"
           >
             No Starred Messages
-          </h1>
+          </h2>
 
           {/* Description — SF Pro Text 400, 14px, line-height 1.5em, tracking -0.02em.
               10px gap below heading. Max width 327px. Centered. Color rgba(60,60,67,0.6).
@@ -101,7 +101,7 @@ export default function StarredMessagesPage() {
             Tap and hold on any message to star it, so you can easily find it later.
           </p>
         </div>
-      </main>
+      </div>
     </div>
   );
 }

@@ -261,7 +261,7 @@ export default function ChatListPage() {
         throw new Error(`Failed to load conversations (${res.status})`);
       }
       const data = await res.json();
-      setConversations(data.conversations ?? []);
+      setConversations(data.data ?? []);
     } catch (err) {
       const message =
         err instanceof Error ? err.message : 'Failed to load conversations';
@@ -457,9 +457,9 @@ export default function ChatListPage() {
    * - Desktop: fixed 375px matching Figma artboard
    */
   const containerClass = isDesktop
-    ? 'max-w-[375px] w-full'
+    ? 'w-full'
     : isTablet
-      ? 'max-w-[375px] w-full'
+      ? 'w-full'
       : 'w-full';
 
   /**
@@ -564,6 +564,7 @@ export default function ChatListPage() {
             <ComposeIcon className="w-[23px] h-[23px]" aria-hidden="true" />
           }
           onRightAction={handleCompose}
+          rightActionLabel="New conversation"
         />
       )}
 

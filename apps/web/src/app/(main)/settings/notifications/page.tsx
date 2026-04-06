@@ -210,7 +210,7 @@ export default function NotificationsPage() {
       />
 
       {/* Scrollable content area — fills space between nav bar and tab bar */}
-      <main className="flex-1 overflow-y-auto bg-surface">
+      <div className="flex-1 overflow-y-auto bg-surface" role="region" aria-label="Notification settings">
         {/* ========================================================
          * Warning Section — Figma node 0:10793
          * Position: x:16 y:103, 343×78px
@@ -331,7 +331,7 @@ export default function NotificationsPage() {
 
         {/* Bottom padding — clearance beneath tab bar rendered by parent layout */}
         <div className="h-8" aria-hidden="true" />
-      </main>
+      </div>
     </div>
   );
 }

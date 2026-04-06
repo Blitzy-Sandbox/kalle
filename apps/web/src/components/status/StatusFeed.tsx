@@ -27,7 +27,6 @@ import Image from 'next/image';
 
 /* ── Common Components ──────────────────────────────────────────────────── */
 import { NavigationBar } from '@/components/common/NavigationBar';
-import { TabBar, type TabId } from '@/components/common/TabBar';
 import Avatar from '@/components/common/Avatar';
 import { StatusBar } from '@/components/common/StatusBar';
 import { Separator } from '@/components/common/Separator';
@@ -38,7 +37,6 @@ import StatusItem from './StatusItem';
 /* ── Stores ─────────────────────────────────────────────────────────────── */
 import { useStoryStore } from '@/stores/storyStore';
 import { useAuthStore } from '@/stores/authStore';
-import { useUIStore } from '@/stores/uiStore';
 
 /* ── SVG Icon Assets (Figma node 0:8498) ────────────────────────────────── */
 import iconStatusAdd from '@/assets/icons/icon-status-add.svg';
@@ -102,7 +100,6 @@ const StatusFeed: FC<StatusFeedProps> = ({ className, onTextStatusPress, onCamer
 
   const user = useAuthStore((s) => s.user);
 
-  const setActiveTab = useUIStore((s) => s.setActiveTab);
 
   /* ── Effects ─────────────────────────────────────────────────────────── */
 
@@ -139,14 +136,6 @@ const StatusFeed: FC<StatusFeedProps> = ({ className, onTextStatusPress, onCamer
   const hasRecentUpdates = visibleStories.length > 0;
 
   /* ── Callbacks ───────────────────────────────────────────────────────── */
-
-  /** Handle bottom tab bar press — navigates to a different tab. */
-  const handleTabPress = useCallback(
-    (tab: TabId) => {
-      setActiveTab(tab);
-    },
-    [setActiveTab],
-  );
 
   /** Handle "Privacy" left-action press (presentational shell). */
   const handlePrivacyPress = useCallback(() => {
@@ -243,9 +232,9 @@ const StatusFeed: FC<StatusFeedProps> = ({ className, onTextStatusPress, onCamer
       />
 
       {/* ── Scrollable Content Area ──────────────────────────────────── */}
-      <main
+      <div
         className="flex-1 overflow-y-auto"
-        role="main"
+        role="region"
         aria-label="Status feed"
       >
         {/* ────────────────────────────────────────────────────────────
@@ -409,10 +398,8 @@ const StatusFeed: FC<StatusFeedProps> = ({ className, onTextStatusPress, onCamer
 
         {/* Bottom spacer — 83px clearance for tab bar (49px + 34px home indicator) */}
         <div className="h-[83px]" aria-hidden="true" />
-      </main>
+      </div>
 
-      {/* ── Bottom Tab Bar — Status tab active ───────────────────────── */}
-      <TabBar activeTab="status" onTabPress={handleTabPress} />
     </div>
   );
 };

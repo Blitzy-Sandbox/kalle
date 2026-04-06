@@ -26,6 +26,7 @@ import { useUIStore } from '@/stores/uiStore';
 /* ── Hooks ──────────────────────────────────────────────────────────────── */
 import { useSocket } from '@/hooks/useSocket';
 import { useEncryption } from '@/hooks/useEncryption';
+import { apiClient } from '@/lib/api';
 import { useMessages } from '@/hooks/useMessages';
 import { usePresence } from '@/hooks/usePresence';
 import { useMediaUpload } from '@/hooks/useMediaUpload';
@@ -63,6 +64,16 @@ void DateSeparator;
 void MessageStatus;
 void TypingIndicator;
 void NewMessagesIndicator;
+
+// ---------------------------------------------------------------------------
+// Module-level guard — tracks which conversation IDs have already had their
+// init() executed. This survives React Strict Mode unmount/remount cycles,
+// HMR remounts, and Next.js router re-renders. Without this, each remount
+// creates a fresh useRef(false), allowing init to re-fire and triggering
+// the loadHistory → setMessages → store update → new loadHistory reference
+// → effect re-fire infinite loop.
+// ---------------------------------------------------------------------------
+const _initCompletedConversations = new Set<string>();
 
 // ---------------------------------------------------------------------------
 // ChatConversationPage — default export
@@ -151,7 +162,14 @@ export default function ChatConversationPage() {
   /* ── Local state ───────────────────────────────────────────────────── */
   const [isPageReady, setIsPageReady] = useState(false);
   const [initError, setInitError] = useState<string | null>(null);
-  const setupCompleteRef = useRef(false);
+
+  // Stable refs for unstable callbacks — avoids re-triggering the init
+  // useEffect when loadHistory / ensureSession get new references due to
+  // Zustand store updates (findConversation → loadHistory dep chain).
+  const loadHistoryRef = useRef(loadHistory);
+  loadHistoryRef.current = loadHistory;
+  const ensureSessionRef = useRef(ensureSession);
+  ensureSessionRef.current = ensureSession;
 
   /* ── Derived data ──────────────────────────────────────────────────── */
 
@@ -219,40 +237,77 @@ export default function ChatConversationPage() {
     };
   }, [isMobile, conversationId, pushMobileNav, popMobileNav]);
 
-  /* ── Encryption session + message history load (R12, R13) ──────────── */
+  /* ── Message history load + encryption session init (R12, R13) ─────── */
   useEffect(() => {
-    if (!conversationId || !isAuthenticated || setupCompleteRef.current) return;
-    let cancelled = false;
+    // Module-level guard: prevents re-execution across React Strict Mode
+    // unmount/remount cycles, HMR, and dependency-triggered re-fires.
+    // The Set persists across component instances, unlike useRef which
+    // resets to its initial value on every new mount.
+    if (!conversationId || !isAuthenticated) return;
+    if (_initCompletedConversations.has(conversationId)) return;
+    _initCompletedConversations.add(conversationId);
 
     const init = async () => {
       try {
-        // Initialise E2E encryption session (R12)
-        await ensureSession(conversationId);
-        // Fetch initial message page from server
-        await loadHistory(conversationId);
-        if (!cancelled) {
-          setupCompleteRef.current = true;
-          setIsPageReady(true);
-        }
+        // Use ref to call the latest loadHistory without adding it to
+        // the effect's dependency array (loadHistory's reference changes
+        // whenever the Zustand store updates, which would re-trigger this
+        // effect).
+        await loadHistoryRef.current(conversationId);
       } catch (err) {
-        if (!cancelled) {
-          const message =
-            err instanceof Error ? err.message : 'Failed to initialise chat';
-          setInitError(message);
-          setIsPageReady(true);
+        const message =
+          err instanceof Error ? err.message : 'Failed to load messages';
+        setInitError(message);
+      }
+
+      // Mark page ready after history load regardless of encryption status.
+      setIsPageReady(true);
+
+      // Best-effort encryption session initialisation (R12).
+      // For DIRECT conversations, resolve the other participant's userId
+      // from the full conversation detail (which includes participants[]).
+      // For GROUP conversations, Sender Keys are used — no 1:1 session needed.
+      try {
+        const convos = useChatStore.getState().conversations;
+        const convo = convos.find((c) => c.id === conversationId);
+        const isGroup = convo?.type === ConversationType.GROUP;
+        const currentUserId = useAuthStore.getState().user?.id;
+
+        if (!isGroup && currentUserId) {
+          const convoDetail = await apiClient.get<{
+            id: string;
+            type: string;
+            participants: Array<{ userId: string }>;
+          }>(`/api/v1/conversations/${conversationId}`);
+
+          const participants = convoDetail?.participants ?? [];
+          const otherParticipant = participants.find(
+            (p) => p.userId !== currentUserId,
+          );
+          if (otherParticipant) {
+            await ensureSessionRef.current(otherParticipant.userId);
+          }
         }
+      } catch {
+        // Encryption init failure is non-fatal — messages display with
+        // an "unable to decrypt" placeholder instead of a blank screen.
       }
     };
 
     init();
-    return () => {
-      cancelled = true;
-    };
-  }, [conversationId, isAuthenticated, ensureSession, loadHistory]);
+    // Minimal dependency array: only stable values. Unstable callbacks
+    // (loadHistory, ensureSession) accessed via refs to prevent re-fires.
+  }, [conversationId, isAuthenticated]);
 
   /* ── Reconnection handling (R13) ───────────────────────────────────── */
+  // Socket.IO has its own built-in exponential-backoff reconnection logic.
+  // We only trigger an initial connect when the page first mounts (if not
+  // already connected). Repeatedly calling connect() in a tight effect loop
+  // creates a WebSocket storm — thousands of connection attempts per second.
+  const hasAttemptedConnectRef = useRef(false);
   useEffect(() => {
-    if (!isConnected && socket) {
+    if (!isConnected && socket && !hasAttemptedConnectRef.current) {
+      hasAttemptedConnectRef.current = true;
       connect();
     }
   }, [isConnected, socket, connect]);
@@ -475,7 +530,7 @@ export default function ChatConversationPage() {
             type="button"
             onClick={() => {
               setInitError(null);
-              setupCompleteRef.current = false;
+              _initCompletedConversations.delete(conversationId);
               setIsPageReady(false);
             }}
             className="rounded-lg bg-blue-ios px-6 py-2.5 text-[15px] font-semibold text-white focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-ios"

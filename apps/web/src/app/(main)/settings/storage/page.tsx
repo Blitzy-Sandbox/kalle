@@ -82,7 +82,7 @@ export default function DataStorageUsagePage() {
       />
 
       {/* Scrollable content area with bottom padding for tab bar safe area */}
-      <main className="flex-1 overflow-y-auto pb-[100px]">
+      <div className="flex-1 overflow-y-auto pb-[100px]" role="region" aria-label="Data and storage settings">
         {/* ================================================================
             Section 1: MEDIA AUTO-DOWNLOAD
             Figma node 0:10895 — 375×294px, y:117
@@ -222,7 +222,7 @@ export default function DataStorageUsagePage() {
             <SettingsRow label="Storage Usage" />
           </div>
         </section>
-      </main>
+      </div>
     </div>
   );
 }

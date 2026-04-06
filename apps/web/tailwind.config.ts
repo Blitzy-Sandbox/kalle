@@ -34,12 +34,15 @@ const config: Config = {
         statusbar: '#F7F7F7',         /* color-bg-status-bar: iOS status bar background */
 
         /* --- iOS system interactive colors --- */
-        'blue-ios': '#007AFF',        /* color-text-link: links, interactive text, active tab icons */
-        'red-ios': '#FF3B30',         /* color-text-destructive: delete actions, missed calls */
+        /* WCAG 2.1 AA (R34): colors darkened from Figma originals to meet ≥4.5:1
+           contrast ratio on white (#FFFFFF) backgrounds.
+           Original Figma values preserved in comments for design reference. */
+        'blue-ios': '#0064D2',        /* color-text-link: links, interactive text, active tab icons (Figma: #007AFF, 4.02:1 → #0064D2, ≥4.5:1) */
+        'red-ios': '#CC2D24',         /* color-text-destructive: delete actions, missed calls (Figma: #FF3B30, 3.55:1 → #CC2D24, ≥4.5:1) */
         disabled: '#D1D1D6',          /* color-text-disabled: inactive buttons (e.g., "Done" disabled) */
 
         /* --- Text colors --- */
-        secondary: '#8E8E93',         /* color-text-secondary: message previews, dates, descriptions */
+        secondary: '#6D6D72',         /* color-text-secondary: message previews, dates, descriptions (Figma: #8E8E93, 3.26:1 → #6D6D72, ≥4.5:1) */
         'icon-dark': '#060606',       /* color-icon-dark: status bar icons, dark UI icons */
 
         /* --- Separator and shadow colors --- */

@@ -330,5 +330,34 @@ export function createV1Router(deps: V1RouterDependencies): Router {
    */
   router.use('/keys', createKeyRoutes(deps.keyController, authMiddleware));
 
+  // -------------------------------------------------------------------------
+  // Step 4: Mount STUB routes for out-of-scope features
+  //
+  // The Calls UI screen exists per Figma but WebRTC calling functionality
+  // is explicitly out of scope (AAP §0.8.2).  These stub endpoints return
+  // empty data so the frontend renders a graceful empty state instead of
+  // a "Route not found" 404 error.
+  // -------------------------------------------------------------------------
+
+  const callsRouter = Router();
+  callsRouter.use(authMiddleware);
+
+  /** GET /api/v1/calls — returns empty call history */
+  callsRouter.get('/', (_req, res) => {
+    res.json({ data: [], hasMore: false });
+  });
+
+  /** DELETE /api/v1/calls/:callId — no-op, returns 204 */
+  callsRouter.delete('/:callId', (_req, res) => {
+    res.status(204).send();
+  });
+
+  /** DELETE /api/v1/calls — clear all (no-op), returns 204 */
+  callsRouter.delete('/', (_req, res) => {
+    res.status(204).send();
+  });
+
+  router.use('/calls', callsRouter);
+
   return router;
 }

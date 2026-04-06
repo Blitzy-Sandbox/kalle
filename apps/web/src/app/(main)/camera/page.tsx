@@ -212,16 +212,58 @@ export default function CameraPage() {
     router.back();
   }, [stream, router]);
 
-  // ── Escape key handler for keyboard accessibility (R34) ───────────────────
+  // ── Focus trap + Escape key handler for WCAG modal accessibility (R34) ────
+  // Traps Tab / Shift+Tab within the dialog so focus never escapes to elements
+  // behind the full-screen camera overlay.  Also handles Escape to close.
+  const dialogRef = useRef<HTMLDivElement>(null);
+
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         handleClose();
+        return;
+      }
+
+      if (e.key === 'Tab' && dialogRef.current) {
+        const focusable = dialogRef.current.querySelectorAll<HTMLElement>(
+          'button:not([disabled]):not([tabindex="-1"]), [tabindex="0"]',
+        );
+        if (focusable.length === 0) return;
+
+        const first = focusable[0];
+        const last = focusable[focusable.length - 1];
+
+        if (e.shiftKey) {
+          // Shift+Tab on first element → wrap to last
+          if (document.activeElement === first) {
+            e.preventDefault();
+            last.focus();
+          }
+        } else {
+          // Tab on last element → wrap to first
+          if (document.activeElement === last) {
+            e.preventDefault();
+            first.focus();
+          }
+        }
       }
     };
+
     window.addEventListener('keydown', handleKeyDown);
+
+    // Move initial focus into the dialog (first focusable element)
+    const timer = setTimeout(() => {
+      if (dialogRef.current) {
+        const first = dialogRef.current.querySelector<HTMLElement>(
+          'button:not([disabled]):not([tabindex="-1"]), [tabindex="0"]',
+        );
+        first?.focus();
+      }
+    }, 100);
+
     return () => {
       window.removeEventListener('keydown', handleKeyDown);
+      clearTimeout(timer);
     };
   }, [handleClose]);
 
@@ -402,6 +444,7 @@ export default function CameraPage() {
 
   return (
     <div
+      ref={dialogRef}
       className={containerClasses}
       role="dialog"
       aria-label="Camera"

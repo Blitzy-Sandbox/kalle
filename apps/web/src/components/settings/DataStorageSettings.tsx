@@ -144,9 +144,9 @@ const DataStorageSettings: FC<DataStorageSettingsProps> = ({
 
       {/* Scrollable content area — between nav bar and fixed tab bar.
           pb-[83px] accounts for the fixed TabBar height (49px tabs + 34px safe area). */}
-      <main
+      <div
         className="flex-1 overflow-y-auto pb-[83px]"
-        role="main"
+        role="region"
         aria-label="Data and Storage Usage settings"
       >
         {/* pt-[29px] matches the Figma gap from nav bar bottom (y=88) to first section (y=117). */}
@@ -275,7 +275,7 @@ const DataStorageSettings: FC<DataStorageSettingsProps> = ({
             <SettingsRow label="Storage Usage" />
           </div>
         </div>
-      </main>
+      </div>
 
       {/* Bottom tab bar — Settings tab active (blue #007AFF).
           Figma: y=729, 375×83px, fixed at bottom. */}

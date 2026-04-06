@@ -49,7 +49,6 @@ import type {
   MessageResponse,
   SendMessageDTO,
   EditMessageDTO,
-  GetMessagesResponse,
   PreKeyBundleResponse,
   ConversationListItem,
 } from '@kalle/shared';
@@ -219,8 +218,31 @@ function generateClientMessageId(): string {
 // =============================================================================
 
 /**
+ * Wraps a promise with a timeout. Resolves with the fallback value if the
+ * original promise neither resolves nor rejects within `ms` milliseconds.
+ * Prevents indefinite hangs from Signal Protocol decryption on invalid data.
+ */
+function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<T>((resolve) => {
+      timer = setTimeout(() => resolve(fallback), ms);
+    }),
+  ]).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+  });
+}
+
+/** Maximum time (ms) to wait for a single message decryption before falling
+ *  back to the '[Unable to decrypt message]' placeholder. */
+const DECRYPT_TIMEOUT_MS = 3_000;
+
+/**
  * Decrypts a single MessageResponse in place, returning the plaintext.
  * Handles tombstoned messages (isDeleted, ciphertext null) gracefully.
+ * A 3-second timeout prevents hangs when Signal Protocol encounters
+ * invalid ciphertext (e.g., seed data with fake payloads).
  *
  * @param message - The encrypted message from the server
  * @param conversationType - DIRECT or GROUP
@@ -236,21 +258,33 @@ async function decryptSingleMessage(
   }
 
   try {
+    let decryptPromise: Promise<string>;
+
     if (conversationType === ConversationType.DIRECT) {
       // Determine if this is a PreKeyWhisperMessage by checking format prefix
       const isPreKey = message.ciphertext.startsWith('3:');
-      return await decryptMessage(
+      decryptPromise = decryptMessage(
         message.senderId,
         DEFAULT_DEVICE_ID,
         message.ciphertext,
         isPreKey,
       );
+    } else {
+      // GROUP conversation — use Sender Key decryption (R14)
+      decryptPromise = decryptGroupMessage(
+        message.conversationId,
+        message.senderId,
+        message.ciphertext,
+      );
     }
-    // GROUP conversation — use Sender Key decryption (R14)
-    return await decryptGroupMessage(
-      message.conversationId,
-      message.senderId,
-      message.ciphertext,
+
+    // Timeout guard: if decryption hangs (Signal Protocol encountering
+    // invalid data that neither resolves nor rejects), fall back to the
+    // placeholder after DECRYPT_TIMEOUT_MS instead of blocking forever.
+    return await withTimeout(
+      decryptPromise,
+      DECRYPT_TIMEOUT_MS,
+      '[Unable to decrypt message]',
     );
   } catch {
     // Decryption failure — return placeholder rather than crashing the UI.
@@ -678,12 +712,31 @@ export function useMessages(): UseMessagesReturn {
         }
 
         // Route: GET /api/v1/messages/conversations/:cId/messages (message.routes.ts)
-        const response = await apiClient.get<GetMessagesResponse>(
+        // apiClient.get returns json.data which auto-unwraps the outer
+        // { data: MessageResponse[], pagination: {...} } envelope.
+        // The returned value is therefore the MessageResponse[] array directly.
+        const fetchedMessages = await apiClient.get<MessageResponse[]>(
           `/api/v1/messages/conversations/${conversationId}/messages?${queryParams.toString()}`,
         );
 
-        const fetchedMessages = response.data;
-        const { pagination } = response;
+        // Pagination metadata is a sibling of "data" in the API envelope and
+        // is discarded by the auto-unwrap.  Infer it from the result count:
+        //  - If we received exactly MESSAGE_PAGE_SIZE items there are likely more.
+        //  - The cursor for the next page is the oldest message's timestamp.
+        const pagination = {
+          hasMore: Array.isArray(fetchedMessages) && fetchedMessages.length >= MESSAGE_PAGE_SIZE,
+          cursor:
+            Array.isArray(fetchedMessages) && fetchedMessages.length > 0
+              ? fetchedMessages[fetchedMessages.length - 1].serverTimestamp
+              : undefined,
+        };
+
+        // Guard: ensure fetchedMessages is a valid array before iteration
+        if (!Array.isArray(fetchedMessages)) {
+          // Unexpected shape — nothing to render; bail gracefully.
+          setIsLoadingMessages(false);
+          return;
+        }
 
         // ── Determine conversation context ─────────────────────────
         const conversation = findConversation(conversationId);

@@ -3,7 +3,6 @@
 import React from 'react';
 import { useRouter } from 'next/navigation';
 import { NavigationBar } from '@/components/common/NavigationBar';
-import { TabBar } from '@/components/common/TabBar';
 import { SettingsRow } from '@/components/common/SettingsRow';
 import { Separator } from '@/components/common/Separator';
 import { StatusBar } from '@/components/common/StatusBar';
@@ -139,10 +138,16 @@ const ROW_GROUP_SHADOW =
  */
 const AccountSettings: React.FC<AccountSettingsProps> = ({
   onBack,
-  activeTab = 'settings',
-  onTabPress,
+  activeTab: _activeTab = 'settings',
+  onTabPress: _onTabPress,
   className = '',
 }) => {
+  // Note: activeTab and onTabPress props retained in the interface for
+  // backward compatibility but no longer used here — the parent (main)
+  // layout now owns the single TabBar instance (Issue #11 fix).
+  void _activeTab;
+  void _onTabPress;
+
   const router = useRouter();
 
   /**
@@ -155,20 +160,6 @@ const AccountSettings: React.FC<AccountSettingsProps> = ({
       onBack();
     } else {
       router.back();
-    }
-  };
-
-  /**
-   * Tab bar press handler.
-   * Bridges the component's string-typed onTabPress callback to the
-   * TabBar's TabId-typed onTabPress prop. Falls back to router.push()
-   * when no callback is provided.
-   */
-  const handleTabPress = (tab: string): void => {
-    if (onTabPress) {
-      onTabPress(tab);
-    } else {
-      router.push(`/${tab}`);
     }
   };
 
@@ -189,11 +180,11 @@ const AccountSettings: React.FC<AccountSettingsProps> = ({
         onLeftAction={handleBack}
       />
 
-      {/* Visually hidden heading for screen readers (WCAG landmark navigation) */}
-      <h1 className="sr-only">Account Settings</h1>
+      {/* Visually hidden heading — <h2> because NavigationBar owns the page-level <h1> (R34) */}
+      <h2 className="sr-only">Account Settings</h2>
 
       {/* Scrollable content area with bottom padding for fixed tab bar (83px) */}
-      <main className="flex-1 overflow-y-auto pb-[83px]">
+      <div className="flex-1 overflow-y-auto pb-[83px]" role="region" aria-label="Account settings options">
         {/* ================================================================
          * Row Group 1 — Account Options
          *
@@ -238,13 +229,8 @@ const AccountSettings: React.FC<AccountSettingsProps> = ({
             </React.Fragment>
           ))}
         </div>
-      </main>
+      </div>
 
-      {/* Fixed bottom tab bar — "Settings" tab active (blue #007AFF) */}
-      <TabBar
-        activeTab={activeTab}
-        onTabPress={handleTabPress}
-      />
     </div>
   );
 };

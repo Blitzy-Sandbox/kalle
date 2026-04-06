@@ -200,7 +200,7 @@ export const NotificationSettings: FC<NotificationSettingsProps> = ({
        * Scrollable Content Area
        * Bottom padding accounts for fixed TabBar (83px) + safe area
        * ================================================================ */}
-      <main className="flex-1 overflow-y-auto pb-[117px]">
+      <div className="flex-1 overflow-y-auto pb-[117px]" role="region" aria-label="Notification settings">
         {/* ==============================================================
          * Warning Banner
          * Figma node 0:10793 — frame at y=103, 343×78, centered
@@ -361,7 +361,7 @@ export const NotificationSettings: FC<NotificationSettingsProps> = ({
             Reset notification tone and vibrate settings.
           </p>
         </div>
-      </main>
+      </div>
 
       {/* ================================================================
        * Tab Bar — Settings tab active

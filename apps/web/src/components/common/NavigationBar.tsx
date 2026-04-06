@@ -19,17 +19,30 @@ export interface NavigationBarProps {
   /** Click handler for the left action button */
   onLeftAction?: () => void;
 
+  /** Accessible label for the left action (required when leftAction is an icon-only ReactNode) */
+  leftActionLabel?: string;
+
   /** Right action content — string for text, ReactNode for icon or custom element */
   rightAction?: React.ReactNode;
 
   /** Click handler for the right action button */
   onRightAction?: () => void;
 
+  /** Accessible label for the right action (R34 — required when rightAction is an icon-only ReactNode) */
+  rightActionLabel?: string;
+
+  /** When true, the right action appears in disabled visual state (text-disabled color) */
+  rightActionDisabled?: boolean;
+
   /** When true, renders the title in large bold style (iOS large title mode, 34px bold) */
   largeTitleStyle?: boolean;
 
   /** Optional center content that replaces the title (e.g., SegmentedControl on Calls screen) */
   centerContent?: React.ReactNode;
+
+  /** Heading level for the title element. Defaults to 1.
+   *  Set to 2 on sub-pages where a parent already provides the H1. (WCAG heading hierarchy) */
+  titleHeadingLevel?: 1 | 2 | 3;
 
   /** Additional CSS class names appended to the nav element */
   className?: string;
@@ -95,20 +108,23 @@ export const NavigationBar: React.FC<NavigationBarProps> = ({
   title,
   leftAction,
   onLeftAction,
+  leftActionLabel,
   rightAction,
   onRightAction,
+  rightActionLabel,
+  rightActionDisabled = false,
   largeTitleStyle = false,
   centerContent,
+  titleHeadingLevel = 1,
   className = '',
 }) => {
   /**
-   * Shared Tailwind class list for left and right action buttons.
-   * Uses text-nav-action for 17px/400 weight typography, blue-ios color,
+   * Base Tailwind class list for action elements.
+   * Uses text-nav-action for 17px/400 weight typography,
    * tight-ios letter spacing, and focus-visible ring for keyboard accessibility.
    */
-  const actionButtonClasses = [
+  const actionBaseClasses = [
     'text-nav-action',
-    'text-blue-ios',
     'tracking-tight-ios',
     'focus:outline-none',
     'focus-visible:ring-2',
@@ -116,6 +132,75 @@ export const NavigationBar: React.FC<NavigationBarProps> = ({
     'focus-visible:ring-offset-1',
     'rounded-sm',
   ].join(' ');
+
+  /** Left action always uses active (blue) color */
+  const leftActionClasses = `${actionBaseClasses} text-blue-ios`;
+
+  /** Right action color depends on disabled state (Issue #12 fix) */
+  const rightActionClasses = rightActionDisabled
+    ? `${actionBaseClasses} text-disabled cursor-default`
+    : `${actionBaseClasses} text-blue-ios`;
+
+  /**
+   * Render an action zone element. When the action is a string, renders a
+   * native <button>. When it's a ReactNode (which may itself be a button or
+   * contain interactive elements), renders a <div> with ARIA role="button"
+   * to avoid invalid nested-button HTML (Issue #15 fix).
+   */
+  const renderAction = (
+    action: React.ReactNode,
+    onClick: (() => void) | undefined,
+    classes: string,
+    ariaLabel?: string,
+    disabled?: boolean,
+  ) => {
+    if (action == null) return null;
+
+    const isString = typeof action === 'string';
+
+    if (isString) {
+      return (
+        <button
+          type="button"
+          onClick={disabled ? undefined : onClick}
+          aria-label={ariaLabel}
+          aria-disabled={disabled || undefined}
+          className={classes}
+        >
+          {action}
+        </button>
+      );
+    }
+
+    /* For ReactNode actions (icons, compound elements, buttons), use a <div>
+       wrapper with role="button" to avoid nested <button> hydration errors.
+       Keyboard handling (Enter/Space) enables equivalent accessibility. */
+    return (
+      <div
+        role="button"
+        tabIndex={disabled ? -1 : 0}
+        onClick={disabled ? undefined : onClick}
+        onKeyDown={(e) => {
+          if (!disabled && (e.key === 'Enter' || e.key === ' ')) {
+            e.preventDefault();
+            onClick?.();
+          }
+        }}
+        aria-label={ariaLabel}
+        aria-disabled={disabled || undefined}
+        className={classes}
+      >
+        {action}
+      </div>
+    );
+  };
+
+  /** Render the title with the correct heading level (Issue #13 fix) */
+  const titleClasses = largeTitleStyle
+    ? 'text-[34px] font-bold leading-[1.2em] text-black tracking-tight-ios truncate'
+    : 'text-nav-title text-black tracking-tight-ios truncate';
+
+  const TitleTag = (`h${titleHeadingLevel}` as keyof JSX.IntrinsicElements);
 
   return (
     <nav
@@ -125,15 +210,7 @@ export const NavigationBar: React.FC<NavigationBarProps> = ({
       {/* Left action zone — relative + z-10 + h-full stacks above the absolute-centered title;
           bg-nav provides visual masking for any title text that extends beneath on non-SF-Pro systems */}
       <div className="relative flex items-center z-10 min-w-[60px] h-full ps-4 bg-nav">
-        {leftAction != null && (
-          <button
-            type="button"
-            onClick={onLeftAction}
-            className={actionButtonClasses}
-          >
-            {leftAction}
-          </button>
-        )}
+        {renderAction(leftAction, onLeftAction, leftActionClasses, leftActionLabel)}
       </div>
 
       {/* Center zone — absolute positioned for perfect iOS-style centering.
@@ -146,30 +223,16 @@ export const NavigationBar: React.FC<NavigationBarProps> = ({
         {centerContent != null ? (
           <div className="pointer-events-auto">{centerContent}</div>
         ) : (
-          <h1
-            className={
-              largeTitleStyle
-                ? 'text-[34px] font-bold leading-[1.2em] text-black tracking-tight-ios truncate'
-                : 'text-nav-title text-black tracking-tight-ios truncate'
-            }
-          >
+          <TitleTag className={titleClasses}>
             {title}
-          </h1>
+          </TitleTag>
         )}
       </div>
 
       {/* Right action zone — relative + z-10 + h-full stacks above the absolute-centered title;
           bg-nav provides visual masking for any title text that extends beneath */}
       <div className="relative flex items-center z-10 min-w-[60px] h-full justify-end pe-4 bg-nav">
-        {rightAction != null && (
-          <button
-            type="button"
-            onClick={onRightAction}
-            className={actionButtonClasses}
-          >
-            {rightAction}
-          </button>
-        )}
+        {renderAction(rightAction, onRightAction, rightActionClasses, rightActionLabel, rightActionDisabled)}
       </div>
     </nav>
   );

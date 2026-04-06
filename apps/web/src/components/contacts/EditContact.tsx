@@ -173,15 +173,11 @@ const EditContact: FC<EditContactProps> = ({
         title="Edit Contact"
         leftAction="Cancel"
         onLeftAction={handleCancel}
-        rightAction={
-          <span
-            className={`font-semibold ${isDirty ? 'text-blue-ios' : 'text-disabled'}`}
-            aria-disabled={!isDirty}
-          >
-            Save
-          </span>
-        }
-        onRightAction={isDirty ? handleSave : undefined}
+        leftActionLabel="Cancel editing"
+        rightAction="Save"
+        onRightAction={handleSave}
+        rightActionDisabled={!isDirty}
+        rightActionLabel="Save contact changes"
       />
 
       {/* ── Form content area ── */}

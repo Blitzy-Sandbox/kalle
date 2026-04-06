@@ -171,8 +171,9 @@ export default function SettingsPage() {
   // Groups separated by 35px vertical gaps.
   // ---------------------------------------------------------------------------
   return (
-    <main
+    <div
       className="flex flex-col flex-1 min-h-0 bg-surface"
+      role="region"
       aria-label="Settings"
     >
       {/* ================================================================== */}
@@ -461,6 +462,6 @@ export default function SettingsPage() {
         items={shareModalItems}
         cancelLabel="Cancel"
       />
-    </main>
+    </div>
   );
 }

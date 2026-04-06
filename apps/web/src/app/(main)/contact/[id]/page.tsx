@@ -160,18 +160,16 @@ function ContactInfoSkeleton({ onBack }: { onBack: () => void }) {
       <NavigationBar
         title="Contact Info"
         leftAction={
-          <button
-            type="button"
-            onClick={onBack}
-            className="flex items-center gap-1 text-blue-ios"
-            aria-label="Go back"
-          >
+          <span className="flex items-center gap-1">
             <BackChevronSmall />
-          </button>
+          </span>
         }
+        onLeftAction={onBack}
+        leftActionLabel="Go back"
       />
 
-      <main
+      <div
+        role="region"
         className="flex-1 overflow-y-auto"
         aria-busy="true"
         aria-label="Loading contact information"
@@ -248,7 +246,7 @@ function ContactInfoSkeleton({ onBack }: { onBack: () => void }) {
             showChevron
           />
         </div>
-      </main>
+      </div>
     </div>
   );
 }
@@ -277,21 +275,18 @@ function ContactInfoError({
       <NavigationBar
         title="Contact Info"
         leftAction={
-          <button
-            type="button"
-            onClick={onBack}
-            className="flex items-center gap-1 text-blue-ios"
-            aria-label="Go back"
-          >
+          <span className="flex items-center gap-1">
             <BackChevronSmall />
             <span className="font-sans text-nav-action tracking-tight-ios">
               Back
             </span>
-          </button>
+          </span>
         }
+        onLeftAction={onBack}
+        leftActionLabel="Go back"
       />
 
-      <main
+      <div
         className="flex-1 flex flex-col items-center justify-center p-8"
         role="alert"
       >
@@ -313,7 +308,7 @@ function ContactInfoError({
 
         {/* Visual separator before empty space */}
         <Separator className="mt-8 w-48" />
-      </main>
+      </div>
     </div>
   );
 }

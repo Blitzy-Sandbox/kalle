@@ -322,7 +322,7 @@ const ContactInfo: FC<ContactInfoProps> = ({
       />
 
       {/* ---- Scrollable Content Area ---- */}
-      <main className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto" role="region" aria-label="Contact information">
 
         {/* ==== Profile Photo (node 0:9602) ====
              375×375px, full width, objectFit cover.
@@ -385,7 +385,7 @@ const ContactInfo: FC<ContactInfoProps> = ({
                   src={iconVideoCall}
                   alt=""
                   width={20}
-                  height={12}
+                  height={13}
                   aria-hidden="true"
                 />
               </button>
@@ -595,7 +595,7 @@ const ContactInfo: FC<ContactInfoProps> = ({
 
         {/* Bottom safe-area spacer for tab bar (83px) */}
         <div className="h-[83px]" aria-hidden="true" />
-      </main>
+      </div>
     </div>
   );
 };

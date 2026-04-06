@@ -294,41 +294,29 @@ export default function EditContactPage(): React.JSX.Element | null {
   // -----------------------------------------------------------------------
   // Cancel button shared across loading / error states (DRY)
   // -----------------------------------------------------------------------
-  const cancelButton = (
-    <button
-      type="button"
-      onClick={handleCancel}
-      className="text-nav-action text-blue-ios tracking-tight-ios focus-visible:outline-2 focus-visible:outline-blue-ios focus-visible:outline-offset-2 rounded"
-      aria-label="Cancel editing"
-    >
-      Cancel
-    </button>
-  );
-
-  const disabledSaveLabel = (
-    <span
-      className="text-nav-title text-disabled tracking-tight-ios"
-      aria-disabled="true"
-    >
-      Save
-    </span>
-  );
+  /* Cancel and Save actions are passed as strings to NavigationBar.
+     NavigationBar wraps strings in a native <button>, avoiding nested-button
+     hydration errors (Issue #15). The disabled state is controlled via
+     rightActionDisabled prop (Issue #12). */
 
   // -----------------------------------------------------------------------
   // Render: Loading state
   // -----------------------------------------------------------------------
   if (isLoading) {
     return (
-      <main
+      <div
         className={containerClasses}
-        role="main"
+        role="region"
         aria-label="Edit Contact"
         aria-busy="true"
       >
         <NavigationBar
           title="Edit Contact"
-          leftAction={cancelButton}
-          rightAction={disabledSaveLabel}
+          leftAction="Cancel"
+          onLeftAction={handleCancel}
+          leftActionLabel="Cancel editing"
+          rightAction="Save"
+          rightActionDisabled
         />
         <Separator />
         <div
@@ -344,7 +332,7 @@ export default function EditContactPage(): React.JSX.Element | null {
             </p>
           </div>
         </div>
-      </main>
+      </div>
     );
   }
 
@@ -353,15 +341,18 @@ export default function EditContactPage(): React.JSX.Element | null {
   // -----------------------------------------------------------------------
   if (error && !contactData) {
     return (
-      <main
+      <div
         className={containerClasses}
-        role="main"
+        role="region"
         aria-label="Edit Contact"
       >
         <NavigationBar
           title="Edit Contact"
-          leftAction={cancelButton}
-          rightAction={disabledSaveLabel}
+          leftAction="Cancel"
+          onLeftAction={handleCancel}
+          leftActionLabel="Cancel editing"
+          rightAction="Save"
+          rightActionDisabled
         />
         <Separator />
         <div
@@ -380,7 +371,7 @@ export default function EditContactPage(): React.JSX.Element | null {
             Retry
           </button>
         </div>
-      </main>
+      </div>
     );
   }
 
@@ -420,13 +411,14 @@ export default function EditContactPage(): React.JSX.Element | null {
   // Render: Main form via EditContact component (R2 — component reuse)
   // -----------------------------------------------------------------------
   return (
-    <main
+    <div
       className={containerClasses}
-      role="main"
+      role="region"
       aria-label="Edit Contact"
     >
-      {/* Visually hidden heading for screen readers (R34 — heading hierarchy) */}
-      <h1 className="sr-only">Edit Contact</h1>
+      {/* Visually hidden secondary heading for screen readers — NavigationBar owns
+          the page-level <h1>, so this uses <h2> to maintain correct hierarchy (R34). */}
+      <h2 className="sr-only">Edit Contact</h2>
 
       {/* Inline error banner shown when save/delete fails after data is loaded */}
       {error && (
@@ -449,6 +441,6 @@ export default function EditContactPage(): React.JSX.Element | null {
         onSave={handleSave}
         onDelete={handleDelete}
       />
-    </main>
+    </div>
   );
 }
