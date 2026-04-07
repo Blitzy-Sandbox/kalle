@@ -315,12 +315,13 @@ export class MessageController {
         : undefined;
 
       // Delegate to the service. getMessageHistory expects
-      // GetMessageHistoryParams: { conversationId, userId, cursor?, limit? }
+      // GetMessageHistoryParams: { conversationId, userId, cursor?, limit?, before? }
       const result = await this.messageService.getMessageHistory({
         conversationId,
         userId,
         cursor: query.cursor,
         limit,
+        before: query.before,
       });
 
       // Format as paginated response with data and pagination metadata.
@@ -329,7 +330,7 @@ export class MessageController {
       res.status(200).json({
         data: result.items,
         pagination: {
-          cursor: result.cursor,
+          cursor: result.cursor ?? null,
           hasMore: result.hasMore,
         },
       });

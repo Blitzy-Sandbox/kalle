@@ -212,7 +212,7 @@ export class UserController {
       res.status(200).json({
         data: result.items,
         pagination: {
-          cursor: result.cursor,
+          cursor: result.cursor ?? null,
           hasMore: result.hasMore,
         },
       });

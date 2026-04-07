@@ -156,6 +156,8 @@ interface GetMessageHistoryParams {
   readonly cursor?: string;
   /** Page size (defaults to 50) */
   readonly limit?: number;
+  /** Optional ISO 8601 timestamp — fetch only messages before this time */
+  readonly before?: string;
 }
 
 /**
@@ -527,7 +529,7 @@ export class MessageService {
   public async getMessageHistory(
     params: GetMessageHistoryParams,
   ): Promise<{ items: MessageResponse[]; cursor?: string; hasMore: boolean }> {
-    const { conversationId, userId, cursor, limit } = params;
+    const { conversationId, userId, cursor, limit, before } = params;
 
     // Verify requester is a participant
     const isParticipant = await this.conversationRepository.isParticipant(
@@ -541,11 +543,14 @@ export class MessageService {
       );
     }
 
-    // Delegate to repository with default page size
+    // Delegate to repository with default page size.
+    // Convert the `before` ISO string to a Date for the repository interface
+    // which expects `before?: Date` in MessageQueryOptions.
     const queryOptions: MessageQueryOptions = {
       conversationId,
       cursor,
       limit: limit ?? 50,
+      ...(before ? { before: new Date(before) } : {}),
     };
 
     const result = await this.messageRepository.findByConversation(queryOptions);

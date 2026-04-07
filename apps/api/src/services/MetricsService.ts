@@ -356,6 +356,22 @@ export class MetricsService {
         unit: '1',
       },
     );
+
+    // ── Seed Zero-Value Data Points ──────────────────────────────
+    // OpenTelemetry only exports metrics that have received at least one
+    // data point. By adding 0 to all gauges and counters at startup we
+    // ensure that the Prometheus output always includes WebSocket and
+    // BullMQ metric names — even before the first connection or job.
+
+    this.wsActiveConnections.add(0);
+    this.wsConnectionsTotal.add(0, { event: 'connect' });
+    this.wsConnectionsTotal.add(0, { event: 'disconnect' });
+    this.wsMessagesTotal.add(0, { event_type: 'message:send' });
+
+    this.bullmqQueueDepth.add(0);
+    this.bullmqJobsTotal.add(0, { job_name: 'unknown', status: 'completed' });
+
+    this.dbActiveConnections.add(0);
   }
 
   /**

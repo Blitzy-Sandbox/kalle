@@ -155,6 +155,11 @@ describe('MetricsService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     service = new MetricsService();
+    // Clear call counts accumulated during constructor's zero-value seeding
+    // so that recording method tests start with a clean baseline.
+    mockCounterAdd.mockClear();
+    mockHistogramRecord.mockClear();
+    mockUpDownCounterAdd.mockClear();
   });
 
   /* ──────────────────────────────────────────────────────────────────────── */

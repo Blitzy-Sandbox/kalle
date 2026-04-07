@@ -93,8 +93,10 @@ export class ConversationController {
 
       res.status(200).json({
         data: result.items,
-        cursor: result.cursor,
-        hasMore: result.hasMore,
+        pagination: {
+          cursor: result.cursor ?? null,
+          hasMore: result.hasMore,
+        },
       });
     } catch (error) {
       next(error);

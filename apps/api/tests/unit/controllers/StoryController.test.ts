@@ -72,7 +72,10 @@ describe('StoryController', () => {
 
     expect(mockStoryService.getStoryFeed).toHaveBeenCalledWith('u-1', []);
     expect(statusFn).toHaveBeenCalledWith(200);
-    expect(jsonFn).toHaveBeenCalledWith({ data: stories });
+    expect(jsonFn).toHaveBeenCalledWith({
+      data: stories,
+      pagination: { cursor: null, hasMore: false },
+    });
   });
 
   it('getFeed delegates errors to next', async () => {
@@ -95,7 +98,10 @@ describe('StoryController', () => {
 
     expect(mockStoryService.getMyStories).toHaveBeenCalledWith('u-1');
     expect(statusFn).toHaveBeenCalledWith(200);
-    expect(jsonFn).toHaveBeenCalledWith({ data: myStories });
+    expect(jsonFn).toHaveBeenCalledWith({
+      data: myStories,
+      pagination: { cursor: null, hasMore: false },
+    });
   });
 
   it('getMyStories delegates errors to next', async () => {

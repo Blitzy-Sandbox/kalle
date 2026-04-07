@@ -90,14 +90,14 @@ const messageIdParamSchema = z.object({
  * Schema for GET /conversations/:conversationId/messages query parameters.
  * Supports cursor-based pagination with an optional timestamp filter.
  *
- * - cursor: UUID of the last message from the previous page
+ * - cursor: serverTimestamp of the last message from the previous page (ISO 8601)
  * - limit: Number of messages per page (1–100, default 50)
  * - before: ISO 8601 datetime — only return messages before this timestamp
  */
 const getHistoryQuerySchema = z.object({
-  cursor: z.string().uuid().optional(),
+  cursor: z.string().optional(),
   limit: z.coerce.number().int().min(1).max(100).default(50),
-  before: z.string().datetime().optional(),
+  before: z.string().optional(),
 });
 
 // ---------------------------------------------------------------------------

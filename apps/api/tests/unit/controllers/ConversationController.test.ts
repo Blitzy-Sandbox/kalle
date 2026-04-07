@@ -60,8 +60,10 @@ describe('ConversationController', () => {
     expect(statusFn).toHaveBeenCalledWith(200);
     expect(jsonFn).toHaveBeenCalledWith({
       data: result.items,
-      cursor: 'c2',
-      hasMore: true,
+      pagination: {
+        cursor: 'c2',
+        hasMore: true,
+      },
     });
   });
 

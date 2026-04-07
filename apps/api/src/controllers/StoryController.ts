@@ -162,7 +162,7 @@ export class StoryController {
    * - hasUnviewed computation for the viewing user
    *
    * @param req - Express request with `req.user` (authenticated)
-   * @param res - Express response — 200 with `{ data: StoryFeedItem[] }`
+   * @param res - Express response — 200 with standardized pagination envelope
    * @param next - Express next function for error delegation
    */
   async getFeed(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -173,7 +173,16 @@ export class StoryController {
       // at the service/repository layer based on the user's contact list.
       const feed: StoryFeedItem[] = await this.storyService.getStoryFeed(userId, []);
 
-      res.status(200).json({ data: feed });
+      // Stories are time-bounded (24h window, R11) so the full active feed is
+      // returned in a single page. Pagination metadata is included for envelope
+      // consistency with all other list endpoints (Finding 3 standardisation).
+      res.status(200).json({
+        data: feed,
+        pagination: {
+          cursor: null,
+          hasMore: false,
+        },
+      });
     } catch (error) {
       next(error);
     }
@@ -191,7 +200,7 @@ export class StoryController {
    * (Figma Screen 8 — "My Status" row).
    *
    * @param req - Express request with `req.user` (authenticated)
-   * @param res - Express response — 200 with `{ data: StoryResponse[] }`
+   * @param res - Express response — 200 with standardized pagination envelope
    * @param next - Express next function for error delegation
    */
   async getMyStories(req: Request, res: Response, next: NextFunction): Promise<void> {
@@ -200,7 +209,15 @@ export class StoryController {
 
       const stories: StoryResponse[] = await this.storyService.getMyStories(userId);
 
-      res.status(200).json({ data: stories });
+      // Include pagination metadata for envelope consistency with other
+      // list endpoints. Stories are always returned in full (24h window).
+      res.status(200).json({
+        data: stories,
+        pagination: {
+          cursor: null,
+          hasMore: false,
+        },
+      });
     } catch (error) {
       next(error);
     }
