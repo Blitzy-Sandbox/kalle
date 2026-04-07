@@ -136,6 +136,7 @@ services:
         npx prisma generate &&
         (DATABASE_URL="$$MIGRATION_DATABASE_URL" npx prisma migrate deploy || true) &&
         (DATABASE_URL="$$MIGRATION_DATABASE_URL" npx prisma db execute --file ./scripts/post-migrate.sql --schema ./prisma/schema.prisma 2>/dev/null || true) &&
+        if [ "$${SEED_ON_INIT:-false}" = "true" ]; then echo "--- Seeding Database ---" && (DATABASE_URL="$$MIGRATION_DATABASE_URL" npx prisma db seed || true) && echo "Seed step complete!"; fi &&
         exec npx tsx watch apps/api/src/server.ts
     healthcheck:
       test:
