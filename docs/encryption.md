@@ -13,7 +13,7 @@ All message payloads — text, media metadata, and document references — are e
 **Key constraints:**
 
 - **Stories are NOT encrypted.** Status/story content is transmitted and stored in plaintext on the server *(Rule R12)*.
-- **Client library:** [`@nicolo-ribaudo/libsignal-protocol-javascript`](https://www.npmjs.com/package/@nicolo-ribaudo/libsignal-protocol-javascript) (^1.6.x) — a JavaScript implementation of the Signal Protocol providing X3DH key agreement, Double Ratchet, and Sender Key primitives.
+- **Client library:** [`@privacyresearch/libsignal-protocol-typescript`](https://www.npmjs.com/package/@privacyresearch/libsignal-protocol-typescript) (^0.0.16) — a TypeScript implementation of the Signal Protocol providing X3DH key agreement, Double Ratchet, and Sender Key primitives.
 - **Search is client-side only:** Decrypted messages are indexed locally in IndexedDB. No plaintext or search tokens ever reach the server *(Rule R21)*.
 
 ---
@@ -97,30 +97,49 @@ For group conversations, the application uses the **Sender Key** distribution me
 The PreKey bundle is defined in `packages/shared/src/types/encryption.ts` and contains all the public key material needed for another user to establish a Signal session:
 
 ```typescript
-interface PreKeyBundle {
+interface IdentityKey {
+  /** Base64-encoded Curve25519 public key */
+  publicKey: string;
+  /** Optional key fingerprint for verification */
+  fingerprint?: string;
+}
+
+interface SignedPreKey {
+  /** Unique key identifier */
+  keyId: number;
+  /** Base64-encoded Curve25519 public key */
+  publicKey: string;
+  /** Base64-encoded signature over publicKey using the Identity Key */
+  signature: string;
+  /** ISO 8601 UTC timestamp of key generation */
+  timestamp: string;
+}
+
+interface PublicPreKey {
+  /** Unique key identifier */
+  keyId: number;
+  /** Base64-encoded Curve25519 public key */
+  publicKey: string;
+}
+
+interface PreKeyBundleDTO {
   /** Unique registration identifier for this device */
   registrationId: number;
 
   /** Long-term Identity Key (public component only) */
-  identityKey: ArrayBuffer;
+  identityKey: IdentityKey;
 
   /** Current Signed PreKey */
-  signedPreKey: {
-    keyId: number;
-    publicKey: ArrayBuffer;
-    /** Signature over publicKey using the Identity Key */
-    signature: ArrayBuffer;
-  };
+  signedPreKey: SignedPreKey;
 
   /** Pool of single-use One-Time PreKeys */
-  preKeys: Array<{
-    keyId: number;
-    publicKey: ArrayBuffer;
-  }>;
+  preKeys: PublicPreKey[];
 }
 ```
 
-> **Server-side storage:** The server persists this bundle as opaque binary data in the `PreKeyBundle` database model (`prisma/schema.prisma`). The server never interprets, validates signatures on, or decrypts any component of the bundle.
+> **Note:** All key material is serialized as Base64-encoded strings (not `ArrayBuffer`). The actual TypeScript types are defined in `packages/shared/src/types/encryption.ts`.
+
+> **Server-side storage:** The server persists this bundle using `String` and `Json` column types in the `PreKeyBundle` database model (`prisma/schema.prisma`). The server never interprets, validates signatures on, or decrypts any component of the bundle.
 
 ### PreKey Bundle Upload
 
@@ -160,7 +179,7 @@ When a user's One-Time PreKey supply is running low, the system proactively noti
 |-----------|------|
 | **BullMQ job** | `workers/queue/src/jobs/prekey-replenish-notification.ts` |
 | **Trigger** | PreKey pool drops below the configured threshold after a fetch operation |
-| **Action** | Emits a `keys:replenish` WebSocket event to the user's connected client(s) |
+| **Action** | Emits a `key:replenish` WebSocket event to the user's connected client(s) |
 | **Client response** | Client generates a new batch of One-Time PreKeys and uploads via `POST /api/v1/keys/bundle` |
 
 > For WebSocket event contracts, see [WebSocket Events](./websocket-events.md).
@@ -335,8 +354,8 @@ flowchart TD
     A[User selects media file] --> B{File ≤ 25MB?}
     B -- No --> C[Reject: 413 Payload Too Large]
     B -- Yes --> D[Generate thumbnail<br/>max 200px longest edge]
-    D --> E[Encrypt full-size media<br/>with AES-256-CBC + random key]
-    E --> F[Encrypt thumbnail<br/>with separate AES-256-CBC key]
+    D --> E[Encrypt full-size media<br/>with AES-256-GCM + random key]
+    E --> F[Encrypt thumbnail<br/>with separate AES-256-GCM key]
     F --> G[Upload encrypted full-size blob<br/>POST /api/v1/media]
     G --> H[Upload encrypted thumbnail blob<br/>POST /api/v1/media]
     H --> I[Server validates MIME type<br/>against allowlist]
@@ -377,7 +396,7 @@ flowchart LR
 
 | Component | File | Responsibility |
 |-----------|------|----------------|
-| **IndexedDB schema** | `apps/web/src/lib/db.ts` | Dexie.js database definition with tables for decrypted messages, indexed on content, sender, conversation ID, and timestamp |
+| **IndexedDB schema** | `apps/web/src/lib/db.ts` | Dexie.js database definition with tables for decrypted messages, indexed on `id`, `conversationId`, and `timestamp` |
 | **Search engine** | `apps/web/src/lib/search.ts` | Full-text search queries against the local IndexedDB index — tokenization, prefix matching, and result ranking |
 | **Search hook** | `apps/web/src/hooks/useSearch.ts` | React hook exposing search state and results to UI components |
 
@@ -495,8 +514,8 @@ Per **Rule R10**, the seed script must generate valid encryption key material to
 | Requirement | Implementation |
 |-------------|----------------|
 | **Idempotent execution** | Running `prisma/seed.ts` twice produces identical database state — upsert semantics on all records |
-| **Valid key material** | Seed generates real Curve25519 keypairs for Identity Keys, Signed PreKeys, and One-Time PreKeys using the Signal Protocol library |
-| **Decryptable messages** | Seeded messages are valid ciphertext encrypted with seeded Signal sessions — they decrypt correctly in the UI when the corresponding seed user is logged in |
+| **Valid key material** | Seed generates simulated Curve25519 keypairs for Identity Keys, Signed PreKeys, and One-Time PreKeys using deterministic generation (not the Signal Protocol library) |
+| **Simulated ciphertext** | Seeded messages use simulated ciphertext (`SEED_CIPHERTEXT:{content}:{nonce}` base64-encoded) — these are **not** real Signal Protocol ciphertext and will **not** decrypt in the UI via Signal sessions. They serve as structural placeholders for demo data. |
 | **Deterministic output** | Seed uses a fixed PRNG seed to generate reproducible key material across runs |
 
 ### Seed Data Contents
@@ -504,11 +523,10 @@ Per **Rule R10**, the seed script must generate valid encryption key material to
 The seed script (`prisma/seed.ts`) populates:
 
 1. **Users** (10+) — each with a registration ID and Identity Key.
-2. **PreKey bundles** — each user has a complete bundle with 1 Signed PreKey and 100 One-Time PreKeys.
-3. **Signal sessions** — pre-established sessions between seed users for seeded conversations.
-4. **Conversations** (5+) — mix of 1:1 and group conversations.
-5. **Messages** — valid ciphertext produced by encrypting sample text through established Signal sessions.
-6. **Sender Keys** — distributed for group conversations among all group members.
+2. **PreKey bundles** — each user has a complete bundle with 1 Signed PreKey and 10 One-Time PreKeys.
+3. **Conversations** (5+) — mix of 1:1 and group conversations.
+4. **Messages** — simulated ciphertext (base64-encoded `SEED_CIPHERTEXT:{content}:{nonce}` format) for structural demo data. Real Signal Protocol sessions are **not** pre-established in the seed.
+5. **Auth sessions** — JWT-based auth sessions for seed users (these are authentication sessions, not Signal Protocol sessions).
 
 ### Running the Seed
 
@@ -527,7 +545,7 @@ npx prisma db seed
 | Document | Description |
 |----------|-------------|
 | [API Reference](./api-reference.md) | Full REST API endpoint documentation including key exchange endpoints |
-| [WebSocket Events](./websocket-events.md) | WebSocket event contracts including `message:send`, `message:new`, `message:edited`, `message:deleted`, `keys:replenish` |
+| [WebSocket Events](./websocket-events.md) | WebSocket event contracts including `message:send`, `message:new`, `message:edited`, `message:deleted`, `key:replenish` |
 | [Architecture](./architecture.md) | System architecture, dependency injection, and layering decisions |
 
 ---

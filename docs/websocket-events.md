@@ -105,9 +105,9 @@ All WebSocket connections require a valid JWT access token (**Rule R9**). Unauth
 
 3. **On failure**, the client receives a `connect_error` event with the message `authentication_error`. The socket is **not** connected.
 
-4. **On token expiry during an active session**, the server emits a `token:expired` notification. The client should:
-   1. Refresh the access token via `POST /api/v1/auth/refresh` (see [API Reference](./api-reference.md)).
-   2. Disconnect the current socket.
+4. **On token expiry during an active session**, the server will reject the next connection attempt. The client should:
+   1. Detect disconnection or `connect_error` from the server.
+   2. Refresh the access token via `POST /api/v1/auth/refresh` (see [API Reference](./api-reference.md)).
    3. Reconnect with the new access token in the `auth` option.
 
 ### Session Revocation
@@ -132,7 +132,7 @@ Per-connection rate limiting is enforced by the server middleware at `apps/api/s
 
 When a client exceeds any rate limit:
 
-1. The server emits an `error` event with code `RATE_LIMIT_EXCEEDED` and a human-readable message indicating which limit was exceeded.
+1. The server emits a `connection:error` event with code `RATE_LIMIT_EXCEEDED` and a human-readable message indicating which limit was exceeded.
 2. The server **forcibly disconnects** the socket.
 3. The client may reconnect after a back-off period — the recommended minimum is 5 seconds.
 
@@ -158,8 +158,13 @@ All message events are handled by `apps/api/src/websocket/handlers/message-handl
 
 ```typescript
 {
+  // EventMetadata fields (included in all event payloads):
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
   conversationId: string;      // UUID of the target conversation
   ciphertext: string;          // Base64-encoded encrypted message content
+  type: MessageType;           // Message type: "TEXT" | "IMAGE" | "VIDEO" | "AUDIO" | "DOCUMENT" | "VOICE_NOTE"
   clientMessageId: string;     // Client-generated UUID for deduplication
   replyToMessageId?: string;   // Optional: UUID of the message being replied to
   mediaId?: string;            // Optional: UUID of already-uploaded media attachment
@@ -173,7 +178,7 @@ All message events are handled by `apps/api/src/websocket/handlers/message-handl
 3. Persists the message row with ciphertext in the `Message` table. The server **never** decrypts the content (**Rule R12**).
 4. **1:1 conversations:** Emits `message:new` directly to the recipient's socket room.
 5. **Group conversations (3+ participants):** Enqueues a BullMQ `message-fanout` job for asynchronous delivery to all participants (**Rule R18**). The event returns to the sender **before** all deliveries complete.
-6. Emits `message:sent` acknowledgment back to the sender with the server-assigned `messageId` and `serverTimestamp`.
+6. **Acknowledges** the sender via the Socket.IO **acknowledgment callback** (`AckCallback<MessageResponse>`) with the full persisted message including the server-assigned `id` and `serverTimestamp`. There is no separate `message:sent` event — the ack callback serves this purpose.
 7. If the message body contains URLs, enqueues a BullMQ `link-preview` job for asynchronous OG metadata extraction.
 
 ---
@@ -189,14 +194,31 @@ All message events are handled by `apps/api/src/websocket/handlers/message-handl
 
 ```typescript
 {
-  messageId: string;           // Server-assigned UUID
-  conversationId: string;      // UUID of the conversation
-  senderId: string;            // UUID of the message author
-  ciphertext: string;          // Base64-encoded encrypted content
-  serverTimestamp: string;     // ISO 8601 UTC timestamp assigned by the server
-  clientMessageId: string;     // Original client-generated UUID for sender-side dedup
-  replyToMessageId?: string;   // UUID of the quoted message, if a reply
-  mediaId?: string;            // UUID of attached media, if present
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
+  // Payload:
+  message: {                   // Full MessageResponse object
+    id: string;                // Server-assigned UUID
+    conversationId: string;    // UUID of the conversation
+    senderId: string;          // UUID of the message author
+    senderName: string;        // Display name of the sender
+    senderAvatar?: string;     // Avatar URL of the sender (optional)
+    ciphertext: string | null; // Base64-encoded encrypted content (null if deleted)
+    type: MessageType;         // "TEXT" | "IMAGE" | "VIDEO" | "AUDIO" | "DOCUMENT" | "VOICE_NOTE"
+    status: MessageStatusEnum; // "SENT" | "DELIVERED" | "READ"
+    replyTo?: ReplyToMessage;  // Quoted message reference (optional)
+    mediaId?: string;          // UUID of attached media (optional)
+    linkPreview?: LinkPreviewData; // OG metadata if URLs detected (optional)
+    isEdited: boolean;         // Whether the message has been edited
+    isDeleted: boolean;        // Whether the message has been soft-deleted
+    editedAt?: string;         // ISO 8601 edit timestamp (optional)
+    deletedAt?: string;        // ISO 8601 deletion timestamp (optional)
+    clientMessageId: string;   // Original client-generated UUID
+    serverTimestamp: string;   // ISO 8601 UTC timestamp assigned by server
+    createdAt: string;         // ISO 8601 creation timestamp
+  }
 }
 ```
 
@@ -209,31 +231,43 @@ All message events are handled by `apps/api/src/websocket/handlers/message-handl
 
 ---
 
-### `message:sent`
+### Acknowledgment Callback (`AckCallback`)
 
 | Property  | Value                     |
 | --------- | ------------------------- |
-| Direction | Server → Client (acknowledgment) |
+| Direction | Server → Client (inline acknowledgment) |
 | Purpose   | Confirm the server received and stored the message |
 
-**Payload:**
+The `message:send` event uses Socket.IO's built-in acknowledgment mechanism (`AckCallback<MessageResponse>`) instead of a separate event. The server invokes the ack callback with:
+
+**Success Response:**
 
 ```typescript
 {
-  clientMessageId: string;     // Client-generated UUID for matching the optimistic UI entry
-  messageId: string;           // Server-assigned UUID (permanent identifier)
-  serverTimestamp: string;     // ISO 8601 UTC timestamp
+  success: true,
+  data: MessageResponse   // Full persisted message object (see MessageResponse type)
 }
 ```
 
-**Client Behavior:**
+**Failure Response:**
 
-1. Match the `clientMessageId` to the locally-queued optimistic message.
-2. Replace the temporary client ID with the permanent `messageId`.
+```typescript
+{
+  success: false,
+  error: {
+    code: string,         // Error code (e.g., "VALIDATION_ERROR", "RATE_LIMIT")
+    message: string       // Human-readable error description
+  }
+}
+```
+
+**Client Behavior on Ack:**
+
+1. Match the `clientMessageId` in the returned `MessageResponse` to the locally-queued optimistic message.
+2. Replace the temporary client ID with the permanent server-assigned `id`.
 3. Update the message timestamp to `serverTimestamp`.
 4. Display a single gray checkmark (✓) indicating the message was sent.
 
----
 
 ### `message:edit`
 
@@ -246,6 +280,10 @@ All message events are handled by `apps/api/src/websocket/handlers/message-handl
 
 ```typescript
 {
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
   messageId: string;           // UUID of the message to edit
   ciphertext: string;          // New Base64-encoded encrypted content
 }
@@ -280,6 +318,10 @@ All message events are handled by `apps/api/src/websocket/handlers/message-handl
 
 ```typescript
 {
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
   messageId: string;           // UUID of the edited message
   conversationId: string;      // UUID of the conversation
   ciphertext: string;          // New Base64-encoded encrypted content
@@ -306,6 +348,10 @@ All message events are handled by `apps/api/src/websocket/handlers/message-handl
 
 ```typescript
 {
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
   messageId: string;           // UUID of the message to delete
 }
 ```
@@ -331,6 +377,10 @@ All message events are handled by `apps/api/src/websocket/handlers/message-handl
 
 ```typescript
 {
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
   messageId: string;           // UUID of the deleted message
   conversationId: string;      // UUID of the conversation
   deletedAt: string;           // ISO 8601 UTC timestamp of the deletion
@@ -356,14 +406,19 @@ All message events are handled by `apps/api/src/websocket/handlers/message-handl
 
 ```typescript
 {
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
   messageId: string;           // UUID of the delivered message
+  conversationId: string;      // UUID of the conversation
 }
 ```
 
 **Server Behavior:**
 
 1. Updates the `MessageStatus` record for this user + message to `DELIVERED`.
-2. Emits a delivery receipt to the **sender's** socket room so the sender can update the message status indicator from single checkmark (✓) to double gray checkmark (✓✓).
+2. Emits a `message:status` event to the **sender's** socket room so the sender can update the message status indicator from single checkmark (✓) to double gray checkmark (✓✓).
 
 ---
 
@@ -378,24 +433,62 @@ All message events are handled by `apps/api/src/websocket/handlers/message-handl
 
 ```typescript
 {
-  messageId: string;           // UUID of the read message
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
+  messageIds: string[];        // Array of UUIDs of the read messages (batch operation)
   conversationId: string;      // UUID of the conversation
 }
 ```
 
 **Server Behavior:**
 
-1. Updates the `MessageStatus` record for this user + message to `READ`.
-2. Emits a read receipt to the **sender's** socket room.
-3. The sender's client updates the message status indicator to a **blue double checkmark** (✓✓).
+1. Updates the `MessageStatus` records for this user + all messages in the `messageIds` array to `READ`.
+2. Emits `message:status` events to the **sender's** socket room.
+3. The sender's client updates the message status indicators to **blue double checkmarks** (✓✓).
 
 **Status Indicator Lifecycle:**
 
 | Status      | Visual Indicator              | Trigger                  |
 | ----------- | ----------------------------- | ------------------------ |
-| `SENT`      | Single gray checkmark (✓)     | `message:sent` received  |
+| `SENT`      | Single gray checkmark (✓)     | Acknowledgment callback received |
 | `DELIVERED` | Double gray checkmark (✓✓)    | `message:delivered` sent by recipient |
 | `READ`      | Double blue checkmark (✓✓)    | `message:read` sent by recipient |
+
+---
+
+### `message:status`
+
+| Property  | Value                |
+| --------- | -------------------- |
+| Direction | Server → Client      |
+| Purpose   | Notify the sender about a delivery or read status change on their message |
+
+**Payload (`MessageStatusPayload`):**
+
+```typescript
+{
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
+  messageId: string;           // UUID of the message
+  conversationId: string;      // UUID of the conversation
+  userId: string;              // UUID of the user who triggered the status change
+  status: MessageStatusEnum;   // "SENT" | "DELIVERED" | "READ"
+}
+```
+
+**Client Behavior:**
+
+1. Match the `messageId` in the current conversation view.
+2. Update the message status indicator:
+   - `DELIVERED` → Double gray checkmark (✓✓)
+   - `READ` → Double blue checkmark (✓✓)
+3. In group conversations, aggregate `message:status` events from multiple recipients.
+
+**Trigger:** This event is emitted by the server when it receives `message:delivered` or `message:read` from a recipient. The sender receives this event to update their UI.
 
 ---
 
@@ -415,15 +508,19 @@ Typing indicators provide real-time feedback when a user is composing a message.
 
 ```typescript
 {
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
   conversationId: string;      // UUID of the conversation
 }
 ```
 
 **Server Behavior:**
 
-1. **Debounce:** The server debounces `typing:start` events at **3-second intervals**. If multiple `typing:start` events arrive within 3 seconds from the same user for the same conversation, only the first triggers a broadcast.
-2. Emits `typing:indicator` (with `isTyping: true`) to all **other** participants in the conversation room.
-3. Sets a **5-second expiry timer**. If no new `typing:start` is received within 5 seconds, the server automatically emits `typing:indicator` (with `isTyping: false`) to clear the indicator.
+1. **TTL-based suppression:** The server uses a Redis key `typing:{conversationId}:{userId}` with a **5-second TTL** (set via `setNx`). If the key already exists (within the suppression window), re-emission is suppressed and only the TTL is refreshed. If the key does not exist, it is set and a `typing:indicator` event is broadcast.
+2. Emits `typing:indicator` (with `isTyping: true`) to all **other** participants in the conversation room (only on first event within the suppression window).
+3. **Note:** The server does **not** automatically emit `isTyping: false` when the TTL expires. The client is responsible for timing out the typing indicator locally (recommended: 5-second timeout on the client side).
 
 ---
 
@@ -438,13 +535,17 @@ Typing indicators provide real-time feedback when a user is composing a message.
 
 ```typescript
 {
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
   conversationId: string;      // UUID of the conversation
 }
 ```
 
 **Server Behavior:**
 
-1. Cancels any pending 5-second expiry timer for this user + conversation.
+1. Deletes the Redis typing key (`typing:{conversationId}:{userId}`) for this user + conversation.
 2. Immediately emits `typing:indicator` (with `isTyping: false`) to all other participants in the conversation room.
 
 ---
@@ -460,8 +561,13 @@ Typing indicators provide real-time feedback when a user is composing a message.
 
 ```typescript
 {
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
   conversationId: string;      // UUID of the conversation
   userId: string;              // UUID of the user who is typing (or stopped)
+  displayName: string;         // Display name of the typing user
   isTyping: boolean;           // true = typing, false = stopped
 }
 ```
@@ -489,9 +595,13 @@ Presence tracking provides online/offline status and last-seen timestamps for co
 
 ```typescript
 {
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
   userId: string;              // UUID of the user whose presence changed
-  status: 'online' | 'offline'; // Current presence status
-  lastSeen?: string;           // ISO 8601 UTC timestamp — present only when status is 'offline'
+  status: PresenceStatus;      // "ONLINE" | "OFFLINE" (UPPERCASE enum)
+  lastSeen?: string;           // ISO 8601 UTC timestamp — present only when status is "OFFLINE"
 }
 ```
 
@@ -513,7 +623,7 @@ Presence tracking provides online/offline status and last-seen timestamps for co
 
 ### Presence Query on Connect
 
-When a client first connects, it does **not** receive a bulk presence dump. Instead, the client should query presence for specific contacts via REST (`GET /api/v1/users/:id/presence` — see [API Reference](./api-reference.md)) or rely on incremental `user:presence` updates as contacts come online/go offline.
+When a client first connects, it does **not** receive a bulk presence dump. Instead, the client relies on incremental `user:presence` updates as contacts come online/go offline. There is no dedicated REST endpoint for presence queries — presence is managed entirely through the WebSocket layer.
 
 ---
 
@@ -534,6 +644,10 @@ Handler: `apps/api/src/websocket/handlers/sync-handler.ts`
 
 ```typescript
 {
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
   lastMessageIds: Record<string, string>;
   // Map of conversationId → lastKnownMessageId
   // Example:
@@ -555,35 +669,33 @@ The client emits `message:sync` immediately after a successful reconnection (i.e
    - Fetch all messages with a `serverTimestamp` **after** the message identified by `lastKnownMessageId`.
 2. Aggregate all missed messages across all conversations.
 3. Sort messages by `serverTimestamp` in ascending order (send order — **Rule R4**).
-4. Emit `message:sync:response` with the complete list.
-5. All missed messages must be delivered within **3 seconds** (**Rule R13**). If the result set is very large, the server may paginate the response by emitting multiple `message:sync:response` events.
+4. Invoke the **acknowledgment callback** (`AckCallback<MessageSyncResponsePayload>`) with the complete list. The sync uses Socket.IO's ack mechanism — there is **no separate `message:sync:response` event** emitted.
+5. All missed messages must be delivered within **3 seconds** (**Rule R13**). If the result set is very large, the response includes `hasMore: true` to indicate additional data.
 
 ---
 
-### `message:sync:response`
+### Sync Response (via Acknowledgment Callback)
 
 | Property  | Value                |
 | --------- | -------------------- |
-| Direction | Server → Client      |
+| Direction | Server → Client (ack callback, not a separate event) |
 | Purpose   | Deliver all missed messages after an offline period |
 
-**Payload:**
+> **Note:** The sync response is delivered through the `message:sync` acknowledgment callback, not as a separate `message:sync:response` event. The server handler invokes `ack({ success: true, data: ... })`.
+
+**Ack Callback Payload (`MessageSyncResponsePayload`):**
 
 ```typescript
 {
-  messages: Array<{
-    messageId: string;           // Server-assigned UUID
-    conversationId: string;      // UUID of the conversation
-    senderId: string;            // UUID of the message author
-    ciphertext: string | null;   // Base64-encoded encrypted content, or null for deleted messages
-    serverTimestamp: string;     // ISO 8601 UTC timestamp
-    clientMessageId: string;     // Original client-generated UUID
-    replyToMessageId?: string;   // UUID of quoted message, if a reply
-    mediaId?: string;            // UUID of attached media, if present
-    editedAt?: string;           // ISO 8601 timestamp if the message was edited
-    deletedAt?: string;          // ISO 8601 timestamp if the message was deleted (ciphertext will be null)
-  }>;
-  hasMore: boolean;              // true if additional pages of sync data exist
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
+  messages: MessageResponse[];  // Array of full MessageResponse objects (see Message Events)
+  // Each MessageResponse includes: id, conversationId, senderId, senderName,
+  // senderAvatar?, ciphertext, type, status, replyTo?, mediaId?, linkPreview?,
+  // isEdited, isDeleted, editedAt?, deletedAt?, clientMessageId, serverTimestamp, createdAt
+  hasMore: boolean;             // true if additional pages of sync data exist
 }
 ```
 
@@ -591,8 +703,8 @@ The client emits `message:sync` immediately after a successful reconnection (i.e
 
 1. Process messages in the order received (already sorted by `serverTimestamp`).
 2. For each message:
-   - If `deletedAt` is set and `ciphertext` is `null`: render as "This message was deleted."
-   - If `editedAt` is set: decrypt and render with an "edited" indicator.
+   - If `isDeleted` is `true` and `ciphertext` is `null`: render as "This message was deleted."
+   - If `isEdited` is `true`: decrypt and render with an "edited" indicator.
    - Otherwise: decrypt `ciphertext` and render normally.
 3. Store all decrypted messages in the local IndexedDB search index.
 4. Emit `message:delivered` for each newly received message.
@@ -619,15 +731,17 @@ Link previews are generated **asynchronously** via BullMQ jobs. When a message c
 
 ```typescript
 {
+  // EventMetadata fields:
+  correlationId: string;       // UUID v4 correlation ID for request tracing
+  timestamp: string;           // ISO 8601 UTC timestamp of the event
+
   messageId: string;           // UUID of the message containing the URL
   conversationId: string;      // UUID of the conversation
-  preview: {
-    url: string;               // The original URL that was resolved
-    title?: string;            // OG title tag value
-    description?: string;      // OG description tag value
-    imageUrl?: string;         // OG image URL (may be a proxied URL)
-    siteName?: string;         // OG site_name tag value
-  };
+  url: string;                 // The original URL that was resolved
+  title?: string;              // OG title tag value
+  description?: string;        // OG description tag value
+  imageUrl?: string;           // OG image URL (may be a proxied URL)
+  siteName?: string;           // OG site_name tag value
 }
 ```
 
@@ -683,18 +797,18 @@ The correlation ID appears in:
 
 ## Error Events
 
-All WebSocket error events follow the same standardized shape as REST API errors (**Rule R22**). Errors are emitted on the `error` event channel.
+All WebSocket error events follow the same standardized shape as REST API errors (**Rule R22**). Errors are emitted on the `connection:error` event channel.
 
-### Error Payload Shape
+### Error Payload Shape (`ConnectionErrorPayload`)
 
 ```typescript
 {
-  code: string;                // Machine-readable error code
+  code: string;                // Machine-readable error code (e.g., "RATE_LIMIT_EXCEEDED", "AUTHENTICATION_ERROR")
   message: string;             // Human-readable error description
-  details?: object;            // Optional additional context (e.g., field validation errors)
-  correlationId?: string;      // Correlation ID for tracing (Rule R29)
 }
 ```
+
+> **Note:** Unlike other event payloads, `ConnectionErrorPayload` does **not** extend `EventMetadata` — it contains only `code` and `message` fields.
 
 ### Error Code Reference
 
@@ -723,23 +837,22 @@ A complete reference of all WebSocket events, their direction, and associated ra
 
 | Event                    | Direction        | Category  | Rate Limit  | Description                                 |
 | ------------------------ | ---------------- | --------- | ----------- | ------------------------------------------- |
-| `message:send`           | Client → Server  | Message   | 30/min      | Send an encrypted message                   |
+| `message:send`           | Client → Server  | Message   | 30/min      | Send an encrypted message (ack: `MessageResponse`) |
 | `message:new`            | Server → Client  | Message   | —           | Deliver a new message to recipient(s)       |
-| `message:sent`           | Server → Client  | Message   | —           | Acknowledge message storage                 |
-| `message:edit`           | Client → Server  | Message   | 60/min      | Edit a sent message (15-min window)         |
+| `message:status`         | Server → Client  | Status    | —           | Notify sender of delivery/read status change |
+| `message:edit`           | Client → Server  | Message   | 60/min      | Edit a sent message (15-min window, ack: `void`) |
 | `message:edited`         | Server → Client  | Message   | —           | Notify participants of an edit              |
-| `message:delete`         | Client → Server  | Message   | 60/min      | Soft-delete a sent message                  |
+| `message:delete`         | Client → Server  | Message   | 60/min      | Soft-delete a sent message (ack: `void`)    |
 | `message:deleted`        | Server → Client  | Message   | —           | Notify participants of a deletion           |
 | `message:delivered`      | Client → Server  | Status    | 60/min      | Confirm message delivery to device          |
-| `message:read`           | Client → Server  | Status    | 60/min      | Mark a message as read                      |
+| `message:read`           | Client → Server  | Status    | 60/min      | Mark messages as read (batch)               |
 | `typing:start`           | Client → Server  | Typing    | 10/min      | Signal typing started                       |
 | `typing:stop`            | Client → Server  | Typing    | 60/min      | Signal typing stopped                       |
 | `typing:indicator`       | Server → Client  | Typing    | —           | Broadcast typing state to participants      |
 | `user:presence`          | Server → Client  | Presence  | —           | Broadcast online/offline status             |
-| `message:sync`           | Client → Server  | Sync      | 60/min      | Request missed messages after reconnect     |
-| `message:sync:response`  | Server → Client  | Sync      | —           | Deliver missed messages                     |
+| `message:sync`           | Client → Server  | Sync      | 60/min      | Request missed messages (ack: sync response) |
 | `link:preview`           | Server → Client  | Preview   | —           | Deliver extracted link OG metadata          |
-| `error`                  | Server → Client  | Error     | —           | Deliver error information                   |
+| `connection:error`       | Server → Client  | Error     | —           | Deliver error information                   |
 
 **Legend:**
 - **Client → Server**: Events emitted by the client socket and handled by the server.
@@ -759,7 +872,7 @@ A complete mapping of all source files involved in the WebSocket real-time commu
 | `packages/shared/src/types/websocket-events.ts`                | All WebSocket event payload TypeScript type contracts |
 | `apps/api/src/websocket/index.ts`                               | Socket.IO server setup with Redis adapter        |
 | `apps/api/src/websocket/handlers/message-handler.ts`            | Message event handlers (`message:*`)             |
-| `apps/api/src/websocket/handlers/typing-handler.ts`             | Typing indicator handlers with 3s debounce / 5s expiry |
+| `apps/api/src/websocket/handlers/typing-handler.ts`             | Typing indicator handlers with 5s TTL-based suppression |
 | `apps/api/src/websocket/handlers/presence-handler.ts`           | Presence (online/offline) handlers               |
 | `apps/api/src/websocket/handlers/sync-handler.ts`               | Offline sync handler (`message:sync`)            |
 | `apps/api/src/websocket/middleware/ws-auth.ts`                   | WebSocket JWT authentication middleware          |

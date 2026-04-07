@@ -60,7 +60,7 @@ kalle/
 | **State Management** | Zustand | 4.x |
 | **Styling** | Tailwind CSS | 3.x |
 | **Real-Time (Client)** | Socket.IO Client | 4.x |
-| **E2E Encryption** | libsignal-protocol-javascript | 1.6.x |
+| **E2E Encryption** | @privacyresearch/libsignal-protocol-typescript | 0.0.16 |
 | **Client Search** | Dexie.js (IndexedDB) | 4.x |
 | **Backend** | Express | 4.x |
 | **Real-Time (Server)** | Socket.IO + Redis Adapter | 4.x |
@@ -73,7 +73,7 @@ kalle/
 | **Metrics** | OpenTelemetry SDK → Prometheus | 1.x |
 | **Language** | TypeScript | 5.4.x |
 | **Build System** | Turborepo | 2.x |
-| **E2E Testing** | Playwright | 1.44.x |
+| **E2E Testing** | Playwright | 1.59.x |
 | **Containers** | Docker Compose | — |
 
 ### High-Level Data Flow
@@ -182,7 +182,7 @@ npx turbo run build
 npx turbo run build --filter=@kalle/shared
 npx turbo run build --filter=@kalle/api
 npx turbo run build --filter=@kalle/web
-npx turbo run build --filter=@kalle/worker
+npx turbo run build --filter=@kalle/worker-queue
 ```
 
 ### Testing
@@ -308,7 +308,7 @@ Real-time communication uses [Socket.IO](https://socket.io/) with a Redis adapte
 
 ### End-to-End Encryption
 
-All messages are encrypted and decrypted exclusively on the client using the **Signal Protocol** (`libsignal-protocol-javascript`). The server stores and transmits only ciphertext — there is zero decryption logic anywhere in the backend codebase.
+All messages are encrypted and decrypted exclusively on the client using the **Signal Protocol** (`@privacyresearch/libsignal-protocol-typescript`). The server stores and transmits only ciphertext — there is zero decryption logic anywhere in the backend codebase.
 
 - **1:1 Conversations** — Standard Signal Protocol sessions (X3DH key agreement + Double Ratchet).
 - **Group Conversations** — Sender Key distribution. Keys automatically rotate when a member is removed, ensuring removed members cannot decrypt post-removal messages and added members cannot decrypt pre-join messages.
@@ -343,9 +343,9 @@ The `docker-compose.yml` orchestrates seven services:
 | **redis** | `redis:7-alpine` | 6379 | `redis-cli ping` |
 | **api** | Custom (`Dockerfile.api`) | 3001 | `GET /api/v1/health` |
 | **web** | Custom (`Dockerfile.web`) | 3000 | HTTP 200 on root |
-| **worker** | Custom (`Dockerfile.worker`) | — | BullMQ worker active |
-| **backup** | Custom (`Dockerfile.backup`) | — | Backup file recency |
-| **otel-collector** | `otel/opentelemetry-collector` | 4317, 8889 | gRPC health |
+| **worker** | Custom (`Dockerfile.worker`) | — | Process alive check (`ps aux \| grep tsx`) |
+| **backup** | Custom (`Dockerfile.backup`) | — | Process alive check (`kill -0 1`) |
+| **otel-collector** | `otel/opentelemetry-collector` | 4317, 8889 | Config validation (`otelcol validate --config`) |
 
 The backup service produces daily `pg_dump` archives to `./backups/` with a configurable retention period (default: 7 days).
 

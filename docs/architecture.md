@@ -278,7 +278,7 @@ kalle/
 │               └── RateLimitError.ts
 │
 ├── workers/
-│   └── queue/                       # @kalle/worker — BullMQ worker process
+│   └── queue/                       # @kalle/worker-queue — BullMQ worker process
 │       ├── package.json
 │       ├── tsconfig.json
 │       └── src/
@@ -299,7 +299,9 @@ kalle/
 ├── scripts/                         # Utility shell scripts
 │   ├── wait-for-it.sh               # TCP port wait for Docker dependencies
 │   ├── backup.sh                    # pg_dump with gzip and 7-day retention
-│   └── entrypoint.api.sh            # Wait → migrate → start server
+│   ├── entrypoint.api.sh            # Wait → migrate → start server
+│   ├── init-db.sh                   # Database initialization script
+│   └── post-migrate.sql             # Post-migration SQL commands
 │
 ├── docs/                            # Project documentation
 │   ├── architecture.md              # This file — system design and ADRs
@@ -345,7 +347,7 @@ The monorepo is managed by **npm workspaces** declared in the root `package.json
 ```
 @kalle/shared  ←── @kalle/api
                ←── @kalle/web
-               ←── @kalle/worker
+               ←── @kalle/worker-queue
 ```
 
 The `shared` package must build before any consuming package. Turborepo caches build outputs and only rebuilds packages whose source files have changed.
@@ -537,7 +539,7 @@ Controllers and services throw these typed errors. The global `error-handler.ts`
 
 ## Frontend Architecture
 
-**Tech Stack:** Next.js 14 (App Router), React 18, Zustand 4, Tailwind CSS 3.4, Socket.IO Client 4, libsignal-protocol-javascript, Dexie.js
+**Tech Stack:** Next.js 14 (App Router), React 18, Zustand 4, Tailwind CSS 3.4, Socket.IO Client 4, @privacyresearch/libsignal-protocol-typescript, Dexie.js
 
 ### App Router Structure
 
@@ -590,7 +592,7 @@ The Socket.IO client is initialized as a singleton in `apps/web/src/lib/socket.t
 
 ### Client-Side Encryption
 
-End-to-end encryption is implemented entirely in the browser using `libsignal-protocol-javascript` (**Rule R12**):
+End-to-end encryption is implemented entirely in the browser using `@privacyresearch/libsignal-protocol-typescript` (**Rule R12**):
 
 - **Wrapper module:** `apps/web/src/lib/encryption.ts` — Manages Signal Protocol sessions for 1:1 messaging and Sender Key sessions for group messaging
 - **React hook:** `apps/web/src/hooks/useEncryption.ts` — Provides encryption/decryption methods to chat components
@@ -907,9 +909,15 @@ Application metrics are collected via **OpenTelemetry SDK 1.x** and exported in 
 |--------|------|-------------|
 | `http_requests_total` | Counter | Total HTTP requests by method, route, and status code |
 | `http_request_duration_seconds` | Histogram | HTTP request latency in seconds (p50, p95, p99) |
-| `websocket_connections_active` | Gauge | Currently active WebSocket connections |
-| `bullmq_queue_depth` | Gauge | Number of waiting jobs per queue |
-| `db_query_duration_seconds` | Histogram | Database query latency in seconds (p50, p95, p99) |
+| `http_active_requests` | UpDownCounter | Currently in-flight HTTP requests |
+| `ws_connections_total` | Counter | Total WebSocket connections established |
+| `ws_active_connections` | UpDownCounter | Currently active WebSocket connections |
+| `ws_messages_total` | Counter | Total WebSocket messages processed |
+| `bullmq_jobs_total` | Counter | Total BullMQ jobs processed by queue and status |
+| `bullmq_job_duration` | Histogram | BullMQ job processing duration in seconds |
+| `bullmq_queue_depth` | UpDownCounter | Number of waiting jobs per queue |
+| `db_query_duration` | Histogram | Database query latency in seconds (p50, p95, p99) |
+| `db_active_connections` | UpDownCounter | Currently active database connections |
 
 ### Health Checks
 
@@ -922,13 +930,16 @@ Component-level health monitoring is exposed at `GET /api/v1/health`:
 
 ```json
 {
-  "status": "healthy",
-  "timestamp": "2026-03-30T12:00:00.000Z",
-  "components": {
-    "database": { "status": "healthy", "latencyMs": 12 },
-    "redis": { "status": "healthy", "latencyMs": 3 },
-    "queue": { "status": "healthy", "activeWorkers": 5 },
-    "storage": { "status": "healthy", "writable": true }
+  "data": {
+    "status": "healthy",
+    "timestamp": "2026-03-30T12:00:00.000Z",
+    "uptime": 12345,
+    "components": {
+      "database": { "status": "up", "latency": 12 },
+      "redis": { "status": "up", "latency": 3 },
+      "queue": { "status": "up", "latency": 3 },
+      "storage": { "status": "up", "latency": 1 }
+    }
   }
 }
 ```
@@ -958,9 +969,9 @@ docker-compose up
 | **redis** | `redis:7-alpine` | 6379 | — | `redis-cli ping` |
 | **api** | `Dockerfile.api` | 3001 | postgres, redis | `GET /api/v1/health` |
 | **web** | `Dockerfile.web` | 3000 | api | HTTP 200 on root |
-| **worker** | `Dockerfile.worker` | — | postgres, redis | BullMQ worker active |
-| **backup** | `Dockerfile.backup` | — | postgres | Cron health file |
-| **otel-collector** | `otel/opentelemetry-collector` | 4317, 8889 | — | gRPC health |
+| **worker** | `Dockerfile.worker` | — | postgres, redis | Process alive check (`ps aux \| grep tsx`) |
+| **backup** | `Dockerfile.backup` | — | postgres | Process alive check (`kill -0 1`) |
+| **otel-collector** | `otel/opentelemetry-collector` | 4317, 8889 | — | Config validation (`otelcol validate --config`) |
 
 ### Bootstrap Sequence
 
@@ -1048,11 +1059,11 @@ Required environment variables include:
 | `DATABASE_URL` | PostgreSQL connection string |
 | `REDIS_URL` | Redis connection string |
 | `JWT_SECRET` | Secret key for JWT signing |
-| `JWT_REFRESH_SECRET` | Secret key for refresh token signing |
-| `PORT` | HTTP server port |
+| `JWT_REFRESH_TOKEN_EXPIRY` | Refresh token duration (default: `7d`) |
+| `API_PORT` | HTTP server port (default: `3001`) |
 | `NODE_ENV` | Environment (development/production/test) |
 | `CORS_ORIGIN` | Allowed CORS origin (e.g., `http://localhost:3000`) |
-| `STORAGE_PATH` | Local filesystem path for media storage |
+| `UPLOAD_DIR` | Local filesystem path for media storage (default: `./uploads`) |
 
 ---
 
@@ -1154,7 +1165,7 @@ The project follows a comprehensive test pyramid with four layers:
 
 **Context:** The application requires production-grade message encryption with forward secrecy. The server must never have access to plaintext message content. Group messaging requires a separate encryption mechanism that supports member addition and removal with proper key isolation.
 
-**Decision:** Use `libsignal-protocol-javascript` for implementing the Signal Protocol — X3DH (Extended Triple Diffie-Hellman) for key agreement, Double Ratchet for 1:1 message encryption with forward secrecy, and Sender Keys for efficient group message encryption.
+**Decision:** Use `@privacyresearch/libsignal-protocol-typescript` for implementing the Signal Protocol — X3DH (Extended Triple Diffie-Hellman) for key agreement, Double Ratchet for 1:1 message encryption with forward secrecy, and Sender Keys for efficient group message encryption.
 
 **Consequences:**
 - Server is zero-knowledge — stores only ciphertext, no decryption logic exists in backend code

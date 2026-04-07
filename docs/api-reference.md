@@ -10,14 +10,14 @@
 - [Correlation IDs](#correlation-ids)
 - [Input Validation](#input-validation)
 - [Pagination](#pagination)
-- [Auth — `/api/v1/auth`](#auth--apiv1auth)
-- [Users — `/api/v1/users`](#users--apiv1users)
-- [Conversations — `/api/v1/conversations`](#conversations--apiv1conversations)
-- [Messages — `/api/v1/messages`](#messages--apiv1messages)
-- [Media — `/api/v1/media`](#media--apiv1media)
-- [Stories — `/api/v1/stories`](#stories--apiv1stories)
-- [Encryption Keys — `/api/v1/keys`](#encryption-keys--apiv1keys)
-- [Health & Metrics — `/api/v1/health`](#health--metrics--apiv1health)
+- [Auth — `/api/v1/auth`](#auth-apiv1auth)
+- [Users — `/api/v1/users`](#users-apiv1users)
+- [Conversations — `/api/v1/conversations`](#conversations-apiv1conversations)
+- [Messages — `/api/v1/messages`](#messages-apiv1messages)
+- [Media — `/api/v1/media`](#media-apiv1media)
+- [Stories — `/api/v1/stories`](#stories-apiv1stories)
+- [Encryption Keys — `/api/v1/keys`](#encryption-keys-apiv1keys)
+- [Health & Metrics — `/api/v1/health`](#health-metrics-apiv1health)
 - [Route Registration](#route-registration)
 - [Implementation Files](#implementation-files)
 
@@ -32,7 +32,7 @@
 | **Format**     | JSON (`application/json`)          |
 | **Versioning** | URI-prefixed — all routes under `/api/v1/` (Rule R30) |
 
-All request and response bodies use `application/json` unless explicitly noted otherwise. The media upload endpoint (`POST /api/v1/media/upload`) accepts `multipart/form-data`.
+All request and response bodies use `application/json` unless explicitly noted otherwise. The media upload endpoint (`POST /api/v1/media`) accepts `multipart/form-data`.
 
 Real-time message delivery occurs over WebSocket (Socket.IO). See [`websocket-events.md`](./websocket-events.md) for the full event contract. REST endpoints documented here cover resource CRUD, history retrieval, and lifecycle operations.
 
@@ -174,27 +174,39 @@ All list endpoints use **cursor-based pagination** for consistent, efficient tra
 
 | Parameter  | Type     | Default | Description                                               |
 | ---------- | -------- | ------- | --------------------------------------------------------- |
-| `cursor`   | `string` | —       | Opaque cursor from the previous response's `nextCursor`   |
+| `cursor`   | `string` | —       | Opaque cursor from the previous response's `cursor` field |
 | `limit`    | `number` | varies  | Maximum number of items to return (endpoint-specific max) |
 | `direction`| `string` | `before`| Pagination direction: `before` or `after` the cursor      |
 
 ### Response Shape
 
+Most endpoints use a nested `pagination` object:
+
 ```json
 {
   "data": [ ... ],
   "pagination": {
-    "nextCursor": "eyJpZCI6IjEyMyJ9",
+    "cursor": "eyJpZCI6IjEyMyJ9",
     "hasMore": true
   }
 }
 ```
 
-| Field                    | Type      | Description                                           |
-| ------------------------ | --------- | ----------------------------------------------------- |
-| `data`                   | `array`   | Array of result items                                 |
-| `pagination.nextCursor`  | `string`  | Cursor to pass in the next request (null if no more)  |
-| `pagination.hasMore`     | `boolean` | Whether more results exist beyond this page           |
+Some endpoints (e.g., conversation list) use top-level pagination fields:
+
+```json
+{
+  "data": [ ... ],
+  "cursor": "eyJpZCI6IjEyMyJ9",
+  "hasMore": true
+}
+```
+
+| Field                   | Type      | Description                                           |
+| ----------------------- | --------- | ----------------------------------------------------- |
+| `data`                  | `array`   | Array of result items                                 |
+| `pagination.cursor` or `cursor` | `string`  | Cursor to pass in the next request (null if no more)  |
+| `pagination.hasMore` or `hasMore` | `boolean` | Whether more results exist beyond this page           |
 
 ---
 
@@ -236,13 +248,15 @@ Register a new user account.
 
 ```json
 {
-  "user": {
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "email": "user@example.com",
-    "displayName": "John Doe"
-  },
-  "accessToken": "eyJhbGciOiJIUzI1NiIs...",
-  "refreshToken": "eyJhbGciOiJIUzI1NiIs..."
+  "data": {
+    "user": {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "email": "user@example.com",
+      "displayName": "John Doe"
+    },
+    "accessToken": "eyJhbGciOiJIUzI1NiIs...",
+    "refreshToken": "eyJhbGciOiJIUzI1NiIs..."
+  }
 }
 ```
 
@@ -281,13 +295,15 @@ Authenticate with email and password to receive JWT tokens.
 
 ```json
 {
-  "user": {
-    "id": "550e8400-e29b-41d4-a716-446655440000",
-    "email": "user@example.com",
-    "displayName": "John Doe"
-  },
-  "accessToken": "eyJhbGciOiJIUzI1NiIs...",
-  "refreshToken": "eyJhbGciOiJIUzI1NiIs..."
+  "data": {
+    "user": {
+      "id": "550e8400-e29b-41d4-a716-446655440000",
+      "email": "user@example.com",
+      "displayName": "John Doe"
+    },
+    "accessToken": "eyJhbGciOiJIUzI1NiIs...",
+    "refreshToken": "eyJhbGciOiJIUzI1NiIs..."
+  }
 }
 ```
 
@@ -324,8 +340,12 @@ Exchange a valid refresh token for a new access/refresh token pair. Implements *
 
 ```json
 {
-  "accessToken": "eyJhbGciOiJIUzI1NiIs...",
-  "refreshToken": "eyJhbGciOiJIUzI1NiIs..."
+  "data": {
+    "tokens": {
+      "accessToken": "eyJhbGciOiJIUzI1NiIs...",
+      "refreshToken": "eyJhbGciOiJIUzI1NiIs..."
+    }
+  }
 }
 ```
 
@@ -356,7 +376,9 @@ Revoke the **current session** (single-session logout).
 
 ```json
 {
-  "message": "Session revoked successfully"
+  "data": {
+    "message": "Session revoked successfully"
+  }
 }
 ```
 
@@ -383,8 +405,10 @@ Revoke **all active sessions** for the authenticated user (force logout everywhe
 
 ```json
 {
-  "message": "All sessions revoked successfully",
-  "revokedCount": 3
+  "data": {
+    "message": "All sessions revoked successfully",
+    "revokedCount": 3
+  }
 }
 ```
 
@@ -404,7 +428,7 @@ User profile management, search, and block/unblock operations.
 
 ---
 
-### `GET /api/v1/users/profile`
+### `GET /api/v1/users/me`
 
 Retrieve the authenticated user's own profile.
 
@@ -414,13 +438,18 @@ Retrieve the authenticated user's own profile.
 
 ```json
 {
-  "id": "550e8400-e29b-41d4-a716-446655440000",
-  "email": "user@example.com",
-  "displayName": "John Doe",
-  "avatarUrl": "/media/550e8400-avatar.jpg",
-  "about": "Digital goodies designer",
-  "phoneNumber": "+1 202 555 0181",
-  "createdAt": "2026-01-01T00:00:00.000Z"
+  "data": {
+    "id": "550e8400-e29b-41d4-a716-446655440000",
+    "email": "user@example.com",
+    "displayName": "John Doe",
+    "avatar": "/media/550e8400-avatar.jpg",
+    "about": "Digital goodies designer",
+    "phoneNumber": "+1 202 555 0181",
+    "status": "ONLINE",
+    "lastSeen": "2026-03-30T09:00:00.000Z",
+    "createdAt": "2026-01-01T00:00:00.000Z",
+    "updatedAt": "2026-03-30T10:00:00.000Z"
+  }
 }
 ```
 
@@ -429,14 +458,17 @@ Retrieve the authenticated user's own profile.
 | `id`          | `string` | No       | UUID v4                            |
 | `email`       | `string` | No       | Verified email address             |
 | `displayName` | `string` | No       | User's chosen display name         |
-| `avatarUrl`   | `string` | Yes      | Relative URL to avatar media       |
+| `avatar`      | `string` | Yes      | Relative URL to avatar media       |
 | `about`       | `string` | Yes      | User bio / status text             |
 | `phoneNumber` | `string` | Yes      | Phone number (display only)        |
+| `status`      | `string` | No       | `"ONLINE"`, `"OFFLINE"`, `"AWAY"` |
+| `lastSeen`    | `string` | Yes      | ISO 8601 timestamp of last activity|
 | `createdAt`   | `string` | No       | ISO 8601 timestamp                 |
+| `updatedAt`   | `string` | No       | ISO 8601 timestamp of last update  |
 
 ---
 
-### `PUT /api/v1/users/profile`
+### `PATCH /api/v1/users/me`
 
 Update the authenticated user's profile. Supports **partial updates** — include only the fields to change.
 
@@ -448,7 +480,7 @@ Update the authenticated user's profile. Supports **partial updates** — includ
 {
   "displayName": "Jane Doe",
   "about": "Building great things",
-  "avatarUrl": "/media/new-avatar.jpg",
+  "avatar": "/media/new-avatar.jpg",
   "phoneNumber": "+1 202 555 0199"
 }
 ```
@@ -457,10 +489,10 @@ Update the authenticated user's profile. Supports **partial updates** — includ
 | ------------- | -------- | -------- | ---------------------- |
 | `displayName` | `string` | No       | 1–50 characters        |
 | `about`       | `string` | No       | 0–500 characters       |
-| `avatarUrl`   | `string` | No       | Valid media URL or null |
+| `avatar`      | `string` | No       | Valid media URL or null |
 | `phoneNumber` | `string` | No       | Valid phone format      |
 
-**Response `200 OK`:** Updated user profile object (same shape as `GET /profile`).
+**Response `200 OK`:** Updated user profile object wrapped in `data` (same shape as `GET /users/me`).
 
 **Errors:**
 
@@ -492,12 +524,12 @@ Search users by display name or email. Results are **cursor-paginated** and excl
     {
       "id": "550e8400-e29b-41d4-a716-446655440000",
       "displayName": "John Doe",
-      "avatarUrl": "/media/avatar.jpg",
+      "avatar": "/media/avatar.jpg",
       "about": "Digital goodies designer"
     }
   ],
   "pagination": {
-    "nextCursor": "eyJpZCI6IjEyMyJ9",
+    "cursor": "eyJpZCI6IjEyMyJ9",
     "hasMore": true
   }
 }
@@ -505,31 +537,42 @@ Search users by display name or email. Results are **cursor-paginated** and excl
 
 ---
 
-### `POST /api/v1/users/block`
+### `POST /api/v1/users/:userId/block`
 
 Block a user. Blocked users cannot send messages to or view the blocker's profile, stories, or presence.
 
 **Authentication:** Required
 
-**Request Body:**
+**Path Parameters:**
 
-```json
-{
-  "userId": "660e8400-e29b-41d4-a716-446655440000"
-}
-```
+| Parameter | Type     | Description                   |
+| --------- | -------- | ----------------------------- |
+| `userId`  | `string` | UUID of the user to block     |
 
-| Field    | Type     | Required | Constraints |
-| -------- | -------- | -------- | ----------- |
-| `userId` | `string` | Yes      | Valid UUID  |
+**Request Body:** None
 
 **Response `200 OK`:**
 
 ```json
 {
-  "message": "User blocked successfully"
+  "data": {
+    "message": "User blocked successfully",
+    "blockedUser": {
+      "userId": "blocked-user-uuid",
+      "displayName": "John Doe",
+      "avatar": "/media/avatar.jpg",
+      "blockedAt": "2026-03-30T10:00:00.000Z"
+    }
+  }
 }
 ```
+
+| Field                   | Type     | Description                         |
+| ----------------------- | -------- | ----------------------------------- |
+| `blockedUser.userId`    | `string` | UUID of the blocked user            |
+| `blockedUser.displayName` | `string` | Display name of the blocked user  |
+| `blockedUser.avatar`    | `string` | Avatar URL (nullable)               |
+| `blockedUser.blockedAt` | `string` | ISO 8601 timestamp of the block     |
 
 **Errors:**
 
@@ -542,29 +585,27 @@ Block a user. Blocked users cannot send messages to or view the blocker's profil
 
 ---
 
-### `POST /api/v1/users/unblock`
+### `DELETE /api/v1/users/:userId/block`
 
 Unblock a previously blocked user.
 
 **Authentication:** Required
 
-**Request Body:**
+**Path Parameters:**
 
-```json
-{
-  "userId": "660e8400-e29b-41d4-a716-446655440000"
-}
-```
+| Parameter | Type     | Description                     |
+| --------- | -------- | ------------------------------- |
+| `userId`  | `string` | UUID of the user to unblock     |
 
-| Field    | Type     | Required | Constraints |
-| -------- | -------- | -------- | ----------- |
-| `userId` | `string` | Yes      | Valid UUID  |
+**Request Body:** None
 
 **Response `200 OK`:**
 
 ```json
 {
-  "message": "User unblocked successfully"
+  "data": {
+    "message": "User unblocked successfully"
+  }
 }
 ```
 
@@ -576,6 +617,72 @@ Unblock a previously blocked user.
 | 409    | `CONFLICT`   | User is not blocked        |
 
 **Audit:** `user.unblock` event written to the audit log (Rule R32).
+
+---
+
+### `GET /api/v1/users/blocked`
+
+Retrieve the list of users blocked by the authenticated user.
+
+**Authentication:** Required
+
+**Response `200 OK`:**
+
+```json
+{
+  "data": [
+    {
+      "userId": "blocked-user-uuid",
+      "displayName": "Blocked User",
+      "avatar": "https://example.com/avatar.jpg",
+      "blockedAt": "2026-03-30T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+| Field         | Type     | Nullable | Description                             |
+| ------------- | -------- | -------- | --------------------------------------- |
+| `userId`      | `string` | No       | UUID of the blocked user                |
+| `displayName` | `string` | No       | Display name of the blocked user        |
+| `avatar`      | `string` | Yes      | Avatar URL (may be absent)              |
+| `blockedAt`   | `string` | No       | ISO 8601 timestamp of when block occurred |
+
+---
+
+### `GET /api/v1/users/:userId`
+
+Retrieve a specific user's public profile by UUID.
+
+**Authentication:** Required
+
+**Path Parameters:**
+
+| Parameter | Type     | Description                |
+| --------- | -------- | -------------------------- |
+| `userId`  | `string` | UUID of the target user    |
+
+**Response `200 OK`:**
+
+```json
+{
+  "data": {
+    "id": "target-user-uuid",
+    "email": "user@example.com",
+    "displayName": "Jane Doe",
+    "avatar": "https://example.com/avatar.jpg",
+    "about": "Hello there!",
+    "lastSeen": "2026-03-30T10:00:00.000Z",
+    "createdAt": "2026-03-01T00:00:00.000Z"
+  }
+}
+```
+
+**Errors:**
+
+| Status | Code         | Condition                  |
+| ------ | ------------ | -------------------------- |
+| 404    | `NOT_FOUND`  | User does not exist        |
 
 ---
 
@@ -601,9 +708,9 @@ List the authenticated user's conversations with the **last message preview**, u
 
 | Parameter  | Type      | Required | Default | Constraints         |
 | ---------- | --------- | -------- | ------- | ------------------- |
-| `cursor`   | `string`  | No       | —       | Pagination cursor   |
-| `limit`    | `number`  | No       | 20      | 1–50                |
-| `archived` | `boolean` | No       | `false` | Filter by archived  |
+| `cursor`          | `string`  | No       | —       | Pagination cursor          |
+| `limit`           | `number`  | No       | 20      | 1–50                       |
+| `includeArchived` | `string`  | No       | `"false"` | Set `"true"` to include archived conversations |
 
 **Response `200 OK`:**
 
@@ -612,33 +719,37 @@ List the authenticated user's conversations with the **last message preview**, u
   "data": [
     {
       "id": "conv-uuid",
-      "type": "direct",
-      "name": null,
+      "type": "DIRECT",
+      "groupName": null,
       "participants": [
         {
-          "id": "user-uuid",
+          "userId": "user-uuid",
           "displayName": "Martha Craig",
-          "avatarUrl": "/media/martha-avatar.jpg"
+          "avatar": "/media/martha-avatar.jpg",
+          "role": "MEMBER",
+          "joinedAt": "2026-03-30T10:00:00.000Z"
         }
       ],
       "lastMessage": {
         "id": "msg-uuid",
         "senderId": "user-uuid",
+        "senderName": "Martha Craig",
         "ciphertext": "base64...",
-        "type": "text",
+        "type": "TEXT",
         "serverTimestamp": "2026-03-30T10:30:00.000Z",
-        "status": "read"
+        "isDeleted": false
       },
       "unreadCount": 0,
       "isArchived": false,
-      "isMuted": false,
+      "muteSettings": {
+        "isMuted": false
+      },
+      "createdAt": "2026-03-30T09:00:00.000Z",
       "updatedAt": "2026-03-30T10:30:00.000Z"
     }
   ],
-  "pagination": {
-    "nextCursor": "eyJpZCI6IjEyMyJ9",
-    "hasMore": true
-  }
+  "cursor": "eyJpZCI6IjEyMyJ9",
+  "hasMore": true
 }
 ```
 
@@ -654,7 +765,7 @@ Create a new conversation. Supports both **direct** (1:1) and **group** types.
 
 ```json
 {
-  "type": "group",
+  "type": "GROUP",
   "participantIds": [
     "user-uuid-1",
     "user-uuid-2",
@@ -666,32 +777,42 @@ Create a new conversation. Supports both **direct** (1:1) and **group** types.
 
 | Field            | Type       | Required | Constraints                                    |
 | ---------------- | ---------- | -------- | ---------------------------------------------- |
-| `type`           | `string`   | Yes      | `"direct"` or `"group"`                        |
+| `type`           | `string`   | Yes      | `"DIRECT"` or `"GROUP"`                        |
 | `participantIds` | `string[]` | Yes      | Array of user UUIDs (1 for direct, 1+ for group) |
-| `name`           | `string`   | Conditional | Required for `"group"` type, 1–100 characters |
+| `name`           | `string`   | Conditional | Required for `"GROUP"` type, 1–100 characters |
 
 **Response `201 Created`:**
 
 ```json
 {
-  "id": "conv-uuid",
-  "type": "group",
-  "name": "Project Team",
-  "participants": [
-    {
-      "id": "user-uuid-1",
-      "displayName": "Alice",
-      "avatarUrl": "/media/alice.jpg",
-      "role": "admin"
+  "data": {
+    "id": "conv-uuid",
+    "type": "GROUP",
+    "groupName": "Project Team",
+    "participants": [
+      {
+        "userId": "user-uuid-1",
+        "displayName": "Alice",
+        "avatar": "/media/alice.jpg",
+        "role": "ADMIN",
+        "joinedAt": "2026-03-30T10:00:00.000Z"
+      },
+      {
+        "userId": "user-uuid-2",
+        "displayName": "Bob",
+        "avatar": null,
+        "role": "MEMBER",
+        "joinedAt": "2026-03-30T10:00:00.000Z"
+      }
+    ],
+    "unreadCount": 0,
+    "isArchived": false,
+    "muteSettings": {
+      "isMuted": false
     },
-    {
-      "id": "user-uuid-2",
-      "displayName": "Bob",
-      "avatarUrl": null,
-      "role": "member"
-    }
-  ],
-  "createdAt": "2026-03-30T10:00:00.000Z"
+    "createdAt": "2026-03-30T10:00:00.000Z",
+    "updatedAt": "2026-03-30T10:00:00.000Z"
+  }
 }
 ```
 
@@ -721,20 +842,27 @@ Retrieve full conversation details including all participants.
 
 ```json
 {
-  "id": "conv-uuid",
-  "type": "group",
-  "name": "Project Team",
-  "participants": [
-    {
-      "id": "user-uuid",
-      "displayName": "Alice",
-      "avatarUrl": "/media/alice.jpg",
-      "role": "admin",
-      "joinedAt": "2026-03-30T10:00:00.000Z"
-    }
-  ],
-  "createdAt": "2026-03-30T10:00:00.000Z",
-  "updatedAt": "2026-03-30T12:00:00.000Z"
+  "data": {
+    "id": "conv-uuid",
+    "type": "GROUP",
+    "groupName": "Project Team",
+    "participants": [
+      {
+        "userId": "user-uuid",
+        "displayName": "Alice",
+        "avatar": "/media/alice.jpg",
+        "role": "ADMIN",
+        "joinedAt": "2026-03-30T10:00:00.000Z"
+      }
+    ],
+    "unreadCount": 0,
+    "isArchived": false,
+    "muteSettings": {
+      "isMuted": false
+    },
+    "createdAt": "2026-03-30T10:00:00.000Z",
+    "updatedAt": "2026-03-30T12:00:00.000Z"
+  }
 }
 ```
 
@@ -773,14 +901,38 @@ Add a new member to a **group** conversation. The requester must be an admin of 
 
 **Response `200 OK`:**
 
+Returns the updated full conversation object including the newly added member:
+
 ```json
 {
-  "message": "Member added successfully",
-  "participant": {
-    "id": "new-member-uuid",
-    "displayName": "Charlie",
-    "role": "member",
-    "joinedAt": "2026-03-30T14:00:00.000Z"
+  "data": {
+    "id": "conv-uuid",
+    "type": "GROUP",
+    "groupName": "Project Team",
+    "participants": [
+      {
+        "userId": "admin-uuid",
+        "displayName": "Alice",
+        "avatar": "/media/alice-avatar.jpg",
+        "role": "ADMIN",
+        "joinedAt": "2026-03-30T12:00:00.000Z"
+      },
+      {
+        "userId": "new-member-uuid",
+        "displayName": "Charlie",
+        "avatar": "/media/charlie-avatar.jpg",
+        "role": "MEMBER",
+        "joinedAt": "2026-03-30T14:00:00.000Z"
+      }
+    ],
+    "unreadCount": 0,
+    "isArchived": false,
+    "muteSettings": {
+      "isMuted": false,
+      "muteExpiresAt": null
+    },
+    "createdAt": "2026-03-30T12:00:00.000Z",
+    "updatedAt": "2026-03-30T14:00:00.000Z"
   }
 }
 ```
@@ -817,9 +969,32 @@ Remove a member from a **group** conversation. The requester must be a group adm
 
 **Response `200 OK`:**
 
+Returns the updated full conversation object without the removed member:
+
 ```json
 {
-  "message": "Member removed successfully"
+  "data": {
+    "id": "conv-uuid",
+    "type": "GROUP",
+    "groupName": "Project Team",
+    "participants": [
+      {
+        "userId": "admin-uuid",
+        "displayName": "Alice",
+        "avatar": "/media/alice-avatar.jpg",
+        "role": "ADMIN",
+        "joinedAt": "2026-03-30T12:00:00.000Z"
+      }
+    ],
+    "unreadCount": 0,
+    "isArchived": false,
+    "muteSettings": {
+      "isMuted": false,
+      "muteExpiresAt": null
+    },
+    "createdAt": "2026-03-30T12:00:00.000Z",
+    "updatedAt": "2026-03-30T14:01:00.000Z"
+  }
 }
 ```
 
@@ -840,9 +1015,9 @@ Remove a member from a **group** conversation. The requester must be a group adm
 
 ---
 
-### `PUT /api/v1/conversations/:id/archive`
+### `PATCH /api/v1/conversations/:id`
 
-Archive or unarchive a conversation for the authenticated user.
+Update conversation settings for the authenticated user. Supports **partial updates** — include only the fields to change. Use this endpoint for archive, mute, and renaming operations.
 
 **Authentication:** Required (must be a participant)
 
@@ -852,62 +1027,51 @@ Archive or unarchive a conversation for the authenticated user.
 | --------- | -------- | ---------------- |
 | `id`      | `string` | Conversation UUID |
 
-**Request Body:**
+**Request Body (archive example):**
 
 ```json
 {
-  "archived": true
-}
-```
-
-| Field      | Type      | Required | Description                           |
-| ---------- | --------- | -------- | ------------------------------------- |
-| `archived` | `boolean` | Yes      | `true` to archive, `false` to restore |
-
-**Response `200 OK`:**
-
-```json
-{
-  "message": "Conversation archived",
   "isArchived": true
 }
 ```
 
----
-
-### `PUT /api/v1/conversations/:id/mute`
-
-Mute or unmute a conversation for the authenticated user. Muted conversations do not trigger push notifications.
-
-**Authentication:** Required (must be a participant)
-
-**Path Parameters:**
-
-| Parameter | Type     | Description      |
-| --------- | -------- | ---------------- |
-| `id`      | `string` | Conversation UUID |
-
-**Request Body:**
+**Request Body (mute example):**
 
 ```json
 {
-  "muted": true,
-  "muteDuration": "8h"
+  "isMuted": true
 }
 ```
 
-| Field          | Type     | Required | Description                                          |
-| -------------- | -------- | -------- | ---------------------------------------------------- |
-| `muted`        | `boolean`| Yes      | `true` to mute, `false` to unmute                    |
-| `muteDuration` | `string` | No       | Duration string: `"8h"`, `"1w"`, `"always"` (default)|
+**Request Body (rename group example):**
+
+```json
+{
+  "name": "New Group Name"
+}
+```
+
+| Field        | Type      | Required | Description                             |
+| ------------ | --------- | -------- | --------------------------------------- |
+| `isArchived` | `boolean` | No       | `true` to archive, `false` to restore   |
+| `isMuted`    | `boolean` | No       | `true` to mute, `false` to unmute       |
+| `name`       | `string`  | No       | New conversation name (group only)      |
 
 **Response `200 OK`:**
 
 ```json
 {
-  "message": "Conversation muted",
-  "isMuted": true,
-  "muteExpiresAt": "2026-03-30T22:00:00.000Z"
+  "data": {
+    "id": "conv-uuid",
+    "type": "GROUP",
+    "groupName": "New Group Name",
+    "isArchived": true,
+    "muteSettings": {
+      "isMuted": false
+    },
+    "createdAt": "2026-03-30T10:00:00.000Z",
+    "updatedAt": "2026-03-30T14:00:00.000Z"
+  }
 }
 ```
 
@@ -925,7 +1089,7 @@ Message history retrieval and lifecycle operations (edit, delete). Primary messa
 
 ---
 
-### `GET /api/v1/messages/:conversationId`
+### `GET /api/v1/messages/conversations/:conversationId/messages`
 
 Retrieve message history for a conversation. Messages are returned as **ciphertext** — the client is responsible for decryption using Signal Protocol sessions (Rule R12).
 
@@ -954,36 +1118,41 @@ Retrieve message history for a conversation. Messages are returned as **cipherte
       "id": "msg-uuid",
       "conversationId": "conv-uuid",
       "senderId": "user-uuid",
+      "senderName": "User Name",
+      "senderAvatar": "https://example.com/avatar.jpg",
       "ciphertext": "base64-encoded-encrypted-content",
-      "type": "text",
-      "replyToId": null,
+      "type": "TEXT",
+      "status": "READ",
+      "replyTo": null,
       "mediaId": null,
+      "linkPreview": null,
       "isEdited": false,
       "isDeleted": false,
-      "serverTimestamp": "2026-03-30T10:30:00.000Z",
       "editedAt": null,
-      "statuses": [
-        {
-          "userId": "recipient-uuid",
-          "status": "read",
-          "updatedAt": "2026-03-30T10:30:05.000Z"
-        }
-      ]
+      "deletedAt": null,
+      "clientMessageId": "client-generated-uuid",
+      "serverTimestamp": "2026-03-30T10:30:00.000Z",
+      "createdAt": "2026-03-30T10:30:00.000Z"
     }
   ],
   "pagination": {
-    "nextCursor": "eyJpZCI6IjEyMyJ9",
+    "cursor": "eyJpZCI6IjEyMyJ9",
     "hasMore": true
   }
 }
 ```
 
-| Field             | Type      | Description                                                     |
-| ----------------- | --------- | --------------------------------------------------------------- |
-| `ciphertext`      | `string`  | Base64-encoded encrypted message content (null if deleted)      |
-| `type`            | `string`  | `"text"`, `"image"`, `"video"`, `"document"`, `"voice"`, `"link"` |
-| `replyToId`       | `string`  | ID of the message being replied to (null if not a reply)        |
-| `mediaId`         | `string`  | Associated media attachment ID (null if text-only)              |
+| Field              | Type      | Description                                                     |
+| ------------------ | --------- | --------------------------------------------------------------- |
+| `senderName`       | `string`  | Display name of the message sender                              |
+| `senderAvatar`     | `string?` | Avatar URL of the sender (optional)                             |
+| `ciphertext`       | `string?` | Base64-encoded encrypted message content (null if deleted)      |
+| `type`             | `string`  | `"TEXT"`, `"IMAGE"`, `"VIDEO"`, `"DOCUMENT"`, `"VOICE"`, `"LINK"` |
+| `status`           | `string`  | Aggregate status: `"SENT"`, `"DELIVERED"`, `"READ"`             |
+| `replyTo`          | `object?` | Reply-to message preview (null if not a reply)                  |
+| `mediaId`          | `string?` | Associated media attachment ID (null if text-only)              |
+| `linkPreview`      | `object?` | Extracted OG metadata for link messages (null if none)          |
+| `clientMessageId`  | `string`  | Client-generated UUID for idempotency                           |
 | `isEdited`        | `boolean` | Whether the message has been edited                             |
 | `isDeleted`       | `boolean` | Whether the message is a deletion tombstone                     |
 | `statuses`        | `array`   | Delivery/read status per recipient                              |
@@ -997,7 +1166,76 @@ Retrieve message history for a conversation. Messages are returned as **cipherte
 
 ---
 
-### `PUT /api/v1/messages/:messageId`
+### `POST /api/v1/messages/conversations/:conversationId/messages`
+
+Send a new encrypted message to a conversation. The server stores only the ciphertext — zero decryption is performed server-side (Rule R12). For group conversations (3+ recipients), delivery is fanned out via BullMQ (Rule R18).
+
+**Authentication:** Required (must be a conversation participant)
+
+**Path Parameters:**
+
+| Parameter        | Type     | Description           |
+| ---------------- | -------- | --------------------- |
+| `conversationId` | `string` | Target conversation UUID |
+
+**Request Body:**
+
+```json
+{
+  "ciphertext": "base64-encoded-signal-protocol-ciphertext",
+  "type": "TEXT",
+  "replyToMessageId": "optional-message-uuid",
+  "mediaId": "optional-media-uuid",
+  "clientMessageId": "client-generated-uuid-v4"
+}
+```
+
+| Field              | Type     | Required | Description                                        |
+| ------------------ | -------- | -------- | -------------------------------------------------- |
+| `ciphertext`       | `string` | Yes      | Base64-encoded encrypted message content (R12)     |
+| `type`             | `string` | Yes      | Message type: `TEXT`, `IMAGE`, `VIDEO`, `AUDIO`, `DOCUMENT`, `VOICE_NOTE` |
+| `replyToMessageId` | `string` | No       | UUID of message being replied to                   |
+| `mediaId`          | `string` | No       | UUID of pre-uploaded encrypted media attachment    |
+| `clientMessageId`  | `string` | Yes      | Client-generated UUID v4 for idempotency (R4)     |
+
+**Response `201 Created`:**
+
+```json
+{
+  "data": {
+    "id": "message-uuid",
+    "conversationId": "conversation-uuid",
+    "senderId": "sender-uuid",
+    "senderName": "Sender Name",
+    "senderAvatar": "https://example.com/avatar.jpg",
+    "ciphertext": "base64-encoded-ciphertext",
+    "type": "TEXT",
+    "status": "SENT",
+    "replyTo": null,
+    "mediaId": null,
+    "linkPreview": null,
+    "clientMessageId": "client-uuid",
+    "isEdited": false,
+    "isDeleted": false,
+    "editedAt": null,
+    "deletedAt": null,
+    "serverTimestamp": "2026-03-30T10:00:00.000Z",
+    "createdAt": "2026-03-30T10:00:00.000Z"
+  }
+}
+```
+
+**Errors:**
+
+| Status | Code                   | Condition                             |
+| ------ | ---------------------- | ------------------------------------- |
+| 400    | `VALIDATION_ERROR`     | Invalid body (missing ciphertext, invalid type) |
+| 403    | `AUTHORIZATION_ERROR`  | User is not a conversation participant |
+| 404    | `NOT_FOUND`            | Conversation does not exist           |
+
+---
+
+### `PATCH /api/v1/messages/:messageId`
 
 Edit a previously sent message. This is the REST alternative to the WebSocket `message:edit` event.
 
@@ -1031,12 +1269,25 @@ Edit a previously sent message. This is the REST alternative to the WebSocket `m
 
 **Response `200 OK`:**
 
+Returns the full updated `MessageResponse`:
+
 ```json
 {
-  "id": "msg-uuid",
-  "ciphertext": "base64-encoded-new-encrypted-content",
-  "isEdited": true,
-  "editedAt": "2026-03-30T10:35:00.000Z"
+  "data": {
+    "id": "msg-uuid",
+    "conversationId": "conv-uuid",
+    "senderId": "sender-uuid",
+    "senderName": "Sender Name",
+    "ciphertext": "base64-encoded-new-encrypted-content",
+    "type": "TEXT",
+    "status": "READ",
+    "isEdited": true,
+    "isDeleted": false,
+    "editedAt": "2026-03-30T10:35:00.000Z",
+    "clientMessageId": "client-uuid",
+    "serverTimestamp": "2026-03-30T10:30:00.000Z",
+    "createdAt": "2026-03-30T10:30:00.000Z"
+  }
 }
 ```
 
@@ -1075,8 +1326,12 @@ Soft-delete a message. Creates a **tombstone** — the message row is retained b
 
 ```json
 {
-  "id": "msg-uuid",
-  "isDeleted": true
+  "data": {
+    "id": "msg-uuid",
+    "conversationId": "conv-uuid",
+    "isDeleted": true,
+    "deletedAt": "2026-03-30T11:00:00.000Z"
+  }
 }
 ```
 
@@ -1103,7 +1358,7 @@ Encrypted media file upload and download. All media is encrypted **client-side**
 
 ---
 
-### `POST /api/v1/media/upload`
+### `POST /api/v1/media`
 
 Upload an encrypted media file with an optional encrypted thumbnail.
 
@@ -1123,10 +1378,10 @@ Upload an encrypted media file with an optional encrypted thumbnail.
 
 | Category   | Types                                                     |
 | ---------- | --------------------------------------------------------- |
-| Images     | `image/jpeg`, `image/png`, `image/gif`, `image/webp`     |
-| Videos     | `video/mp4`, `video/quicktime`, `video/webm`              |
-| Audio      | `audio/mpeg`, `audio/ogg`, `audio/wav`, `audio/webm`     |
-| Documents  | `application/pdf`, `application/msword`, `application/vnd.openxmlformats-officedocument.*`, `text/plain` |
+| Images     | `image/jpeg`, `image/png`, `image/gif`, `image/webp`, `image/heic`, `image/heif` |
+| Videos     | `video/mp4`, `video/quicktime`, `video/webm`, `video/3gpp` |
+| Audio      | `audio/mpeg`, `audio/mp4`, `audio/ogg`, `audio/webm`, `audio/wav`, `audio/aac` |
+| Documents  | `application/pdf`, `application/msword`, `application/vnd.openxmlformats-officedocument.wordprocessingml.document`, `application/vnd.ms-excel`, `application/vnd.openxmlformats-officedocument.spreadsheetml.sheet`, `application/vnd.ms-powerpoint`, `application/vnd.openxmlformats-officedocument.presentationml.presentation`, `text/plain`, `text/csv`, `application/zip`, `application/x-rar-compressed` |
 
 **Server Behavior (Rules R8, R27):**
 
@@ -1140,11 +1395,13 @@ Upload an encrypted media file with an optional encrypted thumbnail.
 
 ```json
 {
-  "mediaId": "media-uuid",
-  "url": "/media/media-uuid",
-  "thumbnailUrl": "/media/media-uuid-thumb",
-  "mimeType": "image/jpeg",
-  "size": 1234567
+  "data": {
+    "mediaId": "media-uuid",
+    "url": "/media/media-uuid",
+    "thumbnailUrl": "/media/media-uuid-thumb",
+    "mimeType": "image/jpeg",
+    "size": 1234567
+  }
 }
 ```
 
@@ -1168,7 +1425,7 @@ Upload an encrypted media file with an optional encrypted thumbnail.
 
 ### `GET /api/v1/media/:mediaId`
 
-Download an encrypted media file. The client is responsible for decryption.
+Retrieve metadata for an encrypted media file. Returns a JSON object with the media record details. The client uses the `url` field to download the encrypted blob and is responsible for decryption.
 
 **Authentication:** Required
 
@@ -1180,8 +1437,25 @@ Download an encrypted media file. The client is responsible for decryption.
 
 **Response `200 OK`:**
 
-- **Content-Type:** `application/octet-stream`
-- **Body:** Binary stream of the encrypted media blob.
+```json
+{
+  "data": {
+    "id": "media-uuid",
+    "userId": "uploader-uuid",
+    "url": "/uploads/encrypted-file.bin",
+    "thumbnailUrl": "/uploads/encrypted-thumb.bin",
+    "mimeType": "image/jpeg",
+    "size": 2457600,
+    "encryptionKey": "base64-encoded-encryption-key",
+    "encryptionIv": "base64-encoded-iv",
+    "width": 1920,
+    "height": 1080,
+    "duration": null,
+    "waveform": null,
+    "createdAt": "2026-03-30T10:00:00.000Z"
+  }
+}
+```
 
 **Errors:**
 
@@ -1213,7 +1487,7 @@ Create a new story. Supports text stories (with colored backgrounds) and media s
 
 ```json
 {
-  "type": "text",
+  "type": "TEXT",
   "content": "Hello, world!",
   "backgroundColor": "#FF6B6B"
 }
@@ -1223,32 +1497,42 @@ Create a new story. Supports text stories (with colored backgrounds) and media s
 
 ```json
 {
-  "type": "image",
+  "type": "IMAGE",
   "mediaId": "media-uuid"
 }
 ```
 
 | Field             | Type     | Required    | Constraints                                |
 | ----------------- | -------- | ----------- | ------------------------------------------ |
-| `type`            | `string` | Yes         | `"text"`, `"image"`, or `"video"`          |
-| `content`         | `string` | Conditional | Required for `"text"` type, 1–700 chars    |
-| `mediaId`         | `string` | Conditional | Required for `"image"` / `"video"` types   |
+| `type`            | `string` | Yes         | `"TEXT"`, `"IMAGE"`, or `"VIDEO"`          |
+| `content`         | `string` | Conditional | Required for `"TEXT"` type, 1–700 chars    |
+| `mediaId`         | `string` | Conditional | Required for `"IMAGE"` / `"VIDEO"` types   |
 | `backgroundColor` | `string` | No          | Hex color for text stories (default `#128C7E`) |
+| `fontStyle`       | `string` | No          | Font style identifier for text stories     |
+| `duration`        | `number` | No          | Display duration in seconds (default 5)    |
 
 **Response `201 Created`:**
 
 ```json
 {
-  "id": "story-uuid",
-  "authorId": "user-uuid",
-  "type": "text",
-  "content": "Hello, world!",
-  "backgroundColor": "#FF6B6B",
-  "mediaId": null,
-  "createdAt": "2026-03-30T10:00:00.000Z",
-  "expiresAt": "2026-03-31T10:00:00.000Z"
+  "data": {
+    "id": "story-uuid",
+    "authorId": "user-uuid",
+    "authorName": "alice@example.com",
+    "type": "TEXT",
+    "content": "Hello, world!",
+    "backgroundColor": "#FF6B6B",
+    "fontStyle": "sans-serif",
+    "duration": 5,
+    "viewCount": 0,
+    "isExpired": false,
+    "expiresAt": "2026-03-31T10:00:00.000Z",
+    "createdAt": "2026-03-30T10:00:00.000Z"
+  }
 }
 ```
+
+For media stories, the response additionally includes `mediaUrl` and `thumbnailUrl` fields.
 
 **Note:** Stories auto-expire 24 hours after creation (Rule R11). The `expiresAt` field is calculated server-side.
 
@@ -1266,25 +1550,26 @@ Retrieve the story feed for the authenticated user's contacts. Returns only **no
 {
   "data": [
     {
-      "author": {
-        "id": "user-uuid",
-        "displayName": "Martha Craig",
-        "avatarUrl": "/media/martha-avatar.jpg"
-      },
+      "userId": "user-uuid",
+      "userName": "Martha Craig",
+      "userAvatar": "/media/martha-avatar.jpg",
       "stories": [
         {
           "id": "story-uuid",
-          "type": "text",
+          "authorId": "user-uuid",
+          "authorName": "Martha Craig",
+          "type": "TEXT",
           "content": "Having a great day!",
           "backgroundColor": "#FF6B6B",
-          "mediaId": null,
+          "duration": 5,
           "viewCount": 5,
-          "hasViewed": false,
-          "createdAt": "2026-03-30T09:00:00.000Z",
-          "expiresAt": "2026-03-31T09:00:00.000Z"
+          "isExpired": false,
+          "expiresAt": "2026-03-31T09:00:00.000Z",
+          "createdAt": "2026-03-30T09:00:00.000Z"
         }
       ],
-      "latestAt": "2026-03-30T09:00:00.000Z"
+      "hasUnviewed": true,
+      "latestStoryAt": "2026-03-30T09:00:00.000Z"
     }
   ]
 }
@@ -1292,15 +1577,48 @@ Retrieve the story feed for the authenticated user's contacts. Returns only **no
 
 | Field                    | Type      | Description                                    |
 | ------------------------ | --------- | ---------------------------------------------- |
-| `author`                 | `object`  | Story author's profile summary                 |
-| `stories`                | `array`   | Array of non-expired stories from this author  |
+| `userId`                 | `string`  | Story author's user ID                         |
+| `userName`               | `string`  | Story author's display name                    |
+| `userAvatar`             | `string`  | Story author's avatar URL (optional)           |
+| `stories`                | `array`   | Array of non-expired `StoryResponse` objects   |
 | `stories[].viewCount`    | `number`  | Total number of unique views                   |
-| `stories[].hasViewed`    | `boolean` | Whether the current user has viewed this story |
-| `latestAt`               | `string`  | Timestamp of the most recent story             |
+| `hasUnviewed`            | `boolean` | Whether the current user has unseen stories    |
+| `latestStoryAt`          | `string`  | Timestamp of the most recent story             |
 
 ---
 
-### `POST /api/v1/stories/:id/view`
+### `GET /api/v1/stories/me`
+
+Retrieve the authenticated user's own active (non-expired) stories, sorted chronologically.
+
+**Authentication:** Required
+
+**Response `200 OK`:**
+
+```json
+{
+  "data": [
+    {
+      "id": "story-uuid",
+      "authorId": "current-user-uuid",
+      "authorName": "alice@example.com",
+      "type": "TEXT",
+      "content": "Hello world!",
+      "backgroundColor": "#FF6B6B",
+      "fontStyle": "sans-serif",
+      "duration": 5,
+      "viewCount": 12,
+      "isExpired": false,
+      "expiresAt": "2026-03-31T10:00:00.000Z",
+      "createdAt": "2026-03-30T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+---
+
+### `POST /api/v1/stories/:storyId/view`
 
 Record that the authenticated user has viewed a story. Duplicate views from the same user are idempotent.
 
@@ -1310,15 +1628,35 @@ Record that the authenticated user has viewed a story. Duplicate views from the 
 
 | Parameter | Type     | Description |
 | --------- | -------- | ----------- |
-| `id`      | `string` | Story UUID  |
+| `storyId` | `string` | Story UUID  |
 
 **Response `200 OK`:**
 
+Returns the created `StoryView` record, or `null` if the view was already recorded (idempotent duplicate):
+
 ```json
 {
-  "viewed": true
+  "data": {
+    "id": "view-uuid",
+    "storyId": "story-uuid",
+    "viewerId": "viewer-uuid",
+    "viewerName": "John Doe",
+    "viewerAvatar": "/media/avatar.jpg",
+    "viewedAt": "2026-03-30T12:00:00.000Z"
+  }
 }
 ```
+
+| Field          | Type     | Nullable | Description                         |
+| -------------- | -------- | -------- | ----------------------------------- |
+| `id`           | `string` | No       | View record UUID                    |
+| `storyId`      | `string` | No       | ID of the story viewed              |
+| `viewerId`     | `string` | No       | ID of the user who viewed           |
+| `viewerName`   | `string` | No       | Display name of the viewer          |
+| `viewerAvatar` | `string` | Yes      | Avatar URL of the viewer            |
+| `viewedAt`     | `string` | No       | ISO 8601 timestamp of the view      |
+
+> **Note:** If `data` is `null`, it indicates the view was already recorded on a prior request.
 
 **Errors:**
 
@@ -1328,7 +1666,7 @@ Record that the authenticated user has viewed a story. Duplicate views from the 
 
 ---
 
-### `DELETE /api/v1/stories/:id`
+### `DELETE /api/v1/stories/:storyId`
 
 Delete a story. Only the **original author** may delete their story.
 
@@ -1338,13 +1676,15 @@ Delete a story. Only the **original author** may delete their story.
 
 | Parameter | Type     | Description |
 | --------- | -------- | ----------- |
-| `id`      | `string` | Story UUID  |
+| `storyId` | `string` | Story UUID  |
 
 **Response `200 OK`:**
 
 ```json
 {
-  "message": "Story deleted successfully"
+  "data": {
+    "message": "Story deleted successfully"
+  }
 }
 ```
 
@@ -1379,13 +1719,17 @@ Upload the authenticated user's prekey bundle. The bundle contains the public ke
 
 ```json
 {
-  "identityKey": "base64-encoded-identity-public-key",
+  "identityKey": {
+    "publicKey": "base64-encoded-identity-public-key",
+    "fingerprint": "optional-fingerprint-string"
+  },
   "signedPreKey": {
     "keyId": 1,
     "publicKey": "base64-encoded-signed-prekey",
-    "signature": "base64-encoded-signature"
+    "signature": "base64-encoded-signature",
+    "timestamp": 1711800000000
   },
-  "oneTimePreKeys": [
+  "preKeys": [
     {
       "keyId": 1,
       "publicKey": "base64-encoded-one-time-prekey"
@@ -1394,26 +1738,34 @@ Upload the authenticated user's prekey bundle. The bundle contains the public ke
       "keyId": 2,
       "publicKey": "base64-encoded-one-time-prekey"
     }
-  ]
+  ],
+  "registrationId": 12345
 }
 ```
 
-| Field                             | Type     | Required | Description                                  |
-| --------------------------------- | -------- | -------- | -------------------------------------------- |
-| `identityKey`                     | `string` | Yes      | Base64-encoded Curve25519 identity public key |
-| `signedPreKey.keyId`              | `number` | Yes      | Signed prekey identifier                     |
-| `signedPreKey.publicKey`          | `string` | Yes      | Base64-encoded signed prekey                 |
-| `signedPreKey.signature`          | `string` | Yes      | Base64-encoded signature over the prekey     |
-| `oneTimePreKeys`                  | `array`  | Yes      | Array of one-time prekeys (recommended 100)  |
-| `oneTimePreKeys[].keyId`          | `number` | Yes      | One-time prekey identifier                   |
-| `oneTimePreKeys[].publicKey`      | `string` | Yes      | Base64-encoded one-time prekey               |
+| Field                             | Type     | Required | Description                                       |
+| --------------------------------- | -------- | -------- | ------------------------------------------------- |
+| `identityKey`                     | `object` | Yes      | Identity key object                               |
+| `identityKey.publicKey`           | `string` | Yes      | Base64-encoded Curve25519 identity public key      |
+| `identityKey.fingerprint`         | `string` | No       | Optional fingerprint for key verification          |
+| `signedPreKey`                    | `object` | Yes      | Signed prekey object                              |
+| `signedPreKey.keyId`              | `number` | Yes      | Signed prekey identifier                          |
+| `signedPreKey.publicKey`          | `string` | Yes      | Base64-encoded signed prekey                      |
+| `signedPreKey.signature`          | `string` | Yes      | Base64-encoded signature over the prekey          |
+| `signedPreKey.timestamp`          | `number` | Yes      | Epoch milliseconds when the signed prekey was generated |
+| `preKeys`                         | `array`  | Yes      | Array of one-time prekeys (recommended 10)        |
+| `preKeys[].keyId`                 | `number` | Yes      | One-time prekey identifier                        |
+| `preKeys[].publicKey`             | `string` | Yes      | Base64-encoded one-time prekey                    |
+| `registrationId`                  | `number` | Yes      | Signal Protocol registration ID                   |
 
 **Response `201 Created`:**
 
 ```json
 {
-  "message": "Prekey bundle uploaded successfully",
-  "oneTimePreKeysCount": 100
+  "data": {
+    "message": "Prekey bundle uploaded successfully",
+    "preKeysCount": 10
+  }
 }
 ```
 
@@ -1439,23 +1791,32 @@ Fetch a user's prekey bundle to establish a new Signal Protocol session. **One-t
 
 ```json
 {
-  "userId": "target-user-uuid",
-  "identityKey": "base64-encoded-identity-public-key",
-  "signedPreKey": {
-    "keyId": 1,
-    "publicKey": "base64-encoded-signed-prekey",
-    "signature": "base64-encoded-signature"
-  },
-  "oneTimePreKey": {
-    "keyId": 42,
-    "publicKey": "base64-encoded-one-time-prekey"
+  "data": {
+    "userId": "target-user-uuid",
+    "identityKey": {
+      "publicKey": "base64-encoded-identity-public-key"
+    },
+    "signedPreKey": {
+      "keyId": 1,
+      "publicKey": "base64-encoded-signed-prekey",
+      "signature": "base64-encoded-signature",
+      "timestamp": 1711800000000
+    },
+    "preKey": {
+      "keyId": 42,
+      "publicKey": "base64-encoded-one-time-prekey"
+    },
+    "registrationId": 12345
   }
 }
 ```
 
-| Field           | Type     | Nullable | Description                                                     |
-| --------------- | -------- | -------- | --------------------------------------------------------------- |
-| `oneTimePreKey` | `object` | Yes      | May be null if all one-time prekeys are exhausted              |
+| Field            | Type     | Nullable | Description                                                     |
+| ---------------- | -------- | -------- | --------------------------------------------------------------- |
+| `identityKey`    | `object` | No       | Contains `publicKey` (string)                                   |
+| `signedPreKey`   | `object` | No       | Contains `keyId`, `publicKey`, `signature`, `timestamp`         |
+| `preKey`         | `object` | Yes      | May be null if all one-time prekeys are exhausted               |
+| `registrationId` | `number` | No       | Signal Protocol registration ID                                 |
 
 **Errors:**
 
@@ -1463,7 +1824,7 @@ Fetch a user's prekey bundle to establish a new Signal Protocol session. **One-t
 | ------ | ------------ | ------------------------------------ |
 | 404    | `NOT_FOUND`  | User does not exist or has no bundle |
 
-**Note:** If `oneTimePreKey` is null, the client falls back to using only the signed prekey for session establishment (reduced forward secrecy until the target user replenishes).
+**Note:** If `preKey` is null, the client falls back to using only the signed prekey for session establishment (reduced forward secrecy until the target user replenishes).
 
 ---
 
@@ -1490,24 +1851,27 @@ Component-level health check reporting the status of all backend infrastructure 
 
 ```json
 {
-  "status": "healthy",
-  "timestamp": "2026-03-30T10:00:00.000Z",
-  "version": "1.0.0",
-  "uptime": 86400,
-  "components": {
-    "database": {
-      "status": "up",
-      "latencyMs": 5
-    },
-    "redis": {
-      "status": "up",
-      "latencyMs": 2
-    },
-    "bullmq": {
-      "status": "up"
-    },
-    "storage": {
-      "status": "up"
+  "data": {
+    "status": "healthy",
+    "timestamp": "2026-03-30T10:00:00.000Z",
+    "uptime": 86400,
+    "components": {
+      "database": {
+        "status": "up",
+        "latency": 5
+      },
+      "redis": {
+        "status": "up",
+        "latency": 2
+      },
+      "queue": {
+        "status": "up",
+        "latency": 1
+      },
+      "storage": {
+        "status": "up",
+        "latency": 0
+      }
     }
   }
 }
@@ -1515,26 +1879,40 @@ Component-level health check reporting the status of all backend infrastructure 
 
 | Field                        | Type     | Description                                   |
 | ---------------------------- | -------- | --------------------------------------------- |
-| `status`                     | `string` | `"healthy"` if all components are up; `"degraded"` or `"unhealthy"` otherwise |
-| `timestamp`                  | `string` | ISO 8601 timestamp of the health check        |
-| `version`                    | `string` | Application version                           |
-| `uptime`                     | `number` | Server uptime in seconds                      |
-| `components.database.status` | `string` | PostgreSQL connectivity: `"up"` or `"down"`   |
-| `components.redis.status`    | `string` | Redis connectivity: `"up"` or `"down"`        |
-| `components.bullmq.status`   | `string` | BullMQ worker connectivity: `"up"` or `"down"` |
-| `components.storage.status`  | `string` | File storage accessibility: `"up"` or `"down"` |
+| `data.status`                | `string` | `"healthy"` if all components are up; `"degraded"` or `"unhealthy"` otherwise |
+| `data.timestamp`             | `string` | ISO 8601 timestamp of the health check        |
+| `data.uptime`                | `number` | Server uptime in seconds                      |
+| `data.components.database`   | `object` | PostgreSQL connectivity: `status` (`"up"` or `"down"`), `latency` (ms) |
+| `data.components.redis`      | `object` | Redis connectivity: `status`, `latency`       |
+| `data.components.queue`      | `object` | Queue (BullMQ via Redis) connectivity: `status`, `latency` |
+| `data.components.storage`    | `object` | File storage accessibility: `status`, `latency` |
 
-**Response `503 Service Unavailable`** (when any component is down):
+**Response `503 Service Unavailable`** (when any critical component is down):
 
 ```json
 {
-  "status": "unhealthy",
-  "timestamp": "2026-03-30T10:00:00.000Z",
-  "components": {
-    "database": { "status": "down", "error": "Connection refused" },
-    "redis": { "status": "up", "latencyMs": 2 },
-    "bullmq": { "status": "up" },
-    "storage": { "status": "up" }
+  "data": {
+    "status": "unhealthy",
+    "timestamp": "2026-03-30T10:00:00.000Z",
+    "uptime": 86400,
+    "components": {
+      "database": {
+        "status": "down",
+        "latency": -1
+      },
+      "redis": {
+        "status": "up",
+        "latency": 2
+      },
+      "queue": {
+        "status": "up",
+        "latency": 1
+      },
+      "storage": {
+        "status": "up",
+        "latency": 0
+      }
+    }
   }
 }
 ```
@@ -1553,16 +1931,19 @@ Prometheus-compatible metrics endpoint exposing application telemetry in the Pro
 
 **Exposed Metrics:**
 
-| Metric Name                        | Type      | Description                                     |
-| ---------------------------------- | --------- | ----------------------------------------------- |
-| `http_requests_total`              | Counter   | Total HTTP requests by method, path, and status |
-| `http_request_duration_seconds`    | Histogram | HTTP request latency in seconds                 |
-| `websocket_connections_active`     | Gauge     | Current active WebSocket connections             |
-| `bullmq_queue_depth`              | Gauge     | Number of pending jobs per queue name            |
-| `bullmq_jobs_completed_total`     | Counter   | Total completed jobs by queue name               |
-| `bullmq_jobs_failed_total`        | Counter   | Total failed jobs by queue name                  |
-| `db_query_duration_seconds`       | Histogram | Database query latency in seconds (p50, p95, p99) |
-| `db_connections_active`           | Gauge     | Active database connection pool count            |
+| Metric Name                        | Type            | Description                                         |
+| ---------------------------------- | --------------- | --------------------------------------------------- |
+| `http_requests_total`              | Counter         | Total HTTP requests by method, path, and status     |
+| `http_request_duration_seconds`    | Histogram       | HTTP request latency in seconds                     |
+| `http_active_requests`             | UpDownCounter   | Currently in-flight HTTP requests                   |
+| `ws_connections_total`             | Counter         | Total WebSocket connections established             |
+| `ws_active_connections`            | UpDownCounter   | Current active WebSocket connections                |
+| `ws_messages_total`                | Counter         | Total WebSocket messages processed                  |
+| `bullmq_jobs_total`               | Counter         | Total jobs enqueued by queue name and status        |
+| `bullmq_job_duration`             | Histogram       | BullMQ job processing duration in seconds           |
+| `bullmq_queue_depth`              | UpDownCounter   | Number of pending jobs per queue name               |
+| `db_query_duration`               | Histogram       | Database query latency in seconds (p50, p95, p99)   |
+| `db_active_connections`           | UpDownCounter   | Active database connection pool count               |
 
 **Example Response:**
 
@@ -1578,12 +1959,55 @@ http_request_duration_seconds_bucket{le="0.05"} 800
 http_request_duration_seconds_bucket{le="0.1"} 950
 http_request_duration_seconds_bucket{le="+Inf"} 1024
 
-# HELP websocket_connections_active Active WebSocket connections
-# TYPE websocket_connections_active gauge
-websocket_connections_active 42
+# HELP ws_active_connections Active WebSocket connections
+# TYPE ws_active_connections gauge
+ws_active_connections 42
 ```
 
 **Implementation:** OpenTelemetry SDK with Prometheus exporter (`@opentelemetry/exporter-prometheus`).
+
+---
+
+## Calls — `/api/v1/calls` (Stub)
+
+Call history endpoints. **Note:** WebRTC voice/video calling is out of scope (AAP §0.8.2). These stub endpoints exist so the Calls UI screen (Figma Screen 11) renders a graceful empty state instead of a 404 error. They are defined inline in `apps/api/src/routes/v1/index.ts`.
+
+---
+
+### `GET /api/v1/calls`
+
+Retrieve call history. Returns an empty array (stub).
+
+**Authentication:** Required
+
+**Response `200 OK`:**
+
+```json
+{
+  "data": [],
+  "hasMore": false
+}
+```
+
+---
+
+### `DELETE /api/v1/calls/:callId`
+
+Delete a single call history entry. No-op stub.
+
+**Authentication:** Required
+
+**Response `204 No Content`:** Empty body.
+
+---
+
+### `DELETE /api/v1/calls`
+
+Clear all call history. No-op stub.
+
+**Authentication:** Required
+
+**Response `204 No Content`:** Empty body.
 
 ---
 
@@ -1600,21 +2024,24 @@ All v1 routes are aggregated in `apps/api/src/routes/v1/index.ts` and mounted un
 | `/api/v1/media`          | `apps/api/src/routes/v1/media.routes.ts`             |
 | `/api/v1/stories`        | `apps/api/src/routes/v1/story.routes.ts`             |
 | `/api/v1/keys`           | `apps/api/src/routes/v1/key.routes.ts`               |
+| `/api/v1/calls`          | Inline stubs in `apps/api/src/routes/v1/index.ts`    |
 | `/api/v1/health`         | `apps/api/src/routes/v1/health.routes.ts`            |
 | `/api/v1/metrics`        | `apps/api/src/routes/v1/health.routes.ts`            |
 
 **Middleware chain** (applied in order via `apps/api/src/app.ts`):
 
-1. `correlation-id` — Assigns UUID v4 correlation ID (Rule R29)
-2. `helmet` — Security headers
-3. `compression` — Response compression
-4. `cors` — Cross-origin configuration (Rule R38: `http://localhost:3000`)
-5. `logger` — Pino HTTP request logging (Rule R28)
-6. `metrics` — OpenTelemetry HTTP instrumentation (Rule R37)
-7. `rate-limiter` — Per-IP HTTP rate limiting (Rule R25)
-8. `auth` — JWT verification + Redis blacklist (Rule R9) — applied per-route
-9. `validation` — Zod schema validation (Rule R31) — applied per-route
-10. `error-handler` — Global error handler (Rule R22) — registered last
+1. `trust proxy` — Enables reverse proxy support
+2. `cors` — Cross-origin configuration (Rule R38: `http://localhost:3000`)
+3. `helmet` — Security headers
+4. `compression` — Response compression
+5. `express.json` — JSON body parsing (26 MB limit)
+6. `express.urlencoded` — URL-encoded body parsing
+7. `correlation-id` — Assigns UUID v4 correlation ID (Rule R29)
+8. `pino-http` — Structured HTTP request logging (Rule R28)
+9. `metrics` — OpenTelemetry HTTP instrumentation (Rule R37)
+10. **API v1 routes** — All `/api/v1/*` route handlers (auth + validation applied per-route)
+11. `404 catch-all` — Returns 404 for unmatched routes
+12. `error-handler` — Global error handler (Rule R22) — registered last
 
 ---
 
