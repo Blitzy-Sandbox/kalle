@@ -87,11 +87,12 @@ export default function NewConversationPage() {
 
     setIsSearching(true);
     try {
-      const response = await apiClient.get<{
-        data: { items: UserSearchResult[]; nextCursor?: string };
-      }>(`/api/v1/users/search?q=${encodeURIComponent(query.trim())}&limit=20`);
+      // apiClient.get already returns the inner payload — no .data unwrap.
+      const response = await apiClient.get<{ items: UserSearchResult[]; nextCursor?: string }>(
+        `/api/v1/users/search?q=${encodeURIComponent(query.trim())}&limit=20`,
+      );
 
-      const items = response?.data?.items ?? [];
+      const items = response?.items ?? [];
       // Filter out current user (server may already exclude, but be safe)
       const filtered = items.filter((u) => u.id !== currentUser?.id);
       setSearchResults(filtered);
@@ -148,14 +149,16 @@ export default function NewConversationPage() {
       setError(null);
 
       try {
-        const response = await apiClient.post<{
-          data: { id: string };
-        }>('/api/v1/conversations', {
-          type: 'DIRECT',
-          participantIds: [currentUser.id, user.id],
-        });
+        // apiClient.post already returns the inner payload — no .data unwrap.
+        const response = await apiClient.post<{ id: string }>(
+          '/api/v1/conversations',
+          {
+            type: 'DIRECT',
+            participantIds: [currentUser.id, user.id],
+          },
+        );
 
-        const conversationId = response?.data?.id;
+        const conversationId = response?.id;
         if (conversationId) {
           router.replace(`/chat/${conversationId}`);
         } else {
@@ -193,15 +196,17 @@ export default function NewConversationPage() {
         ...selectedUsers.map((u) => u.id),
       ];
 
-      const response = await apiClient.post<{
-        data: { id: string };
-      }>('/api/v1/conversations', {
-        type: 'GROUP',
-        participantIds,
-        groupName: groupName.trim(),
-      });
+      // apiClient.post already returns the inner payload — no .data unwrap.
+      const response = await apiClient.post<{ id: string }>(
+        '/api/v1/conversations',
+        {
+          type: 'GROUP',
+          participantIds,
+          groupName: groupName.trim(),
+        },
+      );
 
-      const conversationId = response?.data?.id;
+      const conversationId = response?.id;
       if (conversationId) {
         router.replace(`/chat/${conversationId}`);
       } else {

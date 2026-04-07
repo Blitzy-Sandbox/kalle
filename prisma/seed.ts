@@ -38,6 +38,20 @@ import crypto from 'crypto';
 const prisma = new PrismaClient();
 
 /**
+ * Superuser Prisma client for seed cleanup operations.
+ * The regular DATABASE_URL connects via the restricted kalle_app role which
+ * lacks DELETE permission on audit_logs (R32). Cleanup needs the migration
+ * superuser to truncate all tables for idempotent re-seeding (R10).
+ */
+const superuserPrisma = new PrismaClient({
+  datasources: {
+    db: {
+      url: process.env.MIGRATION_DATABASE_URL || process.env.DATABASE_URL,
+    },
+  },
+});
+
+/**
  * Fixed bcrypt salt for deterministic password hashing in seed data (R10).
  * Using a fixed salt ensures that running the seed twice produces byte-identical
  * password hashes, satisfying the "run twice produces identical state" requirement.
@@ -254,22 +268,23 @@ const MESSAGE_DEFS: readonly MessageDef[] = [
  */
 async function cleanDatabase(): Promise<void> {
   console.log('  \u{1F5D1}\u{FE0F}  Cleaning existing data...');
-  // Use $transaction for atomic cleanup — all deletes succeed or none do.
+  // Use superuser client for cleanup — the restricted kalle_app role lacks
+  // DELETE permission on audit_logs (R32). Superuser bypasses this for seeding.
   // Operations execute sequentially in FK-dependency order within one DB transaction.
-  await prisma.$transaction([
-    prisma.storyView.deleteMany(),
-    prisma.story.deleteMany(),
-    prisma.messageStatus.deleteMany(),
-    prisma.media.deleteMany(),
-    prisma.message.deleteMany(),
-    prisma.conversationParticipant.deleteMany(),
-    prisma.conversation.deleteMany(),
-    prisma.preKeyBundle.deleteMany(),
-    prisma.auditLog.deleteMany(),
-    prisma.refreshToken.deleteMany(),
-    prisma.session.deleteMany(),
-    prisma.blockedUser.deleteMany(),
-    prisma.user.deleteMany(),
+  await superuserPrisma.$transaction([
+    superuserPrisma.storyView.deleteMany(),
+    superuserPrisma.story.deleteMany(),
+    superuserPrisma.messageStatus.deleteMany(),
+    superuserPrisma.media.deleteMany(),
+    superuserPrisma.message.deleteMany(),
+    superuserPrisma.conversationParticipant.deleteMany(),
+    superuserPrisma.conversation.deleteMany(),
+    superuserPrisma.preKeyBundle.deleteMany(),
+    superuserPrisma.auditLog.deleteMany(),
+    superuserPrisma.refreshToken.deleteMany(),
+    superuserPrisma.session.deleteMany(),
+    superuserPrisma.blockedUser.deleteMany(),
+    superuserPrisma.user.deleteMany(),
   ]);
   console.log('  \u2713 Database cleaned');
 }
@@ -851,10 +866,12 @@ export async function main(): Promise<void> {
 main()
   .then(async () => {
     await prisma.$disconnect();
+    await superuserPrisma.$disconnect();
   })
   .catch(async (e) => {
     console.error('Seed failed — database may be in an inconsistent state.');
     console.error('Error details:', e);
     await prisma.$disconnect();
+    await superuserPrisma.$disconnect();
     process.exit(1);
   });

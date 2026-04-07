@@ -125,11 +125,9 @@ export default function ChatConversationPage() {
   const { isConnected, connect, disconnect, socket } = useSocket();
 
   const {
-    encrypt,
     decrypt,
     ensureSession,
     isInitialized: isEncryptionReady,
-    encryptGroup,
     decryptGroup,
   } = useEncryption();
 
@@ -138,7 +136,6 @@ export default function ChatConversationPage() {
     editMessage,
     deleteMessage,
     loadHistory,
-    isLoading: isMessagesLoading,
   } = useMessages();
 
   const {
@@ -244,7 +241,11 @@ export default function ChatConversationPage() {
     // The Set persists across component instances, unlike useRef which
     // resets to its initial value on every new mount.
     if (!conversationId || !isAuthenticated) return;
-    if (_initCompletedConversations.has(conversationId)) return;
+    // If already initialised (HMR / StrictMode remount), mark ready immediately.
+    if (_initCompletedConversations.has(conversationId)) {
+      setIsPageReady(true);
+      return;
+    }
     _initCompletedConversations.add(conversationId);
 
     const init = async () => {
@@ -263,12 +264,22 @@ export default function ChatConversationPage() {
       // Mark page ready after history load regardless of encryption status.
       setIsPageReady(true);
 
-      // Best-effort encryption session initialisation (R12).
-      // For DIRECT conversations, resolve the other participant's userId
-      // from the full conversation detail (which includes participants[]).
-      // For GROUP conversations, Sender Keys are used — no 1:1 session needed.
+      // When the Zustand conversations store is empty on direct navigation
+      // (e.g. user pastes /chat/<id> into the URL bar), fetch the full
+      // conversation list so the header can display the contact name.
       try {
-        const convos = useChatStore.getState().conversations;
+        let convos = useChatStore.getState().conversations;
+        if (convos.length === 0) {
+          const fetched = await apiClient.get<{ id: string; type: string; displayName?: string; participants?: Array<{ userId: string }> }[]>(
+            '/api/v1/conversations',
+          );
+          if (Array.isArray(fetched)) {
+            useChatStore.getState().setConversations(fetched as never);
+            convos = useChatStore.getState().conversations;
+          }
+        }
+
+        // Best-effort encryption session initialisation (R12).
         const convo = convos.find((c) => c.id === conversationId);
         const isGroup = convo?.type === ConversationType.GROUP;
         const currentUserId = useAuthStore.getState().user?.id;
@@ -327,23 +338,16 @@ export default function ChatConversationPage() {
 
   /* ── Handlers ──────────────────────────────────────────────────────── */
 
-  /** Send a plaintext message — encrypts client-side first (R12). */
+  /** Send a message — encryption is handled inside sendMessage (best-effort). */
   const handleSendMessage = useCallback(
     async (content: string) => {
       if (!conversationId || !content.trim() || !user) return;
-      if (conversationMeta.isGroup) {
-        const cipher = await encryptGroup(conversationId, content);
-        if (cipher) {
-          await sendMessage(conversationId, content, ConversationType.GROUP);
-        }
-      } else {
-        const cipher = await encrypt(conversationId, content);
-        if (cipher) {
-          await sendMessage(conversationId, content, ConversationType.DIRECT);
-        }
-      }
+      const type = conversationMeta.isGroup
+        ? ConversationType.GROUP
+        : ConversationType.DIRECT;
+      await sendMessage(conversationId, content, type);
     },
-    [conversationId, user, conversationMeta.isGroup, encryptGroup, encrypt, sendMessage],
+    [conversationId, user, conversationMeta.isGroup, sendMessage],
   );
 
   /** Edit an existing message — sender-only within 15-min window (R19). */
@@ -480,7 +484,7 @@ export default function ChatConversationPage() {
     );
   }
 
-  if (!isPageReady || isMessagesLoading) {
+  if (!isPageReady) {
     return (
       <div
         className={containerClasses}

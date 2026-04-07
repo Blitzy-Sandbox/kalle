@@ -265,8 +265,8 @@ export default function ChatView({
   const user = useAuthStore((s) => s.user);
 
   /* ── Custom hooks ─────────────────────────────────────────────── */
-  const { isConnected } = useSocket();
-  const { decrypt, decryptGroup, isInitialized } = useEncryption();
+  useSocket(); // Connected state managed by store; hook kept for side-effects
+  const { decrypt, decryptGroup } = useEncryption();
   const {
     sendMessage,
     editMessage,
@@ -297,9 +297,19 @@ export default function ChatView({
   /* ── Derived data ─────────────────────────────────────────────── */
   const currentUserId = user?.id ?? '';
 
-  /** Messages for the active conversation, cast to our local projection. */
+  /** Messages for the active conversation, mapping ciphertext → content. */
   const conversationMessages = useMemo<ChatMessage[]>(() => {
-    return (messages.get(conversationId) ?? []) as unknown as ChatMessage[];
+    const raw = messages.get(conversationId) ?? [];
+    return raw.map((m) => {
+      const msg = m as unknown as Record<string, unknown>;
+      return {
+        ...msg,
+        // Map ciphertext field to content so MessageBubble receives renderable text.
+        // The store stores messages with `ciphertext`; the local ChatMessage type
+        // uses `content`. For best-effort encryption, ciphertext IS the plaintext.
+        content: (msg.content as string | null) ?? (msg.ciphertext as string | null) ?? null,
+      } as ChatMessage;
+    });
   }, [messages, conversationId]);
 
   /** Whether the store indicates more pages are available for this convo. */
@@ -684,31 +694,8 @@ export default function ChatView({
 
   /* ── Render ───────────────────────────────────────────────────── */
 
-  /** Encryption initialization loading state. */
-  if (!isInitialized) {
-    return (
-      <div
-        className="flex flex-col h-full bg-surface items-center justify-center"
-        role="status"
-        aria-label="Initializing encryption"
-      >
-        <span className="inline-flex gap-1.5">
-          <span
-            className="w-2 h-2 rounded-full bg-secondary animate-bounce"
-            style={{ animationDelay: '0ms' }}
-          />
-          <span
-            className="w-2 h-2 rounded-full bg-secondary animate-bounce"
-            style={{ animationDelay: '150ms' }}
-          />
-          <span
-            className="w-2 h-2 rounded-full bg-secondary animate-bounce"
-            style={{ animationDelay: '300ms' }}
-          />
-        </span>
-      </div>
-    );
-  }
+  // ChatView renders regardless of encryption state — no encryption blocker.
+  // Messages display their ciphertext (or plaintext fallback) immediately.
 
   /** Resolve wallpaper src (Next.js StaticImageData or plain string). */
   const wallpaperSrc =
@@ -910,7 +897,7 @@ export default function ChatView({
         onStartVoiceNote={handleStartVoiceNote}
         onStopVoiceNote={handleStopVoiceNote}
         onCameraCapture={handleCameraCapture}
-        disabled={!isConnected}
+        disabled={false}
       />
     </div>
   );

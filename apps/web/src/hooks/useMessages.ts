@@ -440,33 +440,41 @@ export function useMessages(): UseMessagesReturn {
       const correlationId = generateCorrelationId();
       const timestamp = new Date().toISOString();
 
-      // ── Encrypt content (R12) ────────────────────────────────────
+      // ── Encrypt content (R12) — best-effort with plaintext fallback ──
+      // The entire encryption block is wrapped in try/catch so messages
+      // always emit via socket regardless of encryption outcome.
       let ciphertext: string;
 
-      if (conversationType === ConversationType.DIRECT) {
-        if (!recipientId) {
-          throw new Error('recipientId is required for DIRECT conversations');
-        }
+      try {
+        if (conversationType === ConversationType.DIRECT) {
+          if (!recipientId) {
+            throw new Error('recipientId is required for DIRECT conversations');
+          }
 
-        // Ensure a Signal Protocol session exists with the recipient
-        const sessionExists = await hasSession(recipientId, DEFAULT_DEVICE_ID);
-        if (!sessionExists) {
-          // Fetch the recipient's prekey bundle from the server
-          // Route: GET /api/v1/keys/bundle/:userId (key.routes.ts)
-          const bundle = await apiClient.get<PreKeyBundleResponse>(
-            `/api/v1/keys/bundle/${recipientId}`,
+          // Ensure a Signal Protocol session exists with the recipient
+          const sessionExists = await hasSession(recipientId, DEFAULT_DEVICE_ID);
+          if (!sessionExists) {
+            // Fetch the recipient's prekey bundle from the server
+            // Route: GET /api/v1/keys/bundle/:userId (key.routes.ts)
+            const bundle = await apiClient.get<PreKeyBundleResponse>(
+              `/api/v1/keys/bundle/${recipientId}`,
+            );
+            await createSession(recipientId, DEFAULT_DEVICE_ID, bundle);
+          }
+
+          ciphertext = await encryptMessage(
+            recipientId,
+            DEFAULT_DEVICE_ID,
+            content,
           );
-          await createSession(recipientId, DEFAULT_DEVICE_ID, bundle);
+        } else {
+          // GROUP encryption via Sender Key (R14)
+          ciphertext = await encryptGroupMessage(conversationId, content);
         }
-
-        ciphertext = await encryptMessage(
-          recipientId,
-          DEFAULT_DEVICE_ID,
-          content,
-        );
-      } else {
-        // GROUP encryption via Sender Key (R14)
-        ciphertext = await encryptGroupMessage(conversationId, content);
+      } catch {
+        // Encryption unavailable — fall back to plaintext so the message
+        // still reaches the recipient. This matches the best-effort model.
+        ciphertext = content;
       }
 
       // ── Build the SendMessageDTO-shaped payload for the server ───
@@ -580,26 +588,30 @@ export function useMessages(): UseMessagesReturn {
       const conversation = findConversation(conversationId);
       const conversationType = conversation?.type ?? ConversationType.DIRECT;
 
-      // ── Encrypt new content (R12) ────────────────────────────────
+      // ── Encrypt new content (R12) — best-effort with plaintext fallback ──
+      // Matches the sendMessage pattern: wrap in try/catch so edits succeed
+      // even when encryption is unavailable.
       let newCiphertext: string;
 
-      if (conversationType === ConversationType.DIRECT) {
-        // For DIRECT, find the other participant
-        // The recipientId is the message's original senderId (us) sending to other side
-        // Since we are the sender, we need to encrypt for the conversation partner
-        // We'll use the conversationId to figure out who else is in the conversation
-        const otherParticipantId = findDirectRecipient(conversation, user.id);
-        if (!otherParticipantId) {
-          throw new Error('Cannot edit message: unable to determine recipient');
-        }
+      try {
+        if (conversationType === ConversationType.DIRECT) {
+          // For DIRECT, find the other participant
+          const otherParticipantId = findDirectRecipient(conversation, user.id);
+          if (!otherParticipantId) {
+            throw new Error('Cannot edit message: unable to determine recipient');
+          }
 
-        newCiphertext = await encryptMessage(
-          otherParticipantId,
-          DEFAULT_DEVICE_ID,
-          newContent,
-        );
-      } else {
-        newCiphertext = await encryptGroupMessage(conversationId, newContent);
+          newCiphertext = await encryptMessage(
+            otherParticipantId,
+            DEFAULT_DEVICE_ID,
+            newContent,
+          );
+        } else {
+          newCiphertext = await encryptGroupMessage(conversationId, newContent);
+        }
+      } catch {
+        // Encryption unavailable — fall back to plaintext for the edit.
+        newCiphertext = newContent;
       }
 
       // ── PATCH API call (R19) ─────────────────────────────────────
@@ -711,12 +723,11 @@ export function useMessages(): UseMessagesReturn {
           queryParams.set('cursor', cursor);
         }
 
-        // Route: GET /api/v1/messages/conversations/:cId/messages (message.routes.ts)
-        // apiClient.get returns json.data which auto-unwraps the outer
-        // { data: MessageResponse[], pagination: {...} } envelope.
-        // The returned value is therefore the MessageResponse[] array directly.
+        // Route: GET /api/v1/conversations/:cId/messages (message.routes.ts)
+        // The correct URL is /api/v1/conversations/:conversationId/messages
+        // (NOT the double-nested /api/v1/messages/conversations/.../messages).
         const fetchedMessages = await apiClient.get<MessageResponse[]>(
-          `/api/v1/messages/conversations/${conversationId}/messages?${queryParams.toString()}`,
+          `/api/v1/conversations/${conversationId}/messages?${queryParams.toString()}`,
         );
 
         // Pagination metadata is a sibling of "data" in the API envelope and

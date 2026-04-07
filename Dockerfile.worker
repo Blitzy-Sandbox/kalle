@@ -96,8 +96,6 @@ WORKDIR /app
 # engine binaries to load via environment variables, bypassing broken detection.
 # NOTE: docker-compose.yml uses `target: builder` so this stage IS the runtime.
 RUN apk add --no-cache openssl libssl3 libcrypto3
-ENV PRISMA_QUERY_ENGINE_LIBRARY=/app/node_modules/.prisma/client/libquery_engine-linux-musl-openssl-3.0.x.so.node
-ENV PRISMA_SCHEMA_ENGINE_BINARY=/app/node_modules/@prisma/engines/schema-engine-linux-musl-openssl-3.0.x
 
 # Copy installed node_modules from deps stage.
 # npm ci without --workspace hoists ALL dependencies to the root node_modules.
@@ -160,8 +158,6 @@ ENV NODE_ENV=production
 # Fix: Install OpenSSL 3 shared libraries and explicitly tell Prisma which
 # engine binaries to load via environment variables, bypassing broken detection.
 RUN apk add --no-cache openssl libssl3 libcrypto3
-ENV PRISMA_QUERY_ENGINE_LIBRARY=/app/node_modules/.prisma/client/libquery_engine-linux-musl-openssl-3.0.x.so.node
-ENV PRISMA_SCHEMA_ENGINE_BINARY=/app/node_modules/@prisma/engines/schema-engine-linux-musl-openssl-3.0.x
 
 # Create a dedicated non-root user and group for running the worker process.
 # Using fixed UID/GID (1001) ensures consistent file ownership across builds

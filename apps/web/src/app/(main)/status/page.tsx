@@ -138,21 +138,22 @@ export default function StatusPage(): React.JSX.Element {
 
     const fetchStories = async (): Promise<void> => {
       try {
-        // Fetch contacts' story feed and current user's stories in parallel
+        // Fetch contacts' story feed and current user's stories in parallel.
+        // apiClient.get already returns the inner payload (not the { data: T }
+        // envelope), so the generic type is the final shape — no .data unwrap.
         const [feedResponse, myStoriesResponse] = await Promise.all([
-          apiClient.get<{ data: StoryFeedItem[] }>('/api/v1/stories/feed'),
-          apiClient.get<{ data: StoryResponse[] }>('/api/v1/stories/me'),
+          apiClient.get<StoryFeedItem[]>('/api/v1/stories/feed'),
+          apiClient.get<StoryResponse[]>('/api/v1/stories/me'),
         ]);
 
         if (cancelled) return;
 
         // Set the contacts' story feed into the store
-        const feed = feedResponse.data ?? feedResponse as unknown as StoryFeedItem[];
+        const feed = feedResponse;
         setStoriesFeed(Array.isArray(feed) ? feed : []);
 
         // Build MyStatusInfo and set into store for the "My Status" row
-        const myStoriesList = myStoriesResponse.data ?? myStoriesResponse as unknown as StoryResponse[];
-        const activeMyStories = Array.isArray(myStoriesList) ? myStoriesList : [];
+        const activeMyStories = Array.isArray(myStoriesResponse) ? myStoriesResponse : [];
         if (activeMyStories.length > 0) {
           const sortedByDate = [...activeMyStories].sort(
             (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),

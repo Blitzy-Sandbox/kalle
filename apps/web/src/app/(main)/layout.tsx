@@ -261,7 +261,10 @@ export default function MainLayout({
       {/* Bottom Tab Bar — 5-tab navigation (Figma node 0:9004)
           Fixed at the bottom of the flex column layout. Total height
           83px (49px tabs + 34px home indicator safe area). */}
-      {!isEditMode && (
+      {/* Hide TabBar on individual conversation pages (/chat/[id]) so it
+          does not cover the MessageInput. Regex: /chat/ followed by a
+          non-empty segment that is NOT "new". */}
+      {!isEditMode && !/^\/chat\/[^/]+$/.test(pathname) && (
         <TabBar activeTab={activeTab} onTabPress={handleTabPress} />
       )}
     </div>

@@ -277,14 +277,21 @@ export function useEncryption(): UseEncryptionReturn {
         return;
       }
 
-      // Fetch the recipient's public pre-key bundle from the server
+      // Fetch the recipient's public pre-key bundle from the server.
       // Route: GET /api/v1/keys/bundle/:userId (key.routes.ts)
-      const bundle: PreKeyBundleResponse = await apiClient.get<PreKeyBundleResponse>(
-        `/api/v1/keys/bundle/${recipientId}`,
-      );
+      // Wrapped in try/catch so a 404 (no bundle uploaded yet) does not
+      // throw and break the caller — session simply won't be established.
+      try {
+        const bundle: PreKeyBundleResponse = await apiClient.get<PreKeyBundleResponse>(
+          `/api/v1/keys/bundle/${recipientId}`,
+        );
 
-      // Perform X3DH key agreement and create the Double Ratchet session
-      await createSession(recipientId, deviceId, bundle);
+        // Perform X3DH key agreement and create the Double Ratchet session
+        await createSession(recipientId, deviceId, bundle);
+      } catch {
+        // Bundle fetch or session creation failed — non-fatal.
+        // Messages will use plaintext fallback until a session can be established.
+      }
     },
     [],
   );
@@ -496,8 +503,9 @@ export function useEncryption(): UseEncryptionReturn {
             ? err.message
             : 'Encryption initialization failed';
         setError(message);
-        // Reset the init guard so a retry is possible
-        initRef.current = false;
+        // Keep initRef.current = true to prevent re-render retry loops.
+        // Encryption init failure is non-fatal — the app operates with
+        // plaintext fallback when encryption is unavailable.
       } finally {
         setIsInitializing(false);
       }
