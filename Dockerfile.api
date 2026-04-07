@@ -41,7 +41,11 @@ FROM node:20-alpine AS deps
 
 # Alpine compatibility: libc6-compat is required by some npm native modules
 # that expect glibc. This prevents runtime segfaults from missing shared libs.
-RUN apk add --no-cache libc6-compat
+# openssl is required so that Prisma can detect the libssl version during
+# `prisma generate` and download the correct query/schema engine binary.
+# Without it, Prisma defaults to openssl-1.1.x which does not exist on
+# Alpine 3.19+ (ships with OpenSSL 3.x), causing runtime crashes.
+RUN apk add --no-cache libc6-compat openssl
 
 WORKDIR /app
 
@@ -89,6 +93,17 @@ WORKDIR /app
 
 # Set production environment for optimized builds
 ENV NODE_ENV=production
+
+# Prisma OpenSSL 3.x Compatibility — Alpine 3.19+ ships ONLY with OpenSSL 3.x
+# (libssl.so.3). Prisma's auto-detection fails on Alpine and defaults to the
+# openssl-1.1 engine binary, which crashes at runtime with:
+#   "Error loading shared library libssl.so.1.1"
+# Fix: Install OpenSSL 3 shared libraries and explicitly tell Prisma which
+# engine binaries to load via environment variables, bypassing broken detection.
+# NOTE: docker-compose.yml uses `target: builder` so this stage IS the runtime.
+RUN apk add --no-cache openssl libssl3 libcrypto3
+ENV PRISMA_QUERY_ENGINE_LIBRARY=/app/node_modules/.prisma/client/libquery_engine-linux-musl-openssl-3.0.x.so.node
+ENV PRISMA_SCHEMA_ENGINE_BINARY=/app/node_modules/@prisma/engines/schema-engine-linux-musl-openssl-3.0.x
 
 # Copy installed node_modules from deps stage.
 # npm ci without --workspace hoists ALL dependencies to the root node_modules.
@@ -140,6 +155,16 @@ WORKDIR /app
 
 # Production environment — enables Express production optimizations
 ENV NODE_ENV=production
+
+# Prisma OpenSSL 3.x Compatibility — Alpine 3.19+ ships ONLY with OpenSSL 3.x
+# (libssl.so.3). Prisma's auto-detection fails on Alpine and defaults to the
+# openssl-1.1 engine binary, which crashes at runtime with:
+#   "Error loading shared library libssl.so.1.1"
+# Fix: Install OpenSSL 3 shared libraries and explicitly tell Prisma which
+# engine binaries to load via environment variables, bypassing broken detection.
+RUN apk add --no-cache openssl libssl3 libcrypto3
+ENV PRISMA_QUERY_ENGINE_LIBRARY=/app/node_modules/.prisma/client/libquery_engine-linux-musl-openssl-3.0.x.so.node
+ENV PRISMA_SCHEMA_ENGINE_BINARY=/app/node_modules/@prisma/engines/schema-engine-linux-musl-openssl-3.0.x
 
 # Create a dedicated non-root user and group for running the application.
 # Using fixed UID/GID (1001) ensures consistent file ownership across builds

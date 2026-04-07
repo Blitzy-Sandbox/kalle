@@ -17,7 +17,13 @@
 // =============================================================================
 
 generator client {
-  provider = "prisma-client-js"
+  provider      = "prisma-client-js"
+  // Include both native (development host) and linux-musl-openssl-3.0.x
+  // (Alpine-based Docker containers). Node 20-alpine ships with OpenSSL 3.x,
+  // and the default "native" detection on Alpine often falls back to 1.1.x
+  // which fails at runtime. Explicitly listing both targets ensures Prisma
+  // generates the correct engine binary for Docker AND local development.
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
 }
 
 datasource db {

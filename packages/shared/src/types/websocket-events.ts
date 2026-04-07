@@ -570,4 +570,12 @@ export interface SocketData {
 
   /** UUID v4 correlation ID assigned during connection setup (R29) */
   correlationId: string;
+
+  /**
+   * Conversation room IDs the socket has joined on connect.
+   * Set by `index.ts` after room joins complete. Used by the presence
+   * handler to broadcast offline presence to contacts on disconnect,
+   * since `socket.rooms` is cleared before the `disconnect` event fires.
+   */
+  conversationRooms?: string[];
 }

@@ -416,6 +416,21 @@ async function bootstrap(): Promise<void> {
   });
   logger.info('WebSocket event handlers registered');
 
+  // ─── Step 12b: Schedule Repeating BullMQ Cron Jobs (R11, R35) ───────────
+  // Register cron-based recurring jobs:
+  //  - story-cleanup: runs every hour to purge expired stories and their media
+  //  - audit-log-cleanup: runs weekly (Sunday midnight) to purge audit logs
+  //    older than 90 days
+  // Both jobs are added to the default BullMQ queue and processed by the
+  // unified worker. BullMQ deduplicates repeating jobs, so calling
+  // scheduleRepeat on restart is safe — only one instance per cron pattern
+  // will ever be active.
+  await queueProvider.scheduleRepeat('story-cleanup', {}, '0 * * * *');
+  logger.info('Scheduled story-cleanup cron job (hourly)');
+
+  await queueProvider.scheduleRepeat('audit-log-cleanup', {}, '0 0 * * 0');
+  logger.info('Scheduled audit-log-cleanup cron job (weekly, Sunday midnight)');
+
   // ─── Step 13: Graceful Shutdown ──────────────────────────────────────────
   // SIGTERM (container orchestrator) and SIGINT (Ctrl+C) trigger a clean
   // teardown sequence: stop accepting connections → close WebSocket →

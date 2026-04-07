@@ -311,56 +311,10 @@ export function setupWebSocket(
     }
 
     // -------------------------------------------------------------------
-    // 3c. Join conversation rooms
+    // 3c. Create per-connection rate limiter (R25)
     //
-    //     The presence handler manages the user-specific room
-    //     (`user:${userId}`) and online-status lifecycle internally.
-    //     This block is responsible ONLY for conversation rooms, as
-    //     stated by the presence-handler comment:
-    //       "Conversation room joins are handled by the WebSocket index.ts"
-    // -------------------------------------------------------------------
-    let conversationCount = 0;
-    try {
-      const result = await services.conversationService.getConversations(
-        userId,
-        { limit: MAX_CONVERSATION_ROOMS_ON_CONNECT },
-      );
-
-      const items = result.items;
-      for (let i = 0; i < items.length; i++) {
-        const conversation = items[i];
-        if (conversation && conversation.id) {
-          await socket.join(conversation.id);
-          conversationCount++;
-        }
-      }
-
-      if (logger) {
-        logger.info({
-          correlationId,
-          userId,
-          socketId: socket.id,
-          conversationCount,
-          msg: 'Joined conversation rooms',
-        });
-      }
-    } catch (err: unknown) {
-      // Non-fatal — the user can still receive events via their personal
-      // room; conversation rooms will be joined lazily as messages arrive.
-      if (logger) {
-        logger.error({
-          err,
-          correlationId,
-          userId,
-          socketId: socket.id,
-          msg: 'Failed to join conversation rooms on connect',
-        });
-      }
-    }
-
-    // -------------------------------------------------------------------
-    // 3d. Create per-connection rate limiter (R25)
-    //
+    //     SYNCHRONOUS — created before async operations to prevent
+    //     race conditions where early events bypass rate limiting.
     //     Each socket gets its own rate-limit buckets:
     //       message:send  → 30 / min
     //       typing:start  → 10 / min
@@ -372,7 +326,13 @@ export function setupWebSocket(
     );
 
     // -------------------------------------------------------------------
-    // 3e. Register all event handler groups
+    // 3d. Register all event handler groups — SYNCHRONOUS
+    //
+    //     CRITICAL: Handler registration MUST happen before any async
+    //     operations (room joins, presence updates). This prevents a
+    //     race condition where events emitted by the client immediately
+    //     after the `connect` event would be silently dropped because
+    //     the handlers had not yet been registered.
     //
     //     Each handler module registers its own Socket.IO `socket.on()`
     //     listeners internally.  Deps are narrowly typed per handler via
@@ -410,9 +370,12 @@ export function setupWebSocket(
     //   - metricsService.recordWsConnection() / recordWsDisconnection()
     //   - userService.updateOnlineStatus()
     //   - user personal room join
-    //   - user:presence broadcasts
+    //   - user:presence broadcasts to user room
     //   - multi-tab disconnect detection
     //   - rate-limiter cleanup on disconnect
+    // Note: Conversation room presence broadcasts are handled below (3e)
+    // after room joins complete, and by the handler on disconnect via
+    // socket.data.conversationRooms.
     registerPresenceHandlers(socket as Socket, {
       userService: services.userService,
       cacheProvider: services.cacheProvider,
@@ -429,6 +392,82 @@ export function setupWebSocket(
       rateLimiter,
       logger: effectiveLogger,
     });
+
+    // -------------------------------------------------------------------
+    // 3e. Join conversation rooms (ASYNC)
+    //
+    //     The presence handler manages the user-specific room
+    //     (`user:${userId}`) and online-status lifecycle internally.
+    //     This block is responsible ONLY for conversation rooms, as
+    //     stated by the presence-handler comment:
+    //       "Conversation room joins are handled by the WebSocket index.ts"
+    //
+    //     After room joins complete, conversation IDs are stored on
+    //     socket.data for the presence handler's disconnect broadcast,
+    //     and an initial online presence event is emitted to all joined
+    //     rooms so contacts are notified immediately.
+    // -------------------------------------------------------------------
+    let conversationCount = 0;
+    try {
+      const result = await services.conversationService.getConversations(
+        userId,
+        { limit: MAX_CONVERSATION_ROOMS_ON_CONNECT },
+      );
+
+      const items = result.items;
+      const joinedRoomIds: string[] = [];
+      for (let i = 0; i < items.length; i++) {
+        const conversation = items[i];
+        if (conversation && conversation.id) {
+          await socket.join(conversation.id);
+          joinedRoomIds.push(conversation.id);
+          conversationCount++;
+        }
+      }
+
+      // Store conversation room IDs on socket.data for the presence
+      // handler to use on disconnect (socket.rooms is cleared before
+      // the `disconnect` event fires in Socket.IO).
+      socket.data.conversationRooms = joinedRoomIds;
+
+      // Broadcast initial online presence to all conversation rooms so
+      // contacts see this user come online. The presence handler only
+      // emits to the user's personal room (`user:${userId}`); this
+      // covers the conversation rooms that contacts are listening on.
+      if (joinedRoomIds.length > 0) {
+        const presencePayload = {
+          userId,
+          status: 'online' as const,
+          correlationId,
+          timestamp: new Date().toISOString(),
+        };
+        for (const roomId of joinedRoomIds) {
+          await realtimeProvider.emitToRoom(roomId, 'user:presence', presencePayload);
+        }
+      }
+
+      if (logger) {
+        logger.info({
+          correlationId,
+          userId,
+          socketId: socket.id,
+          conversationCount,
+          msg: 'Joined conversation rooms and broadcast online presence',
+        });
+      }
+    } catch (err: unknown) {
+      // Non-fatal — the user can still receive events via their personal
+      // room; conversation rooms will be joined lazily as messages arrive.
+      if (logger) {
+        logger.error({
+          err,
+          correlationId,
+          userId,
+          socketId: socket.id,
+          msg: 'Failed to join conversation rooms on connect',
+        });
+      }
+    }
 
     // -------------------------------------------------------------------
     // 3f. Socket-level error handler (R28)

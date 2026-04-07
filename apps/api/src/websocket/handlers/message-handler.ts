@@ -307,7 +307,7 @@ export function registerMessageHandlers(
         senderId: userId,
         senderName: socket.data.displayName || userId,
         ciphertext: payload.ciphertext,
-        type: payload.type || 'text',
+        type: payload.type || 'TEXT',
         replyToMessageId: payload.replyToMessageId,
         mediaId: payload.mediaId,
         clientMessageId: payload.clientMessageId,

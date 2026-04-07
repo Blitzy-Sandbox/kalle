@@ -286,80 +286,84 @@ function registerWorkerEvents(worker: Worker, logger: pino.Logger): void {
 // =============================================================================
 
 /**
- * Worker registration descriptor — maps a queue name to its processor
- * function and concurrency level.
+ * Shared queue name matching the API producer's BullMQ Queue.
+ *
+ * The API's `QueueProvider` enqueues ALL job types to a single queue
+ * named `'kalle-jobs'` using the job name (e.g., `'link-preview'`,
+ * `'message-fanout'`) as the BullMQ job name field. This unified
+ * Worker listens on the same queue and dispatches each job to the
+ * correct processor based on `job.name`.
  */
-interface QueueRegistration {
-  readonly name: string;
-  readonly processor: (job: Job, context: WorkerContext) => Promise<void>;
-  readonly concurrency: number;
-}
+const SHARED_QUEUE_NAME = 'kalle-jobs';
 
 /**
- * Creates and configures all 6 BullMQ Worker instances.
+ * Maximum concurrency for the unified worker.
+ * Set to the highest concurrency needed by any individual job type
+ * to allow concurrent processing across different job types.
+ */
+const UNIFIED_WORKER_CONCURRENCY = 5;
+
+/**
+ * Creates a single unified BullMQ Worker on the `kalle-jobs` queue.
  *
- * Each worker is bound to its specific queue, processor function,
- * concurrency level, and shared Redis connection. Event handlers are
- * attached for observability (completed, failed, error).
+ * The API producer enqueues all job types to a single queue named
+ * `kalle-jobs`. Each job carries its type in the BullMQ `job.name`
+ * field (e.g., `'link-preview'`, `'message-fanout'`). The dispatch
+ * processor routes each incoming job to the correct processor function
+ * based on `job.name`, preserving all 6 processor implementations,
+ * correlation ID propagation, and structured logging.
  */
 function createAllWorkers(
   baseContext: WorkerContext,
   redisConnection: Redis,
 ): Worker[] {
-  // Queue registration table: queue name → processor → concurrency
-  const registrations: readonly QueueRegistration[] = [
-    {
-      name: QUEUE_NAMES.MESSAGE_FANOUT,
-      processor: processMessageFanout,
-      concurrency: 5,
-    },
-    {
-      name: QUEUE_NAMES.SENDER_KEY_DISTRIBUTION,
-      processor: processSenderKeyDistribution,
-      concurrency: 3,
-    },
-    {
-      name: QUEUE_NAMES.LINK_PREVIEW,
-      processor: processLinkPreview,
-      concurrency: 5,
-    },
-    {
-      name: QUEUE_NAMES.STORY_CLEANUP,
-      processor: processStoryCleanup,
-      concurrency: 1,
-    },
-    {
-      name: QUEUE_NAMES.AUDIT_LOG_CLEANUP,
-      processor: processAuditLogCleanup,
-      concurrency: 1,
-    },
-    {
-      name: QUEUE_NAMES.PREKEY_REPLENISH,
-      processor: processPrekeyReplenishNotification,
-      concurrency: 3,
-    },
-  ];
+  // Job name → processor dispatch map
+  const processorMap = new Map<string, (job: Job, context: WorkerContext) => Promise<void>>([
+    [QUEUE_NAMES.MESSAGE_FANOUT, processMessageFanout],
+    [QUEUE_NAMES.SENDER_KEY_DISTRIBUTION, processSenderKeyDistribution],
+    [QUEUE_NAMES.LINK_PREVIEW, processLinkPreview],
+    [QUEUE_NAMES.STORY_CLEANUP, processStoryCleanup],
+    [QUEUE_NAMES.AUDIT_LOG_CLEANUP, processAuditLogCleanup],
+    [QUEUE_NAMES.PREKEY_REPLENISH, processPrekeyReplenishNotification],
+  ]);
 
-  const workers: Worker[] = [];
+  // Dispatch processor that routes jobs by name to the correct handler
+  const dispatchProcessor = async (
+    job: Job,
+    context: WorkerContext,
+  ): Promise<void> => {
+    const processor = processorMap.get(job.name);
+    if (!processor) {
+      context.logger.error(
+        { jobName: job.name, jobId: job.id },
+        'Unknown job name received — no matching processor registered',
+      );
+      return;
+    }
+    await processor(job, context);
+  };
 
-  for (const reg of registrations) {
-    const wrappedProcessor = createProcessorWrapper(reg.processor, baseContext);
+  // Wrap with correlation ID propagation, logging, and timing (R29, R28)
+  const wrappedProcessor = createProcessorWrapper(dispatchProcessor, baseContext);
 
-    const worker = new Worker(reg.name, wrappedProcessor, {
-      connection: redisConnection,
-      concurrency: reg.concurrency,
-    });
+  // Create a single Worker on the shared queue matching the API producer
+  const worker = new Worker(SHARED_QUEUE_NAME, wrappedProcessor, {
+    connection: redisConnection,
+    concurrency: UNIFIED_WORKER_CONCURRENCY,
+  });
 
-    registerWorkerEvents(worker, baseContext.logger);
-    workers.push(worker);
+  registerWorkerEvents(worker, baseContext.logger);
 
-    baseContext.logger.info(
-      { queue: reg.name, concurrency: reg.concurrency },
-      'Worker registered',
-    );
-  }
+  baseContext.logger.info(
+    {
+      queue: SHARED_QUEUE_NAME,
+      concurrency: UNIFIED_WORKER_CONCURRENCY,
+      registeredJobs: Array.from(processorMap.keys()),
+    },
+    'Unified worker registered for all job types',
+  );
 
-  return workers;
+  return [worker];
 }
 
 // =============================================================================
@@ -540,7 +544,8 @@ async function main(): Promise<void> {
   // 8. Log boot completion
   logger.info(
     {
-      queues: Object.values(QUEUE_NAMES),
+      queue: SHARED_QUEUE_NAME,
+      registeredJobs: Object.values(QUEUE_NAMES),
       workerCount: workers.length,
       pid: process.pid,
     },

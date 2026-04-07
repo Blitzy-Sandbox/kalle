@@ -273,12 +273,25 @@ export function registerPresenceHandlers(
           payload,
         );
 
+        // Also broadcast offline presence to all conversation rooms so
+        // contacts (who listen on conversation rooms) receive the event.
+        // socket.rooms is cleared before the `disconnect` event fires in
+        // Socket.IO, so we use the conversation room IDs stored on
+        // socket.data during connection setup by index.ts.
+        const conversationRooms = socket.data.conversationRooms;
+        if (Array.isArray(conversationRooms)) {
+          for (const roomId of conversationRooms) {
+            await realtimeProvider.emitToRoom(roomId, 'user:presence', payload);
+          }
+        }
+
         childLogger.info(
           {
             socketId: socket.id,
             event: 'disconnect',
             reason,
             lastSeen: lastSeenIso,
+            conversationRoomsBroadcast: Array.isArray(conversationRooms) ? conversationRooms.length : 0,
           },
           'User disconnected - presence offline (last socket)',
         );
