@@ -49,16 +49,20 @@ const NUMERIC_ID_REGEX = /\/\d+(?=\/|$)/g;
  * @returns A normalised route string safe for use as a metric label.
  */
 function getRoutePattern(
-  reqPath: string,
-  route: { path?: string } | undefined,
+  req: { path: string; baseUrl?: string; route?: { path?: string } },
 ): string {
-  if (route?.path) {
-    return route.path as string;
+  // Use baseUrl + route.path to include the router mount prefix (e.g.
+  // "/health" instead of "/" when health routes are mounted as sub-routers).
+  // This fixes Issue 6: health and metrics routes showing route="/" instead
+  // of descriptive labels like route="/health".
+  if (req.route?.path) {
+    const base = req.baseUrl || '';
+    return base + (req.route.path as string);
   }
   // Reset lastIndex on the global regex before each use to guarantee
   // correct behaviour when the function is invoked repeatedly.
   UUID_REGEX.lastIndex = 0;
-  return reqPath
+  return req.path
     .replace(UUID_REGEX, ':id')
     .replace(NUMERIC_ID_REGEX, '/:id');
 }
@@ -137,11 +141,10 @@ export function createMetricsMiddleware(
       const durationNs = Number(endTime - startTime);
       const durationMs = durationNs / 1e6;
 
-      // Build normalised route pattern for low-cardinality labels
-      const route = getRoutePattern(
-        req.path,
-        req.route as { path?: string } | undefined,
-      );
+      // Build normalised route pattern for low-cardinality labels.
+      // Passes the full req object so baseUrl is available for sub-router
+      // mount prefix resolution (Issue 6 fix).
+      const route = getRoutePattern(req);
 
       // Delegate recording to MetricsService — single source of truth
       // for all metric instruments. MetricsService handles counter increment,

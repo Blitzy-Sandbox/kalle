@@ -26,6 +26,21 @@ declare global {
 const CORRELATION_ID_HEADER = 'X-Correlation-ID';
 
 /**
+ * Maximum allowed length for a client-provided correlation ID.
+ * Prevents log injection and resource abuse from excessively long headers.
+ */
+const MAX_CORRELATION_ID_LENGTH = 128;
+
+/**
+ * Regular expression defining valid correlation ID characters.
+ * Allows UUID-style IDs (hexadecimal + dashes), plus underscores, dots,
+ * colons, and alphanumeric characters. Rejects HTML/script characters
+ * such as `<`, `>`, `"`, `'`, `&` to prevent XSS reflection when the
+ * correlation ID appears in JSON error responses or HTTP headers.
+ */
+const SAFE_CORRELATION_ID_PATTERN = /^[a-zA-Z0-9\-_.:]+$/;
+
+/**
  * Express middleware that assigns a UUID v4 correlation ID to every incoming
  * HTTP request. This is the **first step** in the correlation ID propagation
  * chain defined by Rule R29:
@@ -75,16 +90,25 @@ export function correlationIdMiddleware(
     : headerValue;
 
   // ------------------------------------------------------------------
-  // Step 2: Validate the existing value — accept only non-empty strings.
-  // If the header is present but blank / whitespace-only, treat it the
-  // same as absent and generate a fresh UUID v4.
+  // Step 2: Validate the existing value — accept only non-empty strings
+  // composed of safe characters (alphanumeric, dash, underscore, dot,
+  // colon) within a reasonable length limit. If the header is present
+  // but blank, too long, or contains unsafe characters (e.g. `<script>`),
+  // discard it and generate a fresh UUID v4 to prevent XSS reflection
+  // in JSON error responses and log output.
   // ------------------------------------------------------------------
+  const trimmedExisting =
+    typeof existingCorrelationId === 'string'
+      ? existingCorrelationId.trim()
+      : '';
+
   const isValidExisting =
-    typeof existingCorrelationId === 'string' &&
-    existingCorrelationId.trim().length > 0;
+    trimmedExisting.length > 0 &&
+    trimmedExisting.length <= MAX_CORRELATION_ID_LENGTH &&
+    SAFE_CORRELATION_ID_PATTERN.test(trimmedExisting);
 
   const correlationId: string = isValidExisting
-    ? (existingCorrelationId as string).trim()
+    ? trimmedExisting
     : uuidv4();
 
   // ------------------------------------------------------------------

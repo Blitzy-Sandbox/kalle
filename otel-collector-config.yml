@@ -6,7 +6,8 @@
 # Docker service defined in docker-compose.yml.
 #
 # Ports:
-#   4317  — gRPC OTLP receiver (backend SDK pushes metrics here)
+#   4317  — gRPC OTLP receiver (available for future tracing SDKs)
+#   4318  — HTTP  OTLP receiver (backend SDK pushes metrics here via HTTP)
 #   8889  — Prometheus exporter (scrape endpoint for metrics)
 #   13133 — Health check extension (used by Docker healthcheck)
 #
@@ -18,12 +19,16 @@
 # Receivers — Ingest telemetry data from instrumented services
 # -----------------------------------------------------------------------------
 receivers:
-  # OTLP receiver accepts metrics from the backend @opentelemetry/sdk-node
-  # via gRPC. The backend OTEL_EXPORTER_OTLP_ENDPOINT env var points here.
+  # OTLP receiver accepts metrics from the backend @opentelemetry/sdk-node.
+  # gRPC (4317) is available for future tracing/logging SDKs.
+  # HTTP  (4318) is used by the API's OTLPMetricExporter (HTTP-based) to push
+  # metrics — the OTEL_EXPORTER_OTLP_ENDPOINT env var points here.
   otlp:
     protocols:
       grpc:
         endpoint: "0.0.0.0:4317"
+      http:
+        endpoint: "0.0.0.0:4318"
 
 # -----------------------------------------------------------------------------
 # Processors — Transform and batch telemetry data before export

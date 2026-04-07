@@ -15,7 +15,7 @@
  *        link preview extraction, and story cleanup go through BullMQ. Group
  *        message API returns before all deliveries complete.
  * - R29: Correlation ID Propagation — job payloads include correlation ID from
- *        JobOptions.correlationId as `_correlationId`. The worker process
+ *        JobOptions.correlationId as `correlationId`. The worker process
  *        extracts it and propagates to its logger context.
  * - R28: Structured Logging Only — zero console.log calls.
  * - R7:  Zero Warnings Build — compiles under tsc --noEmit --strict with zero warnings.
@@ -135,20 +135,20 @@ function parseRedisUrl(redisUrl: string): {
 /**
  * Injects the correlation ID into a job payload for end-to-end traceability.
  *
- * Per Rule R29, every job payload carries `_correlationId` when a correlation
+ * Per Rule R29, every job payload carries `correlationId` when a correlation
  * ID is provided. The worker process extracts this field and sets it in the
  * Pino logger context for all log entries produced during job processing.
  *
  * @param payload - Original job payload
  * @param correlationId - Optional correlation ID to inject
- * @returns Payload with `_correlationId` added if the ID was provided
+ * @returns Payload with `correlationId` added if the ID was provided
  */
 function injectCorrelationId(
   payload: Record<string, unknown>,
   correlationId: string | undefined,
 ): Record<string, unknown> {
   if (correlationId) {
-    return { ...payload, _correlationId: correlationId };
+    return { ...payload, correlationId };
   }
   return payload;
 }
@@ -194,12 +194,27 @@ function injectCorrelationId(
  * await queueProvider.close();
  * ```
  */
+/**
+ * Minimal metrics recording interface to avoid importing concrete MetricsService.
+ * Injected via setMetricsService() from the composition root (R17, R37).
+ */
+interface QueueMetrics {
+  recordBullmqJob(params: { jobName: string; status: string; durationMs: number }): void;
+  bullmqQueueDepth: { add(value: number, attributes?: Record<string, string>): void };
+}
+
 export class QueueProvider implements IQueueProvider {
   /**
    * The primary BullMQ Queue instance used for all job types.
    * Job names serve as the routing key to the corresponding worker processor.
    */
   private readonly defaultQueue: Queue;
+
+  /**
+   * Optional metrics service for recording BullMQ job metrics (R37).
+   * Set via setMetricsService() from the composition root after construction.
+   */
+  private metrics?: QueueMetrics;
 
   /**
    * Creates a new QueueProvider instance.
@@ -235,6 +250,23 @@ export class QueueProvider implements IQueueProvider {
   }
 
   // -------------------------------------------------------------------------
+  // Metrics Integration (Rule R37)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Attach a metrics service for recording BullMQ job metrics.
+   *
+   * Called by the composition root (server.ts) after both QueueProvider and
+   * MetricsService have been constructed. This avoids a circular dependency
+   * and keeps the constructor free of optional parameters.
+   *
+   * @param metricsService - An object satisfying the QueueMetrics interface
+   */
+  setMetricsService(metricsService: QueueMetrics): void {
+    this.metrics = metricsService;
+  }
+
+  // -------------------------------------------------------------------------
   // IQueueProvider — enqueue
   // -------------------------------------------------------------------------
 
@@ -243,7 +275,7 @@ export class QueueProvider implements IQueueProvider {
    *
    * The job will be picked up by the corresponding worker processor registered
    * under the given `jobName`. Payloads are JSON-serialized for transport.
-   * Correlation ID (Rule R29) is embedded in the payload as `_correlationId`
+   * Correlation ID (Rule R29) is embedded in the payload as `correlationId`
    * so the worker can extract it for structured log propagation.
    *
    * @param jobName - Name of the job type (must be a valid QueueJobName)
@@ -285,6 +317,16 @@ export class QueueProvider implements IQueueProvider {
         removeOnFail: options.removeOnFail,
       }),
     });
+
+    // Record enqueue event for Prometheus metrics (R37)
+    if (this.metrics) {
+      this.metrics.recordBullmqJob({
+        jobName,
+        status: 'enqueued',
+        durationMs: 0,
+      });
+      this.metrics.bullmqQueueDepth.add(1, { queue: QUEUE_NAME });
+    }
 
     return {
       id: job.id ?? '',
@@ -354,6 +396,18 @@ export class QueueProvider implements IQueueProvider {
     }));
 
     const result = await this.defaultQueue.addBulk(bulkJobs);
+
+    // Record bulk enqueue metrics (R37)
+    if (this.metrics) {
+      for (const job of jobs) {
+        this.metrics.recordBullmqJob({
+          jobName: job.name,
+          status: 'enqueued',
+          durationMs: 0,
+        });
+      }
+      this.metrics.bullmqQueueDepth.add(jobs.length, { queue: QUEUE_NAME });
+    }
 
     return result.map((job) => ({
       id: job.id ?? '',

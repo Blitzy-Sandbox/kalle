@@ -18,11 +18,16 @@
  * @module MetricsService
  */
 
-import { MeterProvider } from '@opentelemetry/sdk-metrics';
+import {
+  MeterProvider,
+  PeriodicExportingMetricReader,
+} from '@opentelemetry/sdk-metrics';
 import {
   PrometheusExporter,
   PrometheusSerializer,
 } from '@opentelemetry/exporter-prometheus';
+import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-http';
+import { Resource } from '@opentelemetry/resources';
 import { metrics } from '@opentelemetry/api';
 import type {
   Meter,
@@ -211,10 +216,41 @@ export class MetricsService {
     // Initialize the Prometheus text serializer for getMetrics().
     this.serializer = new PrometheusSerializer();
 
-    // Create the MeterProvider with the exporter registered as a metric reader.
+    // Build a list of metric readers. The PrometheusExporter provides a pull-based
+    // /api/v1/metrics endpoint. If OTEL_EXPORTER_OTLP_ENDPOINT is configured, also
+    // register an OTLPMetricExporter to push metrics to the OpenTelemetry Collector
+    // via HTTP, fulfilling the OTel Collector integration requirement (R37).
+    const readers: (PrometheusExporter | PeriodicExportingMetricReader)[] = [
+      this.exporter,
+    ];
+
+    const otlpEndpoint = process.env['OTEL_EXPORTER_OTLP_ENDPOINT'];
+    if (otlpEndpoint) {
+      const otlpExporter = new OTLPMetricExporter({
+        // Append the standard OTLP HTTP metrics path to the base endpoint.
+        url: `${otlpEndpoint.replace(/\/+$/, '')}/v1/metrics`,
+      });
+      readers.push(
+        new PeriodicExportingMetricReader({
+          exporter: otlpExporter,
+          // Export metrics to the collector every 15 seconds.
+          exportIntervalMillis: 15_000,
+        }),
+      );
+    }
+
+    // Create the Resource identifying this service (Issue 7 — explicit service.name
+    // ensures target_info in Prometheus output shows "kalle-api" instead of "unknown_service").
+    const resource = new Resource({
+      'service.name': process.env['OTEL_SERVICE_NAME'] || 'kalle-api',
+      'service.version': '1.0.0',
+    });
+
+    // Create the MeterProvider with the exporter(s) registered as metric readers.
     // Using the `readers` constructor option (NOT the deprecated addMetricReader method).
     const meterProvider = new MeterProvider({
-      readers: [this.exporter],
+      resource,
+      readers,
     });
 
     // Register this MeterProvider as the global provider so that any code using

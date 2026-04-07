@@ -117,6 +117,8 @@ interface SendMessageParams extends SendMessageDTO {
   readonly senderName: string;
   /** Optional avatar URL of the sender */
   readonly senderAvatar?: string;
+  /** Optional correlation ID for end-to-end request tracing (R29) */
+  readonly correlationId?: string;
 }
 
 /**
@@ -291,6 +293,7 @@ export class MessageService {
       replyToMessageId,
       mediaId,
       clientMessageId,
+      correlationId,
     } = params;
 
     // Step 1: Verify sender is a conversation participant
@@ -339,21 +342,29 @@ export class MessageService {
     if (participantIds.length >= FAN_OUT_THRESHOLD) {
       // Group chat: enqueue BullMQ job; API returns before deliveries complete
       const recipientIds = participantIds.filter((id) => id !== senderId);
-      await this.queueProvider.enqueue('message-fanout', {
-        messageId: message.id,
-        conversationId,
-        senderId,
-        recipientIds,
-      });
+      await this.queueProvider.enqueue(
+        'message-fanout',
+        {
+          messageId: message.id,
+          conversationId,
+          senderId,
+          recipientIds,
+        },
+        { correlationId },
+      );
     }
     // For 1:1 (< 3 participants): WebSocket handler delivers directly — no queue
 
     // Step 6: Enqueue link-preview extraction if ciphertext matches URL pattern
     if (URL_REGEX.test(ciphertext)) {
-      await this.queueProvider.enqueue('link-preview', {
-        messageId: message.id,
-        conversationId,
-      });
+      await this.queueProvider.enqueue(
+        'link-preview',
+        {
+          messageId: message.id,
+          conversationId,
+        },
+        { correlationId },
+      );
     }
 
     return message;

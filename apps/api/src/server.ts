@@ -23,7 +23,7 @@
  * - R16 (OOD Layering): Controllers → Services → Repositories/Providers
  * - R17 (Interface-Driven DI): Only this file imports concrete classes
  * - R26 (Env Validation): Zod validation before ANY initialization
- * - R28 (Structured Logging): Pino only — zero console.log (except fatal bootstrap catch)
+ * - R28 (Structured Logging): Pino only — zero console.log, zero console.error
  * - R29 (Correlation ID): Logger factory supports correlation ID injection
  * - R30 (API Versioning): All REST endpoints under /api/v1/
  * - R38 (Zero External Deps): No external service calls at boot time
@@ -40,12 +40,15 @@
 
 // ─── External Imports ──────────────────────────────────────────────────────────
 import http from 'http';
+import { randomUUID } from 'crypto';
 import pinoHttp from 'pino-http';
+import pino from 'pino';
 
 // ─── Internal Configuration Imports ────────────────────────────────────────────
 import { validateEnv } from './config/env';
 import type { EnvConfig } from './config/env';
 import { createPrismaClient } from './config/database';
+import { Prisma } from '@prisma/client';
 import { createRedisClient } from './config/redis';
 import { getCorsOptions } from './config/cors';
 
@@ -100,17 +103,19 @@ import { setupWebSocket } from './websocket/index';
 
 // ─── Process-Level Error Handlers ──────────────────────────────────────────────
 // Registered BEFORE bootstrap so errors during initialization are caught.
-// console.error is acceptable here — the Pino logger may not yet be
-// initialized when these fire (R28 exception for fatal process handlers).
-process.on('unhandledRejection', (reason: unknown, promise: Promise<unknown>) => {
-  // eslint-disable-next-line no-console -- R28 exception: logger may not be initialized
-  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+// A minimal Pino instance is created here so even fatal crash handlers
+// produce structured JSON output (R28 full compliance — Issue 1 fix).
+// This logger has no redaction or advanced config — it is only used for
+// process-level crash events where the main LoggerProvider may be unavailable.
+const crashLogger = pino({ name: 'kalle-api-crash', level: 'fatal' });
+
+process.on('unhandledRejection', (reason: unknown) => {
+  crashLogger.fatal({ reason: reason instanceof Error ? reason.message : String(reason) }, 'Unhandled Rejection');
   process.exit(1);
 });
 
 process.on('uncaughtException', (error: Error) => {
-  // eslint-disable-next-line no-console -- R28 exception: logger may not be initialized
-  console.error('Uncaught Exception:', error);
+  crashLogger.fatal({ err: error.message, stack: error.stack }, 'Uncaught Exception');
   process.exit(1);
 });
 
@@ -248,6 +253,23 @@ async function bootstrap(): Promise<void> {
   // SDK internally with zero constructor dependencies (Rule R37).
   const metricsService = new MetricsService();
 
+  // ─── Step 6b: Observability Wiring (Rule R37) ────────────────────────────
+  // Wire Prisma query events → MetricsService.recordDbQuery() so that
+  // db_query_duration_seconds metrics appear in Prometheus output.
+  // Prisma emits 'query' events because createPrismaClient() configures
+  // log: [{ emit: 'event', level: 'query' }].
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any -- Prisma $on generic requires log config type parameter
+  (prisma as any).$on('query', (e: Prisma.QueryEvent) => {
+    // Extract the SQL operation type from the query string (e.g., SELECT, INSERT)
+    const operationMatch = e.query.match(/^\s*(SELECT|INSERT|UPDATE|DELETE|BEGIN|COMMIT|ROLLBACK)/i);
+    const operation = operationMatch ? operationMatch[1].toLowerCase() : 'unknown';
+    metricsService.recordDbQuery({ operation, durationMs: e.duration });
+  });
+
+  // Wire BullMQ job enqueue metrics → MetricsService so that
+  // bullmq_jobs_total and bullmq_queue_depth appear in Prometheus output.
+  queueProvider.setMetricsService(metricsService);
+
   // ─── Step 7: Controller Construction (Rule R16) ──────────────────────────
   // Controllers are thin delegation layers: parse request → validate input
   // via Zod (Rule R31) → call service method → format response. They
@@ -341,6 +363,12 @@ async function bootstrap(): Promise<void> {
   const pinoHttpMiddleware = pinoHttp({
     logger: loggerProvider.createLogger('http'),
     autoLogging: true,
+    // R29 Fix (Issue 2): Use the correlation ID assigned by the correlation-id
+    // middleware as the pino-http request ID so it appears top-level in every
+    // "request completed" log entry (as `req.id`). Falls back to a new UUID
+    // for edge cases where the correlation-id middleware has not yet run.
+    genReqId: (req) =>
+      (req as unknown as { correlationId?: string }).correlationId || randomUUID(),
     customLogLevel: (_req, res, err) => {
       if (res.statusCode >= 500 || err) return 'error';
       if (res.statusCode >= 400) return 'warn';
@@ -475,10 +503,12 @@ async function bootstrap(): Promise<void> {
 // ─── Entry Point ─────────────────────────────────────────────────────────────
 // Invoke bootstrap. If ANY step fails (env validation, DB connection, Redis
 // connection, provider initialization, etc.), the error is caught and the
-// process exits with status 1. console.error is the only fallback since the
-// Pino logger may not yet be initialized at the point of failure (R28 exception).
+// process exits with status 1. crashLogger (minimal Pino) is used so that
+// even fatal bootstrap errors produce structured JSON output (R28 full compliance).
 bootstrap().catch((err: unknown) => {
-  // eslint-disable-next-line no-console -- R28 exception: logger may not be initialized at failure point
-  console.error('Fatal error during bootstrap:', err);
+  crashLogger.fatal(
+    { err: err instanceof Error ? err.message : String(err) },
+    'Fatal error during bootstrap',
+  );
   process.exit(1);
 });

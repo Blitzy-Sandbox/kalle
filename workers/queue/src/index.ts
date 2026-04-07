@@ -276,8 +276,24 @@ function registerWorkerEvents(worker: Worker, logger: pino.Logger): void {
     );
   });
 
+  // Error log throttling: suppress identical errors for 30 seconds after
+  // the first occurrence to prevent log flooding during Redis outages (Issue 10).
+  let lastErrorMessage = '';
+  let lastErrorTime = 0;
+  const ERROR_THROTTLE_MS = 30_000;
+
   worker.on('error', (err) => {
-    logger.error({ error: err.message }, 'Worker error');
+    const now = Date.now();
+    const msg = err.message || String(err);
+
+    // If the same error message repeats within the throttle window, skip it
+    if (msg === lastErrorMessage && now - lastErrorTime < ERROR_THROTTLE_MS) {
+      return;
+    }
+
+    lastErrorMessage = msg;
+    lastErrorTime = now;
+    logger.error({ error: msg }, 'Worker error');
   });
 }
 
@@ -471,8 +487,23 @@ async function main(): Promise<void> {
     logger.info('Redis connection established');
   });
 
+  // Redis connection error handler with throttling to prevent log flooding
+  // during sustained outages (Issue 10). Shares the same deduplication approach
+  // as the worker error handler — only logs the first occurrence within a
+  // 30-second window for each distinct error message.
+  let lastRedisErrorMsg = '';
+  let lastRedisErrorTime = 0;
+  const REDIS_ERROR_THROTTLE_MS = 30_000;
+
   redisConnection.on('error', (err) => {
-    logger.error({ error: err.message }, 'Redis connection error');
+    const now = Date.now();
+    const msg = err.message || String(err);
+    if (msg === lastRedisErrorMsg && now - lastRedisErrorTime < REDIS_ERROR_THROTTLE_MS) {
+      return;
+    }
+    lastRedisErrorMsg = msg;
+    lastRedisErrorTime = now;
+    logger.error({ error: msg }, 'Redis connection error');
   });
 
   await redisConnection.connect();

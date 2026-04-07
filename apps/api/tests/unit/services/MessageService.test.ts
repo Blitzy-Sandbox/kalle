@@ -260,6 +260,7 @@ describe('MessageService', () => {
       expect(mockQueue.enqueue).not.toHaveBeenCalledWith(
         'message-fanout',
         expect.anything(),
+        expect.anything(),
       );
     });
 
@@ -280,6 +281,7 @@ describe('MessageService', () => {
           senderId: 'user-1',
           recipientIds: ['user-2', 'user-3'],
         }),
+        expect.any(Object),
       );
     });
 
@@ -297,6 +299,7 @@ describe('MessageService', () => {
       expect(mockQueue.enqueue).toHaveBeenCalledWith(
         'link-preview',
         expect.objectContaining({ messageId: 'msg-1', conversationId: 'conv-1' }),
+        expect.any(Object),
       );
     });
 
@@ -305,6 +308,7 @@ describe('MessageService', () => {
 
       expect(mockQueue.enqueue).not.toHaveBeenCalledWith(
         'link-preview',
+        expect.anything(),
         expect.anything(),
       );
     });
@@ -317,6 +321,7 @@ describe('MessageService', () => {
       expect(mockConversationRepo.getParticipantIds).not.toHaveBeenCalled();
       expect(mockQueue.enqueue).toHaveBeenCalledWith(
         'message-fanout',
+        expect.anything(),
         expect.anything(),
       );
     });

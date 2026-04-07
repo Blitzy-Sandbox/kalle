@@ -61,8 +61,15 @@ const MockMeterProvider = jest.fn().mockImplementation(() => ({
   getMeter: mockGetMeter,
 }));
 
+/**
+ * Mock PeriodicExportingMetricReader — used when OTEL_EXPORTER_OTLP_ENDPOINT
+ * is set to push metrics to the OTel Collector (Issue 8 fix).
+ */
+const MockPeriodicExportingMetricReader = jest.fn().mockImplementation(() => ({}));
+
 jest.mock('@opentelemetry/sdk-metrics', () => ({
   MeterProvider: MockMeterProvider,
+  PeriodicExportingMetricReader: MockPeriodicExportingMetricReader,
 }));
 
 /**
@@ -98,15 +105,38 @@ jest.mock('@opentelemetry/exporter-prometheus', () => ({
 }));
 
 /**
+ * Mock OTLPMetricExporter — prevents the real exporter (and its transitive
+ * @opentelemetry/core dependency that needs createContextKey) from loading.
+ * The service conditionally creates this when OTEL_EXPORTER_OTLP_ENDPOINT
+ * is set (Issue 8 — OTel Collector integration fix).
+ */
+const MockOTLPMetricExporter = jest.fn().mockImplementation(() => ({}));
+jest.mock('@opentelemetry/exporter-metrics-otlp-http', () => ({
+  OTLPMetricExporter: MockOTLPMetricExporter,
+}));
+
+/**
+ * Mock Resource — prevents the real @opentelemetry/resources from loading.
+ * The service creates a Resource with service.name and service.version
+ * (Issue 7 — explicit service_name in target_info fix).
+ */
+const MockResource = jest.fn().mockImplementation(() => ({}));
+jest.mock('@opentelemetry/resources', () => ({
+  Resource: MockResource,
+}));
+
+/**
  * Mock the OpenTelemetry global API to intercept `metrics.setGlobalMeterProvider`.
  * The service calls this during construction — we just need to ensure it does
- * not throw, and we can verify it was called.
+ * not throw, and we can verify it was called. `createContextKey` is included
+ * as a safety net for any transitive dependencies that reference it.
  */
 const mockSetGlobalMeterProvider = jest.fn();
 jest.mock('@opentelemetry/api', () => ({
   metrics: {
     setGlobalMeterProvider: mockSetGlobalMeterProvider,
   },
+  createContextKey: jest.fn((name: string) => Symbol(name)),
 }));
 
 /* ────────────────────────────────────────────────────────────────────────────

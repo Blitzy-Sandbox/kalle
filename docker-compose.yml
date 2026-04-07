@@ -118,7 +118,7 @@ services:
       # Migrations require DDL privileges that the app role does not have.
       MIGRATION_DATABASE_URL: postgresql://${PGUSER:-kalle}:${PGPASSWORD:-kalle_dev_password}@postgres:${PGPORT:-5432}/${PGDATABASE:-kalle_db}?schema=public
       REDIS_URL: redis://redis:6379
-      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
       UPLOAD_DIR: /app/uploads
     volumes:
       # Dev hot reload mounts (R40)
@@ -274,6 +274,7 @@ services:
     restart: unless-stopped
     ports:
       - "4317:4317"   # gRPC OTLP receiver
+      - "4318:4318"   # HTTP  OTLP receiver (used by API's OTLPMetricExporter)
       - "8889:8889"   # Prometheus metrics exporter
     volumes:
       - ./otel-collector-config.yml:/etc/otelcol/config.yaml:ro

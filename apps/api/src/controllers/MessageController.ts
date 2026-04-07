@@ -144,6 +144,7 @@ export class MessageController {
       // SendMessageParams which extends SendMessageDTO with sender context.
       // req.user.email is used as senderName since the auth middleware's
       // AuthenticatedUser provides userId and email.
+      // R29: Thread correlation ID to downstream BullMQ jobs for tracing
       const message: MessageResponse = await this.messageService.sendMessage({
         senderId: userId,
         senderName: req.user!.email,
@@ -153,6 +154,7 @@ export class MessageController {
         replyToMessageId: body.replyToMessageId,
         mediaId: body.mediaId,
         clientMessageId: body.clientMessageId,
+        correlationId: req.correlationId,
       });
 
       res.status(201).json({ data: message });

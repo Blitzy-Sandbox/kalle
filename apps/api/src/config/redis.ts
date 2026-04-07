@@ -34,14 +34,11 @@ import type { RedisOptions } from 'ioredis';
 // Constants
 // =============================================================================
 
-/** Maximum number of reconnection attempts before giving up entirely. */
-const MAX_RECONNECT_ATTEMPTS = 5;
-
 /** Base delay (ms) between reconnection attempts. Multiplied by attempt number. */
 const RECONNECT_BASE_DELAY_MS = 200;
 
 /** Upper bound (ms) for the computed reconnection delay. */
-const RECONNECT_MAX_DELAY_MS = 3000;
+const RECONNECT_MAX_DELAY_MS = 5000;
 
 /** Maximum retries per individual Redis command before throwing. */
 const MAX_RETRIES_PER_REQUEST = 3;
@@ -96,18 +93,17 @@ export function createRedisClient(
 ): Redis {
   const client = new Redis(redisUrl, {
     // ------------------------------------------------------------------
-    // Reconnection strategy: exponential backoff with bounded retries
+    // Reconnection strategy: exponential backoff WITHOUT permanent give-up
     // ------------------------------------------------------------------
-    // Returns the delay in ms before the next reconnect attempt, or `null`
-    // to stop retrying entirely (fail-fast after MAX_RECONNECT_ATTEMPTS).
+    // Returns the delay in ms before the next reconnect attempt.
     //
-    // Progression: 200ms → 400ms → 600ms → 800ms → 1000ms (capped at 3s).
-    // After attempt 5, returns null to surface the error immediately.
+    // Never returns `null` — ioredis will keep retrying indefinitely so
+    // the health check recovers automatically once Redis comes back,
+    // without requiring an API container restart (Issue 4 fix).
+    //
+    // Progression: 200ms → 400ms → … → capped at 5 000ms.
     // ------------------------------------------------------------------
-    retryStrategy(times: number): number | null {
-      if (times > MAX_RECONNECT_ATTEMPTS) {
-        return null;
-      }
+    retryStrategy(times: number): number {
       return Math.min(times * RECONNECT_BASE_DELAY_MS, RECONNECT_MAX_DELAY_MS);
     },
 
