@@ -115,9 +115,9 @@ export const envSchema = z.object({
 
   // === Logging ===
   LOG_LEVEL: z
-    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
+    .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent'])
     .default('info')
-    .describe('Pino log level'),
+    .describe('Pino log level — "silent" suppresses all output (useful for testing)'),
 
   // === OpenTelemetry ===
   OTEL_EXPORTER_OTLP_ENDPOINT: z

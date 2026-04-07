@@ -176,13 +176,16 @@ async function uploadPreKeyBundle(
   const res: APIResponse = await request.post(`${KEYS_URL}/bundle`, {
     headers: { Authorization: `Bearer ${token}` },
     data: {
-      identityKey: Buffer.from('identity-key-placeholder-32bytes!').toString('base64'),
+      identityKey: {
+        publicKey: Buffer.from('identity-key-placeholder-32bytes!').toString('base64'),
+      },
       signedPreKey: {
         keyId: 1,
         publicKey: Buffer.from('signed-prekey-placeholder-32byte').toString('base64'),
         signature: Buffer.from(
           'signature-placeholder-64bytes-for-testing-purposes-only-pad!!',
         ).toString('base64'),
+        timestamp: Date.now(),
       },
       preKeys: Array.from({ length: 10 }, (_, i) => ({
         keyId: i + 1,
@@ -190,6 +193,7 @@ async function uploadPreKeyBundle(
           `prekey-placeholder-${String(i).padStart(13, '0')}-32b`,
         ).toString('base64'),
       })),
+      registrationId: Math.floor(Math.random() * 16380) + 1,
     },
   });
   expect([200, 201]).toContain(res.status());
@@ -447,12 +451,19 @@ async function waitForMessageText(
 // TEST SUITE
 // ============================================================================
 
+/** Standalone API request context created in beforeAll for setup/teardown. */
+let _setupApiCtx: APIRequestContext;
+
 test.describe('Offline-to-Online Reconciliation', () => {
   // --------------------------------------------------------------------------
   // Phase 2 — Suite Setup / Teardown
   // --------------------------------------------------------------------------
 
-  test.beforeAll(async ({ request }) => {
+  test.beforeAll(async ({ playwright }) => {
+    // Create a standalone API request context (avoids Playwright fixture reuse restriction)
+    const request = await playwright.request.newContext({ baseURL: API_BASE_URL });
+    _setupApiCtx = request;
+
     testRunId = `sync-${Date.now()}`;
 
     // Verify the API server is reachable
@@ -527,7 +538,8 @@ test.describe('Offline-to-Online Reconciliation', () => {
     );
   });
 
-  test.afterAll(async ({ request }) => {
+  test.afterAll(async () => {
+    const request = _setupApiCtx;
     // Best-effort cleanup: revoke tokens for all test users
     if (userA?.tokens) {
       await revokeToken(request, userA.tokens.accessToken, userA.tokens.refreshToken);
@@ -538,6 +550,8 @@ test.describe('Offline-to-Online Reconciliation', () => {
     if (userC?.tokens) {
       await revokeToken(request, userC.tokens.accessToken, userC.tokens.refreshToken);
     }
+    // Dispose the standalone API context created in beforeAll
+    await _setupApiCtx?.dispose();
   });
 
   // --------------------------------------------------------------------------

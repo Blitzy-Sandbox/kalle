@@ -389,7 +389,10 @@ test.describe('Group Messaging Lifecycle', () => {
   // Phase 2: Multi-User Setup (test.beforeAll)
   // ─────────────────────────────────────────────────────────────────────────
 
-  test.beforeAll(async ({ request }) => {
+  test.beforeAll(async () => {
+    // Create a standalone API context for setup (avoids Playwright fixture reuse restriction)
+    const request = await playwrightRequest.newContext({ baseURL: API_BASE_URL });
+
     // Register 4 unique test users via the live REST API (R5: no mocks)
     userA = await registerUser(
       request,
@@ -458,6 +461,9 @@ test.describe('Group Messaging Lifecycle', () => {
         'Content-Type': 'application/json',
       },
     });
+
+    // Dispose the setup context — per-user contexts are used for tests
+    await request.dispose();
   });
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -1448,11 +1454,12 @@ test.describe('Group Messaging Lifecycle', () => {
   // Phase 9: Cleanup (test.afterAll)
   // ─────────────────────────────────────────────────────────────────────────
 
-  test.afterAll(async ({ request }) => {
-    // Revoke tokens for all 4 test users
+  test.afterAll(async () => {
+    // Revoke tokens for all 4 test users using a standalone context
+    const cleanupCtx = await playwrightRequest.newContext({ baseURL: API_BASE_URL });
     for (const user of [userA, userB, userC, userD]) {
       if (!user?.accessToken) continue;
-      await request
+      await cleanupCtx
         .post(`${AUTH_URL}/revoke`, {
           headers: {
             Authorization: `Bearer ${user.accessToken}`,
@@ -1464,6 +1471,7 @@ test.describe('Group Messaging Lifecycle', () => {
           /* best-effort cleanup — ignore failures */
         });
     }
+    await cleanupCtx.dispose();
 
     // Dispose per-user API contexts
     for (const ctx of [apiCtxA, apiCtxB, apiCtxC, apiCtxD]) {

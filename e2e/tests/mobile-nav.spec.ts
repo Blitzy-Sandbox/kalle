@@ -194,7 +194,7 @@ async function createConversation(
 ): Promise<string> {
   const res: APIResponse = await request.post(CONVERSATIONS_URL, {
     headers: { Authorization: `Bearer ${accessToken}` },
-    data: { participantIds, type: 'direct' },
+    data: { participantIds, type: 'DIRECT' },
   });
 
   if (!res.ok()) {
@@ -294,6 +294,9 @@ async function loginViaStorage(page: Page, user: UserData): Promise<void> {
 // Test Suite
 // ---------------------------------------------------------------------------
 
+/** Standalone API request context created in beforeAll for setup/teardown. */
+let _setupApiCtx: APIRequestContext;
+
 test.describe('Mobile Stack Navigation', () => {
   /**
    * All tests in this suite run at the iPhone X viewport (375×812) matching
@@ -305,7 +308,11 @@ test.describe('Mobile Stack Navigation', () => {
   // SETUP — Register users, create conversation, populate messages
   // -----------------------------------------------------------------------
 
-  test.beforeAll(async ({ request }) => {
+  test.beforeAll(async ({ playwright }) => {
+    // Create a standalone API request context (avoids Playwright fixture reuse restriction)
+    const request = await playwright.request.newContext({ baseURL: API_BASE_URL });
+    _setupApiCtx = request;
+
     testRunId = `mobile-nav-${Date.now()}`;
 
     // Verify the backend API is healthy before running tests
@@ -367,7 +374,8 @@ test.describe('Mobile Stack Navigation', () => {
   // TEARDOWN — Revoke tokens for test users
   // -----------------------------------------------------------------------
 
-  test.afterAll(async ({ request }) => {
+  test.afterAll(async () => {
+    const request = _setupApiCtx;
     const revocations: Promise<void>[] = [];
 
     if (userA?.tokens?.accessToken) {
@@ -386,6 +394,8 @@ test.describe('Mobile Stack Navigation', () => {
     }
 
     await Promise.all(revocations);
+    // Dispose the standalone API context created in beforeAll
+    await _setupApiCtx?.dispose();
   });
 
   // -----------------------------------------------------------------------

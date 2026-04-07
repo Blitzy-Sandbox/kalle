@@ -29,7 +29,7 @@
  * @see Figma Screen 10 — WhatsApp Status composer (colored background)
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect, type APIRequestContext } from '@playwright/test';
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -328,6 +328,9 @@ async function createConversation(
 // Test Suite: Story/Status Lifecycle
 // ============================================================================
 
+/** Standalone API request context created in beforeAll for setup/teardown. */
+let _setupApiCtx: APIRequestContext;
+
 test.describe('Story/Status Lifecycle', () => {
   /**
    * Use serial mode because later tests depend on state from earlier tests
@@ -339,7 +342,11 @@ test.describe('Story/Status Lifecycle', () => {
   // Phase 2: Test Setup
   // ─────────────────────────────────────────────────────────────────────────
 
-  test.beforeAll(async ({ request }) => {
+  test.beforeAll(async ({ playwright }) => {
+    // Create a standalone API request context (avoids Playwright fixture reuse restriction)
+    const request = await playwright.request.newContext({ baseURL: API_BASE_URL });
+    _setupApiCtx = request;
+
     const password = 'StoryTest123!';
 
     // Register 3 unique test users for multi-user story testing
@@ -1143,7 +1150,9 @@ test.describe('Story/Status Lifecycle', () => {
   // Phase 11: Cleanup
   // ─────────────────────────────────────────────────────────────────────────
 
-  test.afterAll(async ({ request }) => {
+  test.afterAll(async () => {
+    const request = _setupApiCtx;
+
     // Clean up: delete all stories created during tests
     for (const entry of createdStoryIds) {
       try {
@@ -1170,5 +1179,8 @@ test.describe('Story/Status Lifecycle', () => {
         // Ignore revocation failures during cleanup
       }
     }
+
+    // Dispose the standalone API context created in beforeAll
+    await _setupApiCtx?.dispose();
   });
 });

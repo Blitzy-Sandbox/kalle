@@ -175,6 +175,7 @@ export default function MainLayout({
     return () => {
       clearPresence();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ---------------------------------------------------------------------------

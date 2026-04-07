@@ -309,7 +309,7 @@ const MessageBubble: React.FC<MessageBubbleProps> = ({
       data-message-id={id}
       role="article"
       aria-label={ariaLabel}
-      aria-haspopup={onLongPress ? 'menu' : undefined}
+      aria-roledescription={onLongPress ? 'message with context menu' : undefined}
     >
       <div
         ref={bubbleRef}

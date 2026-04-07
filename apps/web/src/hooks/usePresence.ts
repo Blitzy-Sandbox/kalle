@@ -237,9 +237,10 @@ export function usePresence(
    * stale timer callbacks after the component unmounts.
    */
   useEffect(() => {
+    const timers = typingDebounceRef.current;
     return () => {
-      typingDebounceRef.current.forEach((timer) => clearTimeout(timer));
-      typingDebounceRef.current.clear();
+      timers.forEach((timer) => clearTimeout(timer));
+      timers.clear();
     };
   }, []);
 

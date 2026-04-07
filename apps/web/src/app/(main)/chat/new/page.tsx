@@ -360,7 +360,7 @@ export default function NewConversationPage() {
       )}
 
       {/* ── Results / Empty State ──────────────────────────────── */}
-      <div className="flex-1 overflow-y-auto" role="list" aria-label="Search results">
+      <div className="flex-1 overflow-y-auto" role="listbox" aria-label="Search results">
         {isSearching && (
           <div className="flex items-center justify-center py-8">
             <div className="animate-spin rounded-full h-6 w-6 border-b-2 border-blue-ios" />
@@ -396,7 +396,7 @@ export default function NewConversationPage() {
                   ? 'bg-blue-ios/5'
                   : 'hover:bg-black/5 active:bg-black/10'
               } ${isCreating ? 'opacity-50 cursor-default' : ''}`}
-              role="listitem"
+              role="option"
               aria-selected={isGroupMode ? isUserSelected(user.id) : undefined}
               aria-label={`${isGroupMode ? (isUserSelected(user.id) ? 'Deselect' : 'Select') : 'Start conversation with'} ${user.displayName}`}
             >

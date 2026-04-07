@@ -279,14 +279,12 @@ beforeAll(async () => {
       metricsService: metricsServiceStub as never,
     });
   } catch (error: unknown) {
-    // Infrastructure is not available — tests will be skipped gracefully
-    const message =
-      error instanceof Error ? error.message : String(error);
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[auth.test] Infrastructure not available — tests will be skipped. Reason: ${message}`,
-    );
     infrastructureAvailable = false;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `[auth.test] Infrastructure not available: ${message}. ` +
+      'Start PostgreSQL and Redis before running integration tests.',
+    );
   }
 }, 30_000);
 
@@ -315,20 +313,7 @@ afterAll(async () => {
   }
 });
 
-// ============================================================================
-// Conditional execution helper
-// ============================================================================
-
-/**
- * Wraps `it` to skip tests when infrastructure is unavailable.
- * Uses standard Jest `it`/`it.skip` mechanism.
- */
-const conditionalIt = (...args: Parameters<typeof it>) => {
-  if (infrastructureAvailable) {
-    return it(...args);
-  }
-  return it.skip(...args);
-};
+// conditionalIt removed — tests now use standard `it()` with beforeEach guard
 
 /**
  * Helper to register a user and return the full response.
@@ -382,7 +367,7 @@ async function registerAndLogin(
 // ============================================================================
 
 describe('User Registration', () => {
-  conditionalIt(
+  it(
     'should register a new user (POST /api/v1/auth/register → 201)',
     async () => {
       const res = await request(app)
@@ -426,7 +411,7 @@ describe('User Registration', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject duplicate email registration → 409 CONFLICT',
     async () => {
       // Register first user
@@ -451,7 +436,7 @@ describe('User Registration', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject invalid email format → 400 VALIDATION_ERROR (R31)',
     async () => {
       const res = await request(app)
@@ -471,7 +456,7 @@ describe('User Registration', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject short password → 400 VALIDATION_ERROR (R31)',
     async () => {
       const res = await request(app)
@@ -491,7 +476,7 @@ describe('User Registration', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject missing displayName → 400 VALIDATION_ERROR (R31)',
     async () => {
       const res = await request(app)
@@ -510,7 +495,7 @@ describe('User Registration', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject empty request body → 400 VALIDATION_ERROR',
     async () => {
       const res = await request(app)
@@ -532,7 +517,7 @@ describe('User Registration', () => {
 // ============================================================================
 
 describe('User Login', () => {
-  conditionalIt(
+  it(
     'should login with valid credentials (POST /api/v1/auth/login → 200)',
     async () => {
       // Register user first
@@ -568,7 +553,7 @@ describe('User Login', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject invalid password → 401 AUTHENTICATION_ERROR',
     async () => {
       // Register user first
@@ -590,7 +575,7 @@ describe('User Login', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject non-existent email → 401 AUTHENTICATION_ERROR',
     async () => {
       const res = await request(app)
@@ -611,7 +596,7 @@ describe('User Login', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject login with missing email → 400 VALIDATION_ERROR',
     async () => {
       const res = await request(app)
@@ -628,7 +613,7 @@ describe('User Login', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject login with missing password → 400 VALIDATION_ERROR',
     async () => {
       const res = await request(app)
@@ -651,7 +636,7 @@ describe('User Login', () => {
 // ============================================================================
 
 describe('Token Refresh', () => {
-  conditionalIt(
+  it(
     'should refresh tokens with rotated refresh token (POST /api/v1/auth/refresh → 200)',
     async () => {
       // Register and login to get initial tokens
@@ -689,7 +674,7 @@ describe('Token Refresh', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject invalid refresh token → 401',
     async () => {
       const res = await request(app)
@@ -704,7 +689,7 @@ describe('Token Refresh', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject expired refresh token → 401',
     async () => {
       // Register and login to get tokens
@@ -729,7 +714,7 @@ describe('Token Refresh', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject old refresh token after rotation',
     async () => {
       // Register and login to get initial tokens
@@ -761,7 +746,7 @@ describe('Token Refresh', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject refresh with missing refreshToken field → 400',
     async () => {
       const res = await request(app)
@@ -782,7 +767,7 @@ describe('Token Refresh', () => {
 // ============================================================================
 
 describe('Session Revocation (R33)', () => {
-  conditionalIt(
+  it(
     'should revoke single session (POST /api/v1/auth/revoke → 200)',
     async () => {
       const { accessToken, refreshToken } = await registerAndLogin();
@@ -801,7 +786,7 @@ describe('Session Revocation (R33)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should deny access with revoked token (R33 Redis blacklist)',
     async () => {
       const { accessToken, refreshToken } = await registerAndLogin();
@@ -834,7 +819,7 @@ describe('Session Revocation (R33)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should revoke all sessions (POST /api/v1/auth/revoke-all → 200)',
     async () => {
       // Register user
@@ -869,7 +854,7 @@ describe('Session Revocation (R33)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should deny access on ALL sessions after revoke-all (R33)',
     async () => {
       // Register user
@@ -910,7 +895,7 @@ describe('Session Revocation (R33)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should require authentication for revoke endpoint',
     async () => {
       const res = await request(app)
@@ -924,7 +909,7 @@ describe('Session Revocation (R33)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should require authentication for revoke-all endpoint',
     async () => {
       const res = await request(app)
@@ -943,7 +928,7 @@ describe('Session Revocation (R33)', () => {
 // ============================================================================
 
 describe('JWT Middleware (R9)', () => {
-  conditionalIt(
+  it(
     'should return 401 when Authorization header is missing',
     async () => {
       const res = await request(app)
@@ -958,7 +943,7 @@ describe('JWT Middleware (R9)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 401 for malformed JWT',
     async () => {
       const res = await request(app)
@@ -973,7 +958,7 @@ describe('JWT Middleware (R9)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 401 for Bearer prefix missing',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -991,7 +976,7 @@ describe('JWT Middleware (R9)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should allow valid JWT to access protected endpoints',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -1013,7 +998,7 @@ describe('JWT Middleware (R9)', () => {
 
   // --- Public Endpoints (R9) ---
 
-  conditionalIt(
+  it(
     'should allow POST /api/v1/auth/register without auth',
     async () => {
       const res = await request(app)
@@ -1029,7 +1014,7 @@ describe('JWT Middleware (R9)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should allow POST /api/v1/auth/login without auth',
     async () => {
       // Register first
@@ -1047,7 +1032,7 @@ describe('JWT Middleware (R9)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should allow GET /api/v1/health without auth',
     async () => {
       const res = await request(app)
@@ -1066,7 +1051,7 @@ describe('JWT Middleware (R9)', () => {
 // ============================================================================
 
 describe('Standardized Error Responses (R22)', () => {
-  conditionalIt(
+  it(
     'should return consistent error shape for 400 VALIDATION_ERROR',
     async () => {
       const res = await request(app)
@@ -1084,7 +1069,7 @@ describe('Standardized Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return consistent error shape for 401 AUTHENTICATION_ERROR',
     async () => {
       const res = await request(app)
@@ -1105,7 +1090,7 @@ describe('Standardized Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return consistent error shape for 409 CONFLICT',
     async () => {
       await registerUser();
@@ -1129,7 +1114,7 @@ describe('Standardized Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should include field-level details for validation errors (R31)',
     async () => {
       // Send multiple invalid fields to trigger detailed validation errors
@@ -1152,7 +1137,7 @@ describe('Standardized Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should never expose error stack traces in production-style responses',
     async () => {
       const res = await request(app)
@@ -1177,7 +1162,7 @@ describe('Standardized Error Responses (R22)', () => {
 // ============================================================================
 
 describe('API Versioning (R30)', () => {
-  conditionalIt(
+  it(
     'should serve auth endpoints under /api/v1/ prefix',
     async () => {
       const res = await request(app)
@@ -1193,7 +1178,7 @@ describe('API Versioning (R30)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 404 for endpoints without /api/v1/ prefix',
     async () => {
       // Missing /api/v1/ prefix entirely
@@ -1209,7 +1194,7 @@ describe('API Versioning (R30)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 404 for unversioned /api/ prefix',
     async () => {
       // /api/ without version
@@ -1225,7 +1210,7 @@ describe('API Versioning (R30)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 404 for invalid version prefix',
     async () => {
       // /api/v2/ (wrong version)

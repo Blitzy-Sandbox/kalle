@@ -116,7 +116,7 @@ export default defineConfig({
      * stack (per AAP §0.4.6). All page.goto('/path') calls resolve
      * relative to this URL.
      */
-    baseURL: 'http://localhost:3000',
+    baseURL: process.env.BASE_URL ?? 'http://localhost:3000',
 
     /**
      * Trace capture strategy.

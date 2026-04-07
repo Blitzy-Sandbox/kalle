@@ -341,13 +341,12 @@ beforeAll(async () => {
     // Spy on QueueProvider.enqueue for verifying BullMQ job triggers (R14, R18)
     enqueueSpy = jest.spyOn(queueProvider, 'enqueue');
   } catch (error: unknown) {
-    const message =
-      error instanceof Error ? error.message : String(error);
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[group.test] Infrastructure not available — tests will be skipped. Reason: ${message}`,
-    );
     infrastructureAvailable = false;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `[group.test] Infrastructure not available: ${message}. ` +
+      'Start PostgreSQL and Redis before running integration tests.',
+    );
   }
 }, 30_000);
 
@@ -384,19 +383,7 @@ afterAll(async () => {
   }
 });
 
-// =============================================================================
-// Conditional Execution Helper
-// =============================================================================
-
-/**
- * Wraps `it` to skip tests when infrastructure is unavailable.
- */
-const conditionalIt = (...args: Parameters<typeof it>): ReturnType<typeof it> => {
-  if (infrastructureAvailable) {
-    return it(...args);
-  }
-  return it.skip(...args);
-};
+// conditionalIt removed — tests now use standard `it()` with beforeEach guard
 
 // =============================================================================
 // Auth & Data Helpers
@@ -488,7 +475,7 @@ async function createDirect(
 // =============================================================================
 
 describe('Group Creation', () => {
-  conditionalIt(
+  it(
     'should create a group conversation (POST /api/v1/conversations → 201)',
     async () => {
       // Register 3 test users
@@ -556,7 +543,7 @@ describe('Group Creation', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should require at least 2 other participants for a group (R31)',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -580,7 +567,7 @@ describe('Group Creation', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should require groupName for GROUP type (R31)',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -609,7 +596,7 @@ describe('Group Creation', () => {
 // =============================================================================
 
 describe('Add Participant (R14)', () => {
-  conditionalIt(
+  it(
     'should add a participant to a group (POST /api/v1/conversations/:id/members → 200)',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -649,7 +636,7 @@ describe('Add Participant (R14)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should trigger sender-key-distribution job on member add (R14)',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -683,7 +670,7 @@ describe('Add Participant (R14)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject non-admin adding members → 403 (R22)',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -710,7 +697,7 @@ describe('Add Participant (R14)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject adding a user who is already a member → 409 (R22)',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -742,7 +729,7 @@ describe('Add Participant (R14)', () => {
 // =============================================================================
 
 describe('Remove Participant (R14)', () => {
-  conditionalIt(
+  it(
     'should remove participant from group (DELETE /api/v1/conversations/:id/members/:userId → 200)',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -782,7 +769,7 @@ describe('Remove Participant (R14)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should trigger sender-key-distribution job with key rotation on member removal (R14)',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -816,7 +803,7 @@ describe('Remove Participant (R14)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject non-admin removing members → 403 (R22)',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -843,7 +830,7 @@ describe('Remove Participant (R14)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should allow a member to leave the group (self-remove)',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -884,7 +871,7 @@ describe('Remove Participant (R14)', () => {
 // =============================================================================
 
 describe('Admin Management', () => {
-  conditionalIt(
+  it(
     'should add a participant directly as ADMIN via role parameter',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -918,7 +905,7 @@ describe('Admin Management', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should not allow non-admin to add members with ADMIN role → 403',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -945,7 +932,7 @@ describe('Admin Management', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should verify group has admin after creation',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -969,7 +956,7 @@ describe('Admin Management', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should allow an admin added as ADMIN to also manage members',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -1018,7 +1005,7 @@ describe('Admin Management', () => {
 // =============================================================================
 
 describe('Fan-Out via Queue (R18)', () => {
-  conditionalIt(
+  it(
     'should trigger BullMQ message-fanout job for group with 3+ participants',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -1058,7 +1045,7 @@ describe('Fan-Out via Queue (R18)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should NOT trigger message-fanout for 1:1 DIRECT conversation',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -1100,7 +1087,7 @@ describe('Fan-Out via Queue (R18)', () => {
 // =============================================================================
 
 describe('Group Error Responses (R22)', () => {
-  conditionalIt(
+  it(
     'should return 401 for unauthenticated group creation',
     async () => {
       const response = await request(app)
@@ -1122,7 +1109,7 @@ describe('Group Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 404 for add member on non-existent conversation',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -1142,7 +1129,7 @@ describe('Group Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 401 for unauthenticated member add',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -1167,7 +1154,7 @@ describe('Group Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 400 for invalid UUID in path parameter',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -1186,7 +1173,7 @@ describe('Group Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return error with standardised shape for all failures (R22)',
     async () => {
       // Send a request guaranteed to fail: no auth, no body
@@ -1206,7 +1193,7 @@ describe('Group Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 404 for remove member on non-existent conversation',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -1233,7 +1220,7 @@ describe('Group Error Responses (R22)', () => {
 // =============================================================================
 
 describe('Group Edge Cases', () => {
-  conditionalIt(
+  it(
     'should use /api/v1/ prefix for all endpoints (R30)',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -1266,7 +1253,7 @@ describe('Group Edge Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should handle adding a non-existent user to group → 404',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -1293,7 +1280,7 @@ describe('Group Edge Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return audit log entries for group membership changes (R32)',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -1355,7 +1342,7 @@ describe('Group Edge Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should get conversation details for group (GET /api/v1/conversations/:id)',
     async () => {
       const alice = await registerAndLogin(ALICE);
@@ -1384,7 +1371,7 @@ describe('Group Edge Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should not allow non-participant to view group details → 403',
     async () => {
       const alice = await registerAndLogin(ALICE);

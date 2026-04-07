@@ -168,13 +168,16 @@ async function uploadPreKeyBundle(
   const res: APIResponse = await request.post(`${KEYS_URL}/bundle`, {
     headers: { Authorization: `Bearer ${token}` },
     data: {
-      identityKey: Buffer.from('identity-key-placeholder-32bytes!').toString('base64'),
+      identityKey: {
+        publicKey: Buffer.from('identity-key-placeholder-32bytes!').toString('base64'),
+      },
       signedPreKey: {
         keyId: 1,
         publicKey: Buffer.from('signed-prekey-placeholder-32byte').toString('base64'),
         signature: Buffer.from(
           'signature-placeholder-64bytes-for-testing-purposes-only-pad!!',
         ).toString('base64'),
+        timestamp: Date.now(),
       },
       preKeys: Array.from({ length: 10 }, (_, i) => ({
         keyId: i + 1,
@@ -182,6 +185,7 @@ async function uploadPreKeyBundle(
           `prekey-placeholder-${String(i).padStart(13, '0')}-32b`,
         ).toString('base64'),
       })),
+      registrationId: Math.floor(Math.random() * 16380) + 1,
     },
   });
   expect([200, 201]).toContain(res.status());
@@ -500,6 +504,9 @@ async function setupAuthenticatedSession(
 // TEST SUITE
 // ============================================================================
 
+/** Standalone API request context created in beforeAll for setup/teardown. */
+let _setupApiCtx: APIRequestContext;
+
 test.describe('Client-Side Message Search', () => {
   // Serial mode: tests share server-side state (registered users,
   // conversation) but each test receives a fresh browser context.
@@ -509,7 +516,11 @@ test.describe('Client-Side Message Search', () => {
   // Phase 2 — Suite Setup
   // --------------------------------------------------------------------------
 
-  test.beforeAll(async ({ request }) => {
+  test.beforeAll(async ({ playwright }) => {
+    // Create a standalone API request context (avoids Playwright fixture reuse restriction)
+    const request = await playwright.request.newContext({ baseURL: API_BASE_URL });
+    _setupApiCtx = request;
+
     testRunId = `run-${Date.now()}`;
 
     // 1. Verify the API server is reachable
@@ -546,7 +557,8 @@ test.describe('Client-Side Message Search', () => {
   // Phase 9 — Suite Teardown
   // --------------------------------------------------------------------------
 
-  test.afterAll(async ({ request }) => {
+  test.afterAll(async () => {
+    const request = _setupApiCtx;
     // Best-effort token revocation for both test users
     if (userA?.tokens) {
       await revokeToken(request, userA.tokens.accessToken, userA.tokens.refreshToken);
@@ -554,6 +566,8 @@ test.describe('Client-Side Message Search', () => {
     if (userB?.tokens) {
       await revokeToken(request, userB.tokens.accessToken, userB.tokens.refreshToken);
     }
+    // Dispose the standalone API context created in beforeAll
+    await _setupApiCtx?.dispose();
   });
 
   // ==========================================================================

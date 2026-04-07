@@ -7,6 +7,7 @@ import React, {
   useRef,
   type FC,
 } from 'react';
+import Image from 'next/image';
 import Avatar from '../common/Avatar';
 import { useStoryStore } from '@/stores/storyStore';
 import { useAuthStore } from '@/stores/authStore';
@@ -665,11 +666,13 @@ const StatusViewer: FC<StatusViewerProps> = ({
 
           {/* --- Image story --- */}
           {currentStory.type === 'IMAGE' && currentStory.mediaUrl && (
-            <img
+            <Image
               src={currentStory.mediaUrl}
               alt={`${displayName}'s status`}
               className="w-full h-full object-contain"
               draggable={false}
+              fill
+              unoptimized
             />
           )}
 

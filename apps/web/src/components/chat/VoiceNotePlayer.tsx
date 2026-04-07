@@ -181,6 +181,11 @@ export default function VoiceNotePlayer({
     : formatDuration(duration);
 
   // ── Audio initialization and waveform generation ─────────────────────
+  // The effect intentionally depends only on `audioUrl` because re-creating
+  // the HTMLAudioElement (and its event listeners) every time `onPause` or
+  // `waveformData` changes would interrupt playback. `onPause` is captured
+  // inside the `onEnded` event handler at bind-time and `waveformData` is
+  // synced to bars separately in the next effect.
   useEffect(() => {
     isMountedRef.current = true;
     let cancelled = false;
@@ -277,6 +282,7 @@ export default function VoiceNotePlayer({
         internalBlobUrlRef.current = null;
       }
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [audioUrl]);
 
   // Update waveform bars when prop changes externally

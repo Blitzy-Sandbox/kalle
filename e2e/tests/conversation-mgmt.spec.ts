@@ -517,6 +517,11 @@ async function pollUntil(
 }
 
 // =============================================================================
+// Standalone API context for beforeAll/afterAll (avoids fixture reuse restriction)
+// =============================================================================
+let _setupApiCtx: APIRequestContext;
+
+// =============================================================================
 // Test Suite: Conversation Management
 // =============================================================================
 
@@ -539,7 +544,11 @@ test.describe('Conversation Management', () => {
   // Setup — Register users, create conversations, send seed messages
   // ---------------------------------------------------------------------------
 
-  test.beforeAll(async ({ request }) => {
+  test.beforeAll(async ({ playwright }) => {
+    // Create a standalone API context for setup (avoids Playwright fixture reuse restriction)
+    const request = await playwright.request.newContext({ baseURL: API_BASE_URL });
+    _setupApiCtx = request;
+
     // Register three test users with unique emails
     userA = await registerUser(
       request,
@@ -1318,9 +1327,10 @@ test.describe('Conversation Management', () => {
   // Phase 8: Cleanup
   // ===========================================================================
 
-  test.afterAll(async ({ request }) => {
+  test.afterAll(async () => {
     // Best-effort cleanup: unblock users, unarchive/unmute conversations
     // Failures here should not impact test results
+    const request = _setupApiCtx;
 
     try {
       // Ensure userB is unblocked
@@ -1355,5 +1365,7 @@ test.describe('Conversation Management', () => {
     } catch {
       // Cleanup failures are non-critical — tests already validated behavior
     }
+    // Dispose the standalone API context created in beforeAll
+    await _setupApiCtx?.dispose();
   });
 });

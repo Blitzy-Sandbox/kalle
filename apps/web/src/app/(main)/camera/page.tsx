@@ -140,6 +140,9 @@ export default function CameraPage() {
   useEffect(() => {
     previousTabRef.current = activeTab;
     setActiveTab('camera');
+    // Intentional: run once on mount to capture initial tab and set camera active.
+    // Including activeTab/setActiveTab would cause infinite loops.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ── Camera initialization ─────────────────────────────────────────────────
@@ -149,11 +152,16 @@ export default function CameraPage() {
    * Stops any existing stream before re-initializing to prevent leaked tracks
    * when switching between front/rear cameras.
    */
+  // Keep a stable ref to the current stream to avoid stale closures in callbacks.
+  const streamRef = useRef<MediaStream | null>(null);
+  streamRef.current = stream;
+
   const startCamera = useCallback(async () => {
     try {
       // Stop existing stream tracks before requesting a new one
-      if (stream) {
-        stream.getTracks().forEach((track) => track.stop());
+      const currentStream = streamRef.current;
+      if (currentStream) {
+        currentStream.getTracks().forEach((track) => track.stop());
       }
 
       const mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -186,7 +194,7 @@ export default function CameraPage() {
     if (isAuthenticated) {
       startCamera();
     }
-  }, [facingMode, isAuthenticated]);
+  }, [facingMode, isAuthenticated, startCamera]);
 
   // ── Stream cleanup on unmount ─────────────────────────────────────────────
   useEffect(() => {
@@ -197,8 +205,9 @@ export default function CameraPage() {
 
   // ── Blob URL cleanup on unmount ───────────────────────────────────────────
   useEffect(() => {
+    const urls = blobUrlsRef.current;
     return () => {
-      blobUrlsRef.current.forEach((url) => {
+      urls.forEach((url) => {
         URL.revokeObjectURL(url);
       });
     };
@@ -562,11 +571,12 @@ export default function CameraPage() {
                     role="listitem"
                   >
                     {/* Use unoptimized since blob URLs cannot be optimized by Next.js */}
-                    <img
+                    <Image
                       src={photo}
                       alt={`Recent photo ${index + 1}`}
                       width={81}
                       height={81}
+                      unoptimized
                       className="w-full h-full object-cover"
                     />
                   </div>

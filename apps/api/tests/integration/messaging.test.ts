@@ -326,13 +326,12 @@ beforeAll(async () => {
 
     app = createApp(appDeps);
   } catch (error: unknown) {
-    const message =
-      error instanceof Error ? error.message : String(error);
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[messaging.test] Infrastructure not available — tests will be skipped. Reason: ${message}`,
-    );
     infrastructureAvailable = false;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `[messaging.test] Infrastructure not available: ${message}. ` +
+      'Start PostgreSQL and Redis before running integration tests.',
+    );
   }
 }, 30_000);
 
@@ -382,20 +381,7 @@ afterAll(async () => {
   }
 });
 
-// ============================================================================
-// Conditional execution helper
-// ============================================================================
-
-/**
- * Wraps `it` to skip tests when infrastructure is unavailable.
- * Uses standard Jest `it`/`it.skip` mechanism.
- */
-const conditionalIt = (...args: Parameters<typeof it>) => {
-  if (infrastructureAvailable) {
-    return it(...args);
-  }
-  return it.skip(...args);
-};
+// conditionalIt removed — tests now use standard `it()` with beforeEach guard
 
 // ============================================================================
 // Test Helpers
@@ -471,7 +457,7 @@ async function sendTestMessage(
 // ============================================================================
 
 describe('Send Encrypted Message (R12)', () => {
-  conditionalIt(
+  it(
     'should send a message with ciphertext (POST → 201)',
     async () => {
       const clientMessageId = uuidv4();
@@ -514,7 +500,7 @@ describe('Send Encrypted Message (R12)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should store ONLY ciphertext in database — zero plaintext (R12)',
     async () => {
       const clientMsgId = uuidv4();
@@ -545,7 +531,7 @@ describe('Send Encrypted Message (R12)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should send a reply message with replyToMessageId',
     async () => {
       // Send original message
@@ -567,7 +553,7 @@ describe('Send Encrypted Message (R12)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should allow Bob (participant) to send messages to the conversation',
     async () => {
       const res = await sendTestMessage(bobToken, conversationId);
@@ -585,7 +571,7 @@ describe('Send Encrypted Message (R12)', () => {
 // ============================================================================
 
 describe('Client Message Deduplication (R4)', () => {
-  conditionalIt(
+  it(
     'should deduplicate messages with same clientMessageId',
     async () => {
       const clientMessageId = uuidv4();
@@ -627,7 +613,7 @@ describe('Client Message Deduplication (R4)', () => {
 // ============================================================================
 
 describe('Message Edit (R19)', () => {
-  conditionalIt(
+  it(
     'should edit message within 15-min window — ciphertext replaced (PATCH → 200)',
     async () => {
       // Send original message
@@ -666,7 +652,7 @@ describe('Message Edit (R19)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject edit after 15-minute window (R19)',
     async () => {
       // Send message
@@ -699,7 +685,7 @@ describe('Message Edit (R19)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject edit by non-sender → 403',
     async () => {
       // Alice sends message
@@ -723,7 +709,7 @@ describe('Message Edit (R19)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should NOT retain original ciphertext after edit (R19)',
     async () => {
       const originalCipher = 'original-cipher-text-MUST-NOT-EXIST-base64';
@@ -767,7 +753,7 @@ describe('Message Edit (R19)', () => {
 // ============================================================================
 
 describe('Message Delete — Tombstone (R20)', () => {
-  conditionalIt(
+  it(
     'should soft-delete message — ciphertext nulled, isDeleted=true (DELETE → 200)',
     async () => {
       // Send message
@@ -803,7 +789,7 @@ describe('Message Delete — Tombstone (R20)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject delete by non-sender → 403',
     async () => {
       // Alice sends message
@@ -826,7 +812,7 @@ describe('Message Delete — Tombstone (R20)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should show deleted message as tombstone in message history',
     async () => {
       // Send message, then delete it
@@ -858,7 +844,7 @@ describe('Message Delete — Tombstone (R20)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should be idempotent — deleting an already-deleted message succeeds',
     async () => {
       // Send and delete
@@ -889,7 +875,7 @@ describe('Message Delete — Tombstone (R20)', () => {
 // ============================================================================
 
 describe('Message History', () => {
-  conditionalIt(
+  it(
     'should return paginated message history (GET → 200)',
     async () => {
       // Send 15 messages to have enough for pagination
@@ -948,7 +934,7 @@ describe('Message History', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return messages in serverTimestamp order',
     async () => {
       // Send multiple messages sequentially
@@ -977,7 +963,7 @@ describe('Message History', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return empty data for conversation with no messages',
     async () => {
       const historyRes = await request(app)
@@ -1000,7 +986,7 @@ describe('Message History', () => {
 // ============================================================================
 
 describe('Messaging Error Responses (R22)', () => {
-  conditionalIt(
+  it(
     'should return 401 for unauthenticated message send',
     async () => {
       const res = await request(app)
@@ -1021,7 +1007,7 @@ describe('Messaging Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 400 for missing required fields (R31)',
     async () => {
       // POST with missing ciphertext — should fail Zod validation
@@ -1044,7 +1030,7 @@ describe('Messaging Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 400 for missing clientMessageId (R31)',
     async () => {
       const res = await request(app)
@@ -1064,7 +1050,7 @@ describe('Messaging Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 400 for invalid conversationId format in path',
     async () => {
       const res = await request(app)
@@ -1081,7 +1067,7 @@ describe('Messaging Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 404 for editing non-existent message',
     async () => {
       const fakeMessageId = uuidv4();
@@ -1099,7 +1085,7 @@ describe('Messaging Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 404 for deleting non-existent message',
     async () => {
       const fakeMessageId = uuidv4();
@@ -1112,7 +1098,7 @@ describe('Messaging Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 401 for unauthenticated message history',
     async () => {
       const res = await request(app)
@@ -1123,7 +1109,7 @@ describe('Messaging Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should use /api/v1/ prefix for all message endpoints (R30)',
     async () => {
       // Verify that endpoints without /api/v1/ prefix return 404
@@ -1140,7 +1126,7 @@ describe('Messaging Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return standardized error shape for all errors (R22)',
     async () => {
       // Missing auth — should return { error: { code, message } }
@@ -1180,7 +1166,7 @@ describe('Messaging Error Responses (R22)', () => {
 // ============================================================================
 
 describe('Message Edge Cases', () => {
-  conditionalIt(
+  it(
     'should handle concurrent sends with different clientMessageIds',
     async () => {
       // Send multiple messages concurrently
@@ -1203,7 +1189,7 @@ describe('Message Edge Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should correctly handle edit then delete sequence',
     async () => {
       // Send
@@ -1235,7 +1221,7 @@ describe('Message Edge Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject edit on a deleted message',
     async () => {
       // Send and delete
@@ -1261,7 +1247,7 @@ describe('Message Edge Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should include both sent and received messages in conversation history',
     async () => {
       // Alice sends a message

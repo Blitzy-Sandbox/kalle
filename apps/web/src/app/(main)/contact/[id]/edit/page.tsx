@@ -179,7 +179,7 @@ export default function EditContactPage(): React.JSX.Element | null {
     return () => {
       cancelled = true;
     };
-  }, [id, isAuthenticated]);
+  }, [id, isAuthenticated, isInitialized]);
 
   // -----------------------------------------------------------------------
   // Handlers

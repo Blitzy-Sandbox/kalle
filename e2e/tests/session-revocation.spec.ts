@@ -37,6 +37,8 @@ const HEALTH_URL = `${API_BASE_URL}/api/v1/health`;
 interface TokenPair {
   accessToken: string;
   refreshToken: string;
+  expiresIn: number;
+  refreshExpiresIn: number;
 }
 
 interface AuthResponse {
@@ -140,11 +142,16 @@ test.describe('Session Revocation', () => {
   // Phase 2 — Suite Setup / Teardown
   // --------------------------------------------------------------------------
 
-  test.beforeAll(async ({ request }) => {
+  test.beforeAll(async ({ playwright }) => {
     // Verify the API server is reachable before running any session tests.
     // This prevents misleading failures if the Docker stack is not up.
-    const healthRes = await request.get(HEALTH_URL);
-    expect([200, 503]).toContain(healthRes.status());
+    const request = await playwright.request.newContext({ baseURL: API_BASE_URL });
+    try {
+      const healthRes = await request.get(HEALTH_URL);
+      expect([200, 503]).toContain(healthRes.status());
+    } finally {
+      await request.dispose();
+    }
   });
 
   test.afterAll(async () => {
@@ -416,7 +423,7 @@ test.describe('Session Revocation', () => {
 
         // Validate the full token pair shape using toEqual pattern
         expect(Object.keys(newTokens).sort()).toEqual(
-          ['accessToken', 'refreshToken'].sort(),
+          ['accessToken', 'expiresIn', 'refreshExpiresIn', 'refreshToken'],
         );
 
         // New access token works for authenticated requests

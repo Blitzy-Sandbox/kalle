@@ -15,7 +15,9 @@
  * - R18: Group message fan-out via BullMQ — transparent to route layer
  * - R9: ALL message endpoints require authentication
  * - R31: ALL inputs validated via Zod schemas before reaching controller
- * - R30: Sub-paths only — mounted under /api/v1/messages by v1 index router
+ * - R30: Sub-paths only — conversation-scoped routes mounted under
+ *        /api/v1/conversations/:conversationId/messages, message-level routes
+ *        mounted under /api/v1/messages by v1 index router
  * - R28: ZERO direct console calls — structured logging only
  * - R7: TypeScript strict mode — zero warnings build
  * - R4: clientMessageId required for send (UUID) for deduplication
@@ -99,23 +101,76 @@ const getHistoryQuerySchema = z.object({
 });
 
 // ---------------------------------------------------------------------------
-// Factory Function
+// Factory Functions
 // ---------------------------------------------------------------------------
 
 /**
- * Creates an Express Router with all message-related endpoints.
+ * Creates an Express Router for **conversation-scoped** message endpoints.
  *
- * The message routes have a **mixed path structure**:
- * - **Conversation-scoped:** `/conversations/:conversationId/messages` for
- *   history retrieval and sending (logically grouped by conversation)
- * - **Message-level:** `/:messageId` for editing and deleting (operate on
- *   individual messages regardless of their conversation)
+ * This router is mounted at `/conversations/:conversationId/messages` by the
+ * v1 index router, so routes here define sub-paths relative to that mount
+ * point.  `mergeParams: true` ensures the `:conversationId` parameter from the
+ * mount path is accessible in `req.params`.
  *
- * Middleware chain per route:
- * 1. GET  /conversations/:cId/messages → auth → rate → validate({params,query}) → getHistory
- * 2. POST /conversations/:cId/messages → auth → rate → validate({params,body})  → send
- * 3. PATCH /:messageId                → auth → rate → validate({params,body})  → edit
- * 4. DELETE /:messageId               → auth → rate → validateParams(params)   → delete
+ * Routes:
+ * - GET  / → auth → rate → validate({params,query}) → getHistory
+ * - POST / → auth → rate → validate({params,body})  → send
+ *
+ * @param messageController - MessageController instance from composition root
+ * @param authMiddleware - JWT authentication middleware (Rule R9)
+ * @returns Configured Express Router
+ */
+export function createConversationMessageRoutes(
+  messageController: MessageController,
+  authMiddleware: RequestHandler
+): Router {
+  const router = Router({ mergeParams: true });
+
+  // Apply auth + rate limiter to ALL conversation-scoped message routes (Rules R9, R25)
+  router.use(authMiddleware);
+  router.use(apiRateLimiter);
+
+  // -------------------------------------------------------------------------
+  // GET / (mounted at /conversations/:conversationId/messages)
+  // Retrieve message history with cursor-based pagination.
+  // Returns messages in reverse-chronological order, grouped by conversation.
+  // -------------------------------------------------------------------------
+  router.get(
+    '/',
+    validate({
+      params: conversationIdParamSchema,
+      query: getHistoryQuerySchema,
+    }),
+    messageController.getHistory
+  );
+
+  // -------------------------------------------------------------------------
+  // POST / (mounted at /conversations/:conversationId/messages)
+  // Send a new message with encrypted ciphertext (Rule R12).
+  // The server stores ciphertext as-is — zero decryption logic.
+  // Group delivery is handled via BullMQ fan-out (Rule R18).
+  // -------------------------------------------------------------------------
+  router.post(
+    '/',
+    validate({
+      params: conversationIdParamSchema,
+      body: sendMessageSchema,
+    }),
+    messageController.send
+  );
+
+  return router;
+}
+
+/**
+ * Creates an Express Router for **message-level** endpoints (edit and delete).
+ *
+ * This router is mounted at `/messages` by the v1 index router, so routes
+ * here define sub-paths relative to that mount point.
+ *
+ * Routes:
+ * - PATCH  /:messageId → auth → rate → validate({params,body})  → edit
+ * - DELETE /:messageId → auth → rate → validateParams(params)   → delete
  *
  * @param messageController - MessageController instance from composition root
  * @param authMiddleware - JWT authentication middleware (Rule R9)
@@ -127,38 +182,9 @@ export function createMessageRoutes(
 ): Router {
   const router = Router();
 
-  // Apply auth + rate limiter to ALL message routes (Rules R9, R25)
+  // Apply auth + rate limiter to ALL message-level routes (Rules R9, R25)
   router.use(authMiddleware);
   router.use(apiRateLimiter);
-
-  // -------------------------------------------------------------------------
-  // GET /conversations/:conversationId/messages
-  // Retrieve message history with cursor-based pagination.
-  // Returns messages in reverse-chronological order, grouped by conversation.
-  // -------------------------------------------------------------------------
-  router.get(
-    '/conversations/:conversationId/messages',
-    validate({
-      params: conversationIdParamSchema,
-      query: getHistoryQuerySchema,
-    }),
-    messageController.getHistory
-  );
-
-  // -------------------------------------------------------------------------
-  // POST /conversations/:conversationId/messages
-  // Send a new message with encrypted ciphertext (Rule R12).
-  // The server stores ciphertext as-is — zero decryption logic.
-  // Group delivery is handled via BullMQ fan-out (Rule R18).
-  // -------------------------------------------------------------------------
-  router.post(
-    '/conversations/:conversationId/messages',
-    validate({
-      params: conversationIdParamSchema,
-      body: sendMessageSchema,
-    }),
-    messageController.send
-  );
 
   // -------------------------------------------------------------------------
   // PATCH /:messageId

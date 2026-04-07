@@ -297,14 +297,12 @@ beforeAll(async () => {
       metricsService,
     });
   } catch (error: unknown) {
-    // Infrastructure is not available — tests will be skipped gracefully
-    const message =
-      error instanceof Error ? error.message : String(error);
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[story.test] Infrastructure not available — tests will be skipped. Reason: ${message}`,
-    );
     infrastructureAvailable = false;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `[story.test] Infrastructure not available: ${message}. ` +
+      'Start PostgreSQL and Redis before running integration tests.',
+    );
   }
 }, 30_000);
 
@@ -333,20 +331,7 @@ afterAll(async () => {
   }
 });
 
-// ============================================================================
-// Conditional execution helper
-// ============================================================================
-
-/**
- * Wraps `it` to skip tests when infrastructure is unavailable.
- * Uses standard Jest `it`/`it.skip` mechanism.
- */
-const conditionalIt = (...args: Parameters<typeof it>) => {
-  if (infrastructureAvailable) {
-    return it(...args);
-  }
-  return it.skip(...args);
-};
+// conditionalIt removed — tests now use standard `it()` with beforeEach guard
 
 // ============================================================================
 // Auth Helper
@@ -386,7 +371,7 @@ async function registerAndLogin(
 // ============================================================================
 
 describe('Story Creation', () => {
-  conditionalIt(
+  it(
     'should create a text story with 24h expiration (POST /api/v1/stories → 201)',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -429,7 +414,7 @@ describe('Story Creation', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should default TEXT story duration to 7 seconds',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -445,7 +430,7 @@ describe('Story Creation', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should allow custom duration within 1-30 range',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -461,7 +446,7 @@ describe('Story Creation', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 400 for missing story type (R31)',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -479,7 +464,7 @@ describe('Story Creation', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 400 for invalid story type value',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -495,7 +480,7 @@ describe('Story Creation', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 400 for TEXT story without content (R31)',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -511,7 +496,7 @@ describe('Story Creation', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 400 for content exceeding 1000 characters',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -529,7 +514,7 @@ describe('Story Creation', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 400 for invalid backgroundColor format',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -549,7 +534,7 @@ describe('Story Creation', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 400 for duration outside 1-30 range',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -574,7 +559,7 @@ describe('Story Creation', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should store story content as plaintext - not encrypted (R12 exception)',
     async () => {
       const { accessToken, userId } = await registerAndLogin(USER_A);
@@ -600,7 +585,7 @@ describe('Story Creation', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should set authorId from authenticated user',
     async () => {
       const { accessToken, userId } = await registerAndLogin(USER_A);
@@ -622,7 +607,7 @@ describe('Story Creation', () => {
 // ============================================================================
 
 describe('Story Feed and Own Stories', () => {
-  conditionalIt(
+  it(
     'should return own stories via GET /api/v1/stories/me (200)',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -656,7 +641,7 @@ describe('Story Feed and Own Stories', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return story feed as array (GET /api/v1/stories/feed -> 200)',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -673,7 +658,7 @@ describe('Story Feed and Own Stories', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should exclude expired stories from /me (R11)',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -705,7 +690,7 @@ describe('Story Feed and Own Stories', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return empty array when user has no stories',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -719,7 +704,7 @@ describe('Story Feed and Own Stories', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should sort own stories chronologically',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -769,7 +754,7 @@ describe('Story Feed and Own Stories', () => {
 // ============================================================================
 
 describe('Story View Tracking', () => {
-  conditionalIt(
+  it(
     'should record story view (POST /api/v1/stories/:storyId/view -> 200)',
     async () => {
       const userA = await registerAndLogin(USER_A);
@@ -803,7 +788,7 @@ describe('Story View Tracking', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should deduplicate views from the same user',
     async () => {
       const userA = await registerAndLogin(USER_A);
@@ -837,7 +822,7 @@ describe('Story View Tracking', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should track views from multiple users independently',
     async () => {
       const userA = await registerAndLogin(USER_A);
@@ -877,7 +862,7 @@ describe('Story View Tracking', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 404 for viewing a non-existent story',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -895,7 +880,7 @@ describe('Story View Tracking', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 400 for invalid storyId format on view',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -910,7 +895,7 @@ describe('Story View Tracking', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 404 when viewing an expired story',
     async () => {
       const userA = await registerAndLogin(USER_A);
@@ -947,7 +932,7 @@ describe('Story View Tracking', () => {
 // ============================================================================
 
 describe('Story Deletion', () => {
-  conditionalIt(
+  it(
     'should allow author to delete own story (DELETE /api/v1/stories/:id -> 200)',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -978,7 +963,7 @@ describe('Story Deletion', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should not allow non-author to delete story (403)',
     async () => {
       const userA = await registerAndLogin(USER_A);
@@ -1003,7 +988,7 @@ describe('Story Deletion', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 404 for deleting non-existent story',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -1019,7 +1004,7 @@ describe('Story Deletion', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 400 for invalid storyId format on delete',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -1034,7 +1019,7 @@ describe('Story Deletion', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should cascade-delete associated StoryView records',
     async () => {
       const userA = await registerAndLogin(USER_A);
@@ -1080,7 +1065,7 @@ describe('Story Deletion', () => {
 // ============================================================================
 
 describe('Story Expiration (R11, R35)', () => {
-  conditionalIt(
+  it(
     'should set expiresAt to exactly 24h from creation',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -1103,7 +1088,7 @@ describe('Story Expiration (R11, R35)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should store expiresAt correctly in database',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -1131,7 +1116,7 @@ describe('Story Expiration (R11, R35)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should not return expired stories from /me endpoint (R11)',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -1178,7 +1163,7 @@ describe('Story Expiration (R11, R35)', () => {
 // ============================================================================
 
 describe('Story Error Responses (R22)', () => {
-  conditionalIt(
+  it(
     'should return 401 for unauthenticated story creation',
     async () => {
       const res = await request(app)
@@ -1193,7 +1178,7 @@ describe('Story Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 401 for unauthenticated feed request',
     async () => {
       const res = await request(app)
@@ -1204,7 +1189,7 @@ describe('Story Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 401 for unauthenticated own stories request',
     async () => {
       const res = await request(app)
@@ -1215,7 +1200,7 @@ describe('Story Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 401 for unauthenticated story view',
     async () => {
       const fakeUuid = '00000000-0000-4000-a000-000000000000';
@@ -1228,7 +1213,7 @@ describe('Story Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 401 for unauthenticated story deletion',
     async () => {
       const fakeUuid = '00000000-0000-4000-a000-000000000000';
@@ -1241,7 +1226,7 @@ describe('Story Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 401 for invalid JWT token',
     async () => {
       const res = await request(app)
@@ -1254,7 +1239,7 @@ describe('Story Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should use standardized error shape for all error responses (R22)',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -1302,7 +1287,7 @@ describe('Story Error Responses (R22)', () => {
 // ============================================================================
 
 describe('API Versioning (R30)', () => {
-  conditionalIt(
+  it(
     'should respond on versioned /api/v1/stories endpoints',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);
@@ -1317,7 +1302,7 @@ describe('API Versioning (R30)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 404 for unversioned /stories endpoint (R30)',
     async () => {
       const { accessToken } = await registerAndLogin(USER_A);

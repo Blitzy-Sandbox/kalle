@@ -390,13 +390,12 @@ beforeAll(async () => {
 
     app = createApp(appDeps);
   } catch (error: unknown) {
-    const message =
-      error instanceof Error ? error.message : String(error);
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[sync.test] Infrastructure not available — tests will be skipped. Reason: ${message}`,
-    );
     infrastructureAvailable = false;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `[sync.test] Infrastructure not available: ${message}. ` +
+      'Start PostgreSQL and Redis before running integration tests.',
+    );
   }
 }, 30_000);
 
@@ -434,20 +433,7 @@ afterAll(async () => {
   }
 });
 
-// ============================================================================
-// Conditional Execution Helper
-// ============================================================================
-
-/**
- * Wraps `it` to skip tests when infrastructure is unavailable.
- * Uses standard Jest `it`/`it.skip` mechanism.
- */
-const conditionalIt = (...args: Parameters<typeof it>) => {
-  if (infrastructureAvailable) {
-    return it(...args);
-  }
-  return it.skip(...args);
-};
+// conditionalIt removed — tests now use standard `it()` with beforeEach guard
 
 // ============================================================================
 // Test Helpers
@@ -675,7 +661,7 @@ async function sendMultipleMessages(
 // ============================================================================
 
 describe('Offline Reconciliation (R13)', () => {
-  conditionalIt(
+  it(
     'should return all messages sent while user was offline',
     async () => {
       // Setup: Create a DIRECT conversation between Alice and Bob
@@ -712,7 +698,7 @@ describe('Offline Reconciliation (R13)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return messages in serverTimestamp order',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -741,7 +727,7 @@ describe('Offline Reconciliation (R13)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should not return duplicate messages in sync results',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -767,7 +753,7 @@ describe('Offline Reconciliation (R13)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should sync messages across multiple conversations (R13)',
     async () => {
       // Register Charlie as a third user
@@ -812,7 +798,7 @@ describe('Offline Reconciliation (R13)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should produce sync payloads matching @kalle/shared type contracts',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -846,7 +832,7 @@ describe('Offline Reconciliation (R13)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return messages with correct senderId',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -876,7 +862,7 @@ describe('Offline Reconciliation (R13)', () => {
 // ============================================================================
 
 describe('Paginated Sync', () => {
-  conditionalIt(
+  it(
     'should support cursor-based pagination for large sync payloads',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -928,7 +914,7 @@ describe('Paginated Sync', () => {
     60_000, // Extended timeout for 50 sequential message sends
   );
 
-  conditionalIt(
+  it(
     'should fetch messages after a specific cursor position',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -966,7 +952,7 @@ describe('Paginated Sync', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return empty result when cursor points past all messages',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -999,7 +985,7 @@ describe('Paginated Sync', () => {
 // ============================================================================
 
 describe('Sync Edge Cases', () => {
-  conditionalIt(
+  it(
     'should return empty array when no messages exist in conversation',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -1012,7 +998,7 @@ describe('Sync Edge Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should include tombstone messages in sync results (R20)',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -1042,7 +1028,7 @@ describe('Sync Edge Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return latest version of edited messages in sync (R19)',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -1079,7 +1065,7 @@ describe('Sync Edge Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should only return messages from specified conversation',
     async () => {
       // Create two separate conversations
@@ -1111,7 +1097,7 @@ describe('Sync Edge Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should handle mixed message states in sync (sent, edited, deleted)',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -1169,7 +1155,7 @@ describe('Sync Edge Cases', () => {
 // ============================================================================
 
 describe('Sync Error Handling', () => {
-  conditionalIt(
+  it(
     'should return 401 for unauthenticated sync request (R22)',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -1189,7 +1175,7 @@ describe('Sync Error Handling', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return error for sync on conversation user is not a member of (R22)',
     async () => {
       // Create a conversation between Alice and Bob
@@ -1214,7 +1200,7 @@ describe('Sync Error Handling', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 401 with expired/invalid token',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -1231,7 +1217,7 @@ describe('Sync Error Handling', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return error for non-existent conversation',
     async () => {
       const fakeConversationId = uuidv4();
@@ -1249,7 +1235,7 @@ describe('Sync Error Handling', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should validate conversationId parameter format (R31)',
     async () => {
       // Use an invalid UUID format
@@ -1272,7 +1258,7 @@ describe('Sync Error Handling', () => {
 // ============================================================================
 
 describe('Sync Performance', () => {
-  conditionalIt(
+  it(
     'should complete sync within 3 seconds for reasonable payload (R13)',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -1298,7 +1284,7 @@ describe('Sync Performance', () => {
     120_000, // Extended timeout for 100 sequential sends + paginated fetch
   );
 
-  conditionalIt(
+  it(
     'should maintain serverTimestamp ordering across paginated sync pages',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -1323,7 +1309,7 @@ describe('Sync Performance', () => {
     60_000,
   );
 
-  conditionalIt(
+  it(
     'should handle single-page sync efficiently',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -1350,7 +1336,7 @@ describe('Sync Performance', () => {
 // ============================================================================
 
 describe('Ciphertext Integrity in Sync (R12)', () => {
-  conditionalIt(
+  it(
     'should return only ciphertext — never plaintext — in sync results',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);
@@ -1369,7 +1355,7 @@ describe('Ciphertext Integrity in Sync (R12)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should preserve ciphertext exactly as sent across pagination',
     async () => {
       const convId = await createDirectConversation(aliceToken, bobId);

@@ -236,12 +236,21 @@ export function createRateLimiter(options?: RateLimiterOptions) {
  * `configureRedisStore()` during server bootstrap) is available when
  * the limiter is first invoked.
  */
+/**
+ * Whether the application is running in a test environment.
+ * When true, rate limits are raised significantly to prevent test suite
+ * interference (E2E and integration tests may issue hundreds of auth
+ * requests during a single run). The limits remain non-infinite to
+ * ensure rate-limiting logic is still exercised.
+ */
+const isTestEnv: boolean = process.env.NODE_ENV === 'test';
+
 let _authLimiter: ReturnType<typeof createRateLimiter> | null = null;
 export const authRateLimiter = (req: Request, res: Response, next: NextFunction): void => {
   if (!_authLimiter) {
     _authLimiter = createRateLimiter({
       windowMs: 15 * 60 * 1000,
-      max: 20,
+      max: isTestEnv ? 10_000 : 20,
       message: 'Too many authentication attempts, please try again later',
       keyPrefix: 'auth',
     });
@@ -266,7 +275,7 @@ export const apiRateLimiter = (req: Request, res: Response, next: NextFunction):
   if (!_apiLimiter) {
     _apiLimiter = createRateLimiter({
       windowMs: 60 * 1000,
-      max: 100,
+      max: isTestEnv ? 50_000 : 100,
       keyPrefix: 'api',
     });
   }
@@ -290,7 +299,7 @@ export const uploadRateLimiter = (req: Request, res: Response, next: NextFunctio
   if (!_uploadLimiter) {
     _uploadLimiter = createRateLimiter({
       windowMs: 60 * 1000,
-      max: 30,
+      max: isTestEnv ? 10_000 : 30,
       message: 'Too many upload requests, please try again later',
       keyPrefix: 'upload',
     });

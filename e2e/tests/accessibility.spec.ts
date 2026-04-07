@@ -75,6 +75,12 @@ interface TestUser {
 interface AuthResponseBody {
   data?: {
     user?: Record<string, unknown>;
+    tokens?: {
+      accessToken?: string;
+      refreshToken?: string;
+      expiresIn?: number;
+      refreshExpiresIn?: number;
+    };
     accessToken?: string;
     refreshToken?: string;
     [key: string]: unknown;
@@ -165,8 +171,10 @@ async function registerUser(
 
   const body: AuthResponseBody = await res.json();
   const user = body.data?.user ?? body.user ?? body.data ?? body;
-  const accessToken = body.data?.accessToken ?? body.accessToken ?? '';
-  const refreshToken = body.data?.refreshToken ?? body.refreshToken ?? '';
+  const accessToken =
+    body.data?.tokens?.accessToken ?? body.data?.accessToken ?? body.accessToken ?? '';
+  const refreshToken =
+    body.data?.tokens?.refreshToken ?? body.data?.refreshToken ?? body.refreshToken ?? '';
 
   const id = (user as Record<string, unknown>).id as string;
   expect(id, 'Register response missing user ID').toBeTruthy();
@@ -194,8 +202,10 @@ async function loginUser(
 
   const body: AuthResponseBody = await res.json();
   const user = body.data?.user ?? body.user ?? body.data ?? body;
-  const accessToken = body.data?.accessToken ?? body.accessToken ?? '';
-  const refreshToken = body.data?.refreshToken ?? body.refreshToken ?? '';
+  const accessToken =
+    body.data?.tokens?.accessToken ?? body.data?.accessToken ?? body.accessToken ?? '';
+  const refreshToken =
+    body.data?.tokens?.refreshToken ?? body.data?.refreshToken ?? body.refreshToken ?? '';
 
   const id = (user as Record<string, unknown>).id as string;
   expect(id, 'Login response missing user ID').toBeTruthy();
@@ -349,11 +359,11 @@ test.describe('WCAG 2.1 AA Accessibility Audits', () => {
   // Lifecycle — Setup
   // -----------------------------------------------------------------------
 
-  test.beforeAll(async ({ request }) => {
-    requestContext = request;
+  test.beforeAll(async ({ playwright }) => {
+    requestContext = await playwright.request.newContext({ baseURL: API_BASE_URL });
 
     // 1. Verify Docker stack is reachable
-    const healthRes = await request.get(`${API_BASE_URL}/api/v1/health`);
+    const healthRes = await requestContext.get(`${API_BASE_URL}/api/v1/health`);
     expect(
       healthRes.ok(),
       `API health check failed (HTTP ${healthRes.status()}). ` +
@@ -420,6 +430,8 @@ test.describe('WCAG 2.1 AA Accessibility Audits', () => {
         }
       }
     }
+    // Dispose the standalone API context created in beforeAll
+    await requestContext?.dispose();
   });
 
   // =======================================================================

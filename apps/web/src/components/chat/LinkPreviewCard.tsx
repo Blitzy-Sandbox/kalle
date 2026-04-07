@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useCallback } from 'react';
+import Image from 'next/image';
 
 /**
  * Open Graph metadata extracted from a URL by the backend link-preview job.
@@ -174,11 +175,11 @@ export default function LinkPreviewCard({ preview, onPress }: LinkPreviewCardPro
            * positioned absolutely with zero opacity to avoid layout shift.
            * On successful load, switches to block flow positioning.
            */}
-          <img
+          <Image
             src={image!}
             alt={title}
             loading="lazy"
-            decoding="async"
+            unoptimized
             width={375}
             height={160}
             onLoad={handleImageLoad}
@@ -223,10 +224,11 @@ export default function LinkPreviewCard({ preview, onPress }: LinkPreviewCardPro
         <div className="mt-1 flex items-center gap-1">
           {/* Favicon — decorative only, hidden from assistive tech */}
           {favicon && (
-            <img
+            <Image
               src={favicon}
               alt=""
               aria-hidden="true"
+              unoptimized
               width={12}
               height={12}
               className="h-3 w-3 flex-shrink-0 rounded-sm"

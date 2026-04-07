@@ -372,13 +372,12 @@ beforeAll(async () => {
       metricsService: metricsServiceStub as never,
     });
   } catch (error: unknown) {
-    const message =
-      error instanceof Error ? error.message : String(error);
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[media.test] Infrastructure not available — tests will be skipped. Reason: ${message}`,
-    );
     infrastructureAvailable = false;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `[media.test] Infrastructure not available: ${message}. ` +
+      'Start PostgreSQL and Redis before running integration tests.',
+    );
   }
 }, 30_000);
 
@@ -419,19 +418,7 @@ afterAll(async () => {
   }
 });
 
-// ============================================================================
-// Conditional Execution Helper
-// ============================================================================
-
-/**
- * Wraps `it` to skip tests when infrastructure (PostgreSQL, Redis) is unavailable.
- */
-const conditionalIt = (...args: Parameters<typeof it>): ReturnType<typeof it> => {
-  if (infrastructureAvailable) {
-    return it(...args);
-  }
-  return it.skip(...args);
-};
+// conditionalIt removed — tests now use standard `it()` with beforeEach guard
 
 // ============================================================================
 // Auth Helper — registerAndLogin
@@ -526,7 +513,7 @@ function uploadMedia(
 // ============================================================================
 
 describe('Media Upload - Valid Cases', () => {
-  conditionalIt(
+  it(
     'should upload a valid image (POST /api/v1/media → 201)',
     async () => {
       const { accessToken, userId } = await registerAndLogin();
@@ -564,7 +551,7 @@ describe('Media Upload - Valid Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should upload a valid PDF document',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -583,7 +570,7 @@ describe('Media Upload - Valid Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should upload a valid voice note with waveform data',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -608,7 +595,7 @@ describe('Media Upload - Valid Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should upload a video with dimensions',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -632,7 +619,7 @@ describe('Media Upload - Valid Cases', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should store encryption metadata alongside media (R12)',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -667,7 +654,7 @@ describe('Media Upload - Valid Cases', () => {
 // ============================================================================
 
 describe('Media Upload - Size Limits (R8)', () => {
-  conditionalIt(
+  it(
     'should reject upload exceeding 25 MB with 413 (R8)',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -692,7 +679,7 @@ describe('Media Upload - Size Limits (R8)', () => {
     60_000, // Extended timeout for large buffer upload
   );
 
-  conditionalIt(
+  it(
     'should accept upload at exactly 25 MB',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -713,7 +700,7 @@ describe('Media Upload - Size Limits (R8)', () => {
     60_000, // Extended timeout for large buffer upload
   );
 
-  conditionalIt(
+  it(
     'should reject upload at 25 MB + 1 byte (R8)',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -743,7 +730,7 @@ describe('Media Upload - Size Limits (R8)', () => {
 // ============================================================================
 
 describe('Media Upload - MIME Validation (R8)', () => {
-  conditionalIt(
+  it(
     'should reject disallowed MIME type with 415 (R8)',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -763,7 +750,7 @@ describe('Media Upload - MIME Validation (R8)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject application/octet-stream MIME type',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -780,7 +767,7 @@ describe('Media Upload - MIME Validation (R8)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject text/javascript MIME type',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -797,7 +784,7 @@ describe('Media Upload - MIME Validation (R8)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should reject text/html MIME type',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -816,7 +803,7 @@ describe('Media Upload - MIME Validation (R8)', () => {
 
   // --- Verify all allowed MIME types from ALLOWED_MIME_TYPES are accepted ---
 
-  conditionalIt(
+  it(
     'should accept image/jpeg MIME type',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -834,7 +821,7 @@ describe('Media Upload - MIME Validation (R8)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should accept image/png MIME type',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -851,7 +838,7 @@ describe('Media Upload - MIME Validation (R8)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should accept image/gif MIME type',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -868,7 +855,7 @@ describe('Media Upload - MIME Validation (R8)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should accept image/webp MIME type',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -885,7 +872,7 @@ describe('Media Upload - MIME Validation (R8)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should accept video/mp4 MIME type',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -903,7 +890,7 @@ describe('Media Upload - MIME Validation (R8)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should accept application/pdf MIME type',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -921,7 +908,7 @@ describe('Media Upload - MIME Validation (R8)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should accept audio/ogg MIME type',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -945,7 +932,7 @@ describe('Media Upload - MIME Validation (R8)', () => {
 // ============================================================================
 
 describe('Media Storage Integrity (R12, R27)', () => {
-  conditionalIt(
+  it(
     'should store uploaded bytes exactly as received — no server-side processing (R12)',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -979,7 +966,7 @@ describe('Media Storage Integrity (R12, R27)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should NOT generate thumbnails server-side (R27)',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -1014,7 +1001,7 @@ describe('Media Storage Integrity (R12, R27)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should persist correct metadata in the database (R12)',
     async () => {
       const { accessToken, userId } = await registerAndLogin();
@@ -1056,7 +1043,7 @@ describe('Media Storage Integrity (R12, R27)', () => {
 // ============================================================================
 
 describe('Media Error Responses (R22)', () => {
-  conditionalIt(
+  it(
     'should return 401 for unauthenticated media upload',
     async () => {
       const testBuffer = createTestBuffer(SMALL_BUFFER_SIZE);
@@ -1084,7 +1071,7 @@ describe('Media Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 400 for missing file in upload (R31)',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -1110,7 +1097,7 @@ describe('Media Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 401 for expired/invalid JWT token',
     async () => {
       const testBuffer = createTestBuffer(SMALL_BUFFER_SIZE);
@@ -1136,7 +1123,7 @@ describe('Media Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should use /api/v1/ prefix for all media endpoints (R30)',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -1165,7 +1152,7 @@ describe('Media Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return media metadata via GET /api/v1/media/:mediaId',
     async () => {
       const { accessToken } = await registerAndLogin();
@@ -1190,7 +1177,7 @@ describe('Media Error Responses (R22)', () => {
     },
   );
 
-  conditionalIt(
+  it(
     'should return 404 for non-existent media ID',
     async () => {
       const { accessToken } = await registerAndLogin();

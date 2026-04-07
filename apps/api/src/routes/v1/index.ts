@@ -33,8 +33,9 @@
  * /api/v1/health            — Health check (public)
  * /api/v1/metrics           — Prometheus metrics (public)
  * /api/v1/users/*           — User profile, search, block/unblock
- * /api/v1/conversations/*   — Conversation CRUD, membership
- * /api/v1/messages/*        — Message send, edit, delete, history
+ * /api/v1/conversations/*                          — Conversation CRUD, membership
+ * /api/v1/conversations/:id/messages               — Message history and send
+ * /api/v1/messages/*                               — Message edit and delete
  * /api/v1/media/*           — Media upload and retrieval
  * /api/v1/stories/*         — Story lifecycle (create, feed, view, delete)
  * /api/v1/keys/*            — E2E encryption key bundle management
@@ -83,7 +84,7 @@ import { createAuthMiddleware } from '../../middleware/auth.js';
 import { createAuthRoutes } from './auth.routes.js';
 import { createUserRoutes } from './user.routes.js';
 import { createConversationRoutes } from './conversation.routes.js';
-import { createMessageRoutes } from './message.routes.js';
+import { createConversationMessageRoutes, createMessageRoutes } from './message.routes.js';
 import { createMediaRoutes } from './media.routes.js';
 import { createStoryRoutes } from './story.routes.js';
 import { createKeyRoutes } from './key.routes.js';
@@ -302,9 +303,22 @@ export function createV1Router(deps: V1RouterDependencies): Router {
   router.use('/conversations', createConversationRoutes(deps.conversationController, authMiddleware));
 
   /**
-   * Message routes: GET /conversations/:conversationId/messages,
-   * POST /conversations/:conversationId/messages,
-   * PATCH /:messageId, DELETE /:messageId.
+   * Conversation-scoped message routes:
+   * GET  /conversations/:conversationId/messages — message history
+   * POST /conversations/:conversationId/messages — send message
+   * Mounted at the conversation sub-path so E2E clients hit the natural
+   * resource hierarchy:  /api/v1/conversations/:id/messages
+   * All endpoints require authentication. Server stores only ciphertext (R12).
+   */
+  router.use(
+    '/conversations/:conversationId/messages',
+    createConversationMessageRoutes(deps.messageController, authMiddleware),
+  );
+
+  /**
+   * Message-level routes: PATCH /:messageId, DELETE /:messageId.
+   * Mounted at /messages because edit/delete operate on individual messages
+   * regardless of their conversation.
    * All endpoints require authentication. Server stores only ciphertext (R12).
    */
   router.use('/messages', createMessageRoutes(deps.messageController, authMiddleware));

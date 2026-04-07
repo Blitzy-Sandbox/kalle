@@ -1,6 +1,7 @@
 'use client';
 
 import React from 'react';
+import Image from 'next/image';
 
 /**
  * Props for the ReplyPreview component.
@@ -327,14 +328,14 @@ const ReplyPreview: React.FC<ReplyPreviewProps> = ({
             rounded overflow-hidden
           "
         >
-          <img
+          <Image
             src={thumbnailUrl}
             alt={`${getMediaLabel(mediaType)} thumbnail`}
             className="w-full h-full object-cover"
             width={40}
             height={40}
             loading="lazy"
-            decoding="async"
+            unoptimized
           />
           {/* Media type overlay icon */}
           <div

@@ -322,6 +322,7 @@ export default function ChatConversationPage() {
       }
       resetUploadState();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [conversationId]); // Intentional: cleanup only when conversation changes
 
   /* ── Handlers ──────────────────────────────────────────────────────── */

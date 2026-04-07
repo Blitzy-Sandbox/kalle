@@ -659,11 +659,11 @@ test.describe('Critical Path: Full User Journey', () => {
   // Test lifecycle
   // -----------------------------------------------------------------------
 
-  test.beforeAll(async ({ request }) => {
-    requestContext = request;
+  test.beforeAll(async ({ playwright }) => {
+    requestContext = await playwright.request.newContext({ baseURL: API_BASE_URL });
 
     // Verify Docker stack is reachable before running the suite
-    const healthRes = await request.get(`${API_BASE_URL}/api/v1/health`);
+    const healthRes = await requestContext.get(`${API_BASE_URL}/api/v1/health`);
     expect(
       healthRes.ok(),
       `API health check failed (HTTP ${healthRes.status()}). ` +
@@ -687,6 +687,8 @@ test.describe('Critical Path: Full User Journey', () => {
         }
       }
     }
+    // Dispose the standalone API context created in beforeAll
+    await requestContext?.dispose();
   });
 
   // -----------------------------------------------------------------------

@@ -29,7 +29,7 @@
  * @see Figma Screen 5  — WhatsApp Add Modal (Camera, Photo, Document, Location, Contact)
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect, type APIRequestContext } from '@playwright/test';
 import path from 'path';
 
 // ---------------------------------------------------------------------------
@@ -200,13 +200,16 @@ async function uploadPreKeyBundle(
   const response = await request.post(`${KEYS_URL}/bundle`, {
     headers: { Authorization: `Bearer ${token}` },
     data: {
-      identityKey: Buffer.from('identity-key-placeholder-32bytes!').toString('base64'),
+      identityKey: {
+        publicKey: Buffer.from('identity-key-placeholder-32bytes!').toString('base64'),
+      },
       signedPreKey: {
         keyId: 1,
         publicKey: Buffer.from('signed-prekey-placeholder-32byte').toString('base64'),
         signature: Buffer.from(
           'signature-placeholder-64bytes-for-testing-purposes-only-pad!!',
         ).toString('base64'),
+        timestamp: Date.now(),
       },
       preKeys: Array.from({ length: 10 }, (_, i) => ({
         keyId: i + 1,
@@ -214,6 +217,7 @@ async function uploadPreKeyBundle(
           `prekey-placeholder-${String(i).padStart(13, '0')}-32b`,
         ).toString('base64'),
       })),
+      registrationId: Math.floor(Math.random() * 16380) + 1,
     },
   });
 
@@ -533,6 +537,9 @@ function crc32(buf: Buffer): number {
 // Test Suite: Media Upload Pipeline
 // ============================================================================
 
+/** Standalone API request context created in beforeAll for setup/teardown. */
+let _setupApiCtx: APIRequestContext;
+
 test.describe('Media Upload Pipeline', () => {
   /**
    * Use serial mode because later tests depend on state from earlier tests
@@ -544,7 +551,11 @@ test.describe('Media Upload Pipeline', () => {
   // Phase 2: Test Setup and Fixtures
   // ─────────────────────────────────────────────────────────────────────────
 
-  test.beforeAll(async ({ request }) => {
+  test.beforeAll(async ({ playwright }) => {
+    // Create a standalone API request context (avoids Playwright fixture reuse restriction)
+    const request = await playwright.request.newContext({ baseURL: API_BASE_URL });
+    _setupApiCtx = request;
+
     // Generate test fixture files on disk
     await generateTestFixtures();
 
@@ -1679,7 +1690,9 @@ test.describe('Media Upload Pipeline', () => {
   // Phase 9: Cleanup
   // ─────────────────────────────────────────────────────────────────────────
 
-  test.afterAll(async ({ request }) => {
+  test.afterAll(async () => {
+    const request = _setupApiCtx;
+
     // Revoke tokens for both test users
     for (const user of [userA, userB]) {
       if (!user?.accessToken) continue;
@@ -1715,6 +1728,9 @@ test.describe('Media Upload Pipeline', () => {
         fs.rmdirSync(FIXTURES_DIR);
       }
     }
+
+    // Dispose the standalone API context created in beforeAll
+    await _setupApiCtx?.dispose();
   });
 });
 

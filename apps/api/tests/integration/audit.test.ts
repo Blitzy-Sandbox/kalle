@@ -355,8 +355,12 @@ beforeAll(async () => {
     await cleanDatabase();
     await cleanRedis();
   } catch (error) {
-    // If infrastructure is unavailable, tests will be skipped gracefully
     infrastructureAvailable = false;
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `[audit.test] Infrastructure not available: ${message}. ` +
+      'Start PostgreSQL and Redis before running integration tests.',
+    );
   }
 }, 30_000);
 
@@ -402,25 +406,7 @@ afterAll(async () => {
   }
 });
 
-// =============================================================================
-// Conditional Test Helper
-// =============================================================================
-
-/**
- * Wraps `it()` to skip tests when infrastructure (Postgres/Redis) is unavailable.
- * This matches the pattern used across all sibling integration test files.
- */
-const conditionalIt = (
-  name: string,
-  fn: () => Promise<void>,
-  timeout?: number,
-): void => {
-  if (infrastructureAvailable) {
-    it(name, fn, timeout);
-  } else {
-    it.skip(`[INFRA UNAVAILABLE] ${name}`, () => {});
-  }
-};
+// conditionalIt removed — tests now use standard `it()` with beforeEach guard
 
 // =============================================================================
 // Helper Functions
@@ -649,7 +635,7 @@ describe('Audit Log Integration Tests', () => {
   // 2.1 User Registration Audit
   // ===========================================================================
   describe('Audit Entry Creation — Authentication', () => {
-    conditionalIt(
+    it(
       'should create audit entry for USER_REGISTER on successful registration',
       async () => {
         const result = await registerAndLogin({
@@ -682,7 +668,7 @@ describe('Audit Log Integration Tests', () => {
     // =========================================================================
     // 2.2 User Login Audit
     // =========================================================================
-    conditionalIt(
+    it(
       'should create audit entry for USER_LOGIN on successful login',
       async () => {
         // First register a user
@@ -718,7 +704,7 @@ describe('Audit Log Integration Tests', () => {
     // =========================================================================
     // 2.3 Failed Login Audit
     // =========================================================================
-    conditionalIt(
+    it(
       'should create audit entry for USER_LOGIN_FAILED on invalid password',
       async () => {
         // Register user first
@@ -756,7 +742,7 @@ describe('Audit Log Integration Tests', () => {
     // =========================================================================
     // 2.4 Session Revocation Audit
     // =========================================================================
-    conditionalIt(
+    it(
       'should create audit entry for SESSION_REVOKE on session revocation',
       async () => {
         const { accessToken, refreshToken, userId } =
@@ -784,7 +770,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should create audit entry for SESSION_REVOKE_ALL on all-sessions revocation',
       async () => {
         const { accessToken, userId } = await registerAndLogin();
@@ -822,7 +808,7 @@ describe('Audit Log Integration Tests', () => {
   // 2.5 User Block/Unblock Audit
   // ===========================================================================
   describe('Audit Entry Creation — User Block/Unblock', () => {
-    conditionalIt(
+    it(
       'should create audit entry for USER_BLOCK when blocking a user',
       async () => {
         const alice = await registerAndLogin({
@@ -861,7 +847,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should create audit entry for USER_UNBLOCK when unblocking a user',
       async () => {
         const alice = await registerAndLogin({
@@ -910,7 +896,7 @@ describe('Audit Log Integration Tests', () => {
   // 2.6 Group Operations Audit
   // ===========================================================================
   describe('Audit Entry Creation — Group Operations', () => {
-    conditionalIt(
+    it(
       'should create audit entry for GROUP_MEMBER_ADD when adding a member',
       async () => {
         const alice = await registerAndLogin({
@@ -963,7 +949,7 @@ describe('Audit Log Integration Tests', () => {
       15_000,
     );
 
-    conditionalIt(
+    it(
       'should create audit entry for GROUP_MEMBER_REMOVE when removing a member',
       async () => {
         const alice = await registerAndLogin({
@@ -1016,7 +1002,7 @@ describe('Audit Log Integration Tests', () => {
   // 2.7 Message Delete Audit
   // ===========================================================================
   describe('Audit Entry Creation — Message Delete', () => {
-    conditionalIt(
+    it(
       'should verify message delete audit behavior',
       async () => {
         // Note: MessageService.deleteMessage() does NOT inject AuditService.
@@ -1084,7 +1070,7 @@ describe('Audit Log Integration Tests', () => {
   // 2.8 Key Bundle Upload Audit
   // ===========================================================================
   describe('Audit Entry Creation — Key Bundle Upload', () => {
-    conditionalIt(
+    it(
       'should create audit entry for KEYS_BUNDLE_UPLOAD on prekey bundle upload',
       async () => {
         const alice = await registerAndLogin({
@@ -1145,7 +1131,7 @@ describe('Audit Log Integration Tests', () => {
   // 2.9 Comprehensive Audit Trail — All Actions in One Flow
   // ===========================================================================
   describe('Comprehensive Audit Trail', () => {
-    conditionalIt(
+    it(
       'should create multiple audit entries across a complete user flow',
       async () => {
         // Register Alice (USER_REGISTER audit)
@@ -1210,7 +1196,7 @@ describe('Audit Log Integration Tests', () => {
   // PHASE 3: IMMUTABILITY TESTS (R32 — Core Requirement)
   // ===========================================================================
   describe('Audit Log Immutability (R32)', () => {
-    conditionalIt(
+    it(
       'should not allow UPDATE on audit_log entries via raw SQL',
       async () => {
         // Create an audit entry via a registration action
@@ -1269,7 +1255,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should not allow DELETE on audit_log entries via raw SQL',
       async () => {
         // Create an audit entry
@@ -1318,7 +1304,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should verify IAuditRepository interface has no update or generic delete methods',
       async () => {
         // Structural verification: IAuditRepository should ONLY expose:
@@ -1375,7 +1361,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should not have updatedAt field on audit log entries',
       async () => {
         // Create an audit entry
@@ -1408,7 +1394,7 @@ describe('Audit Log Integration Tests', () => {
   // PHASE 4: METADATA SANITIZATION TESTS (R23)
   // ===========================================================================
   describe('Audit Log Metadata Sanitization (R23)', () => {
-    conditionalIt(
+    it(
       'should not contain passwords in registration audit metadata',
       async () => {
         const knownPassword = 'MyKnownPassword$123!';
@@ -1433,7 +1419,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should not contain JWT tokens in session revocation audit metadata',
       async () => {
         const { accessToken, refreshToken } = await registerAndLogin({
@@ -1464,7 +1450,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should not contain encryption keys in key upload audit metadata',
       async () => {
         const alice = await registerAndLogin({
@@ -1511,7 +1497,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should not contain message ciphertext in delete audit metadata',
       async () => {
         const alice = await registerAndLogin({
@@ -1554,7 +1540,7 @@ describe('Audit Log Integration Tests', () => {
       15_000,
     );
 
-    conditionalIt(
+    it(
       'should sanitize sensitive fields marked as REDACTED in metadata',
       async () => {
         // Register user — AuditService should sanitize any password-like fields
@@ -1591,7 +1577,7 @@ describe('Audit Log Integration Tests', () => {
   // PHASE 5: AUDIT LOG QUERY TESTS
   // ===========================================================================
   describe('Audit Log Querying', () => {
-    conditionalIt(
+    it(
       'should filter audit logs by action type',
       async () => {
         // Perform multiple distinct actions
@@ -1633,7 +1619,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should filter audit logs by actorId',
       async () => {
         const alice = await registerAndLogin({
@@ -1669,7 +1655,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should filter audit logs by date range',
       async () => {
         const before = new Date();
@@ -1708,7 +1694,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should support pagination via cursor-based offset',
       async () => {
         // Create multiple entries by registering several users
@@ -1741,7 +1727,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should return entries ordered by createdAt descending',
       async () => {
         // Create multiple sequential entries
@@ -1767,7 +1753,7 @@ describe('Audit Log Integration Tests', () => {
   // PHASE 6: ERROR RESPONSE VERIFICATION
   // ===========================================================================
   describe('Error Response Shape (R22)', () => {
-    conditionalIt(
+    it(
       'should return standardized error for unauthorized request',
       async () => {
         // Make a request to a protected endpoint without auth token
@@ -1785,7 +1771,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should return standardized error for invalid login credentials (R22)',
       async () => {
         const res = await request(app)
@@ -1804,7 +1790,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should return 400 for invalid input with standardized error (R31)',
       async () => {
         // Send registration with invalid email
@@ -1832,7 +1818,7 @@ describe('Audit Log Integration Tests', () => {
   // PHASE 6.5: AUDIT DTO SHAPE VERIFICATION
   // ===========================================================================
   describe('Audit DTO Shape Verification', () => {
-    conditionalIt(
+    it(
       'should produce audit entries matching CreateAuditLogDTO fields',
       async () => {
         // Verify that entries created by the system match the CreateAuditLogDTO shape
@@ -1865,7 +1851,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should support AuditLogQuery filtering by actorId and action',
       async () => {
         const alice = await registerAndLogin({
@@ -1897,7 +1883,7 @@ describe('Audit Log Integration Tests', () => {
   // PHASE 7: CORRELATION ID TESTS (R29)
   // ===========================================================================
   describe('Correlation ID Propagation (R29)', () => {
-    conditionalIt(
+    it(
       'should include correlation ID in audit entries when set by middleware',
       async () => {
         await registerAndLogin({
@@ -1930,7 +1916,7 @@ describe('Audit Log Integration Tests', () => {
   // PHASE 8: API VERSIONING COMPLIANCE (R30)
   // ===========================================================================
   describe('API Versioning Compliance (R30)', () => {
-    conditionalIt(
+    it(
       'should serve audit-triggering endpoints only under /api/v1/ prefix',
       async () => {
         // Attempt to hit a route without /api/v1/ prefix — should 404
@@ -1947,7 +1933,7 @@ describe('Audit Log Integration Tests', () => {
       },
     );
 
-    conditionalIt(
+    it(
       'should successfully handle requests to versioned /api/v1/ endpoints',
       async () => {
         const res = await request(app)

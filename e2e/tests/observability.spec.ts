@@ -93,15 +93,18 @@ interface HealthComponent {
   message?: string;
 }
 
-/** Health check response body */
+/** Health check response body — matches HealthCheckResponse from @kalle/shared */
 interface HealthResponse {
-  status: string;
-  timestamp: string;
-  components: {
-    database: HealthComponent;
-    redis: HealthComponent;
-    bullmq?: HealthComponent;
-    storage?: HealthComponent;
+  data: {
+    status: string;
+    version: string;
+    uptime: number;
+    components: {
+      database: HealthComponent;
+      redis: HealthComponent;
+      queue: HealthComponent;
+      storage: HealthComponent;
+    };
   };
 }
 
@@ -749,39 +752,41 @@ test.describe('Observability Stack', () => {
 
       const body = (await res.json()) as HealthResponse;
 
-      // Top-level status
-      expect(body).toHaveProperty('status');
-      expect(body.status).toBe('healthy');
+      // Response wrapped in data envelope per HealthCheckResponse contract
+      expect(body).toHaveProperty('data');
+      expect(body.data).toHaveProperty('status');
+      expect(body.data.status).toBe('healthy');
 
-      // Timestamp should be a valid ISO string
-      expect(body).toHaveProperty('timestamp');
-      expect(typeof body.timestamp).toBe('string');
-      expect(new Date(body.timestamp).getTime()).toBeGreaterThan(0);
+      // Version and uptime fields
+      expect(body.data).toHaveProperty('version');
+      expect(typeof body.data.version).toBe('string');
+      expect(body.data).toHaveProperty('uptime');
+      expect(typeof body.data.uptime).toBe('number');
 
       // Component-level health checks
-      expect(body).toHaveProperty('components');
-      const components = body.components;
+      expect(body.data).toHaveProperty('components');
+      const components = body.data.components;
 
-      // Database component
+      // Database component — status is 'up'/'down' per ComponentHealth contract
       expect(components).toHaveProperty('database');
       expect(components.database).toHaveProperty('status');
-      expect(components.database.status).toBe('healthy');
+      expect(components.database.status).toBe('up');
 
       // Redis component
       expect(components).toHaveProperty('redis');
       expect(components.redis).toHaveProperty('status');
-      expect(components.redis.status).toBe('healthy');
+      expect(components.redis.status).toBe('up');
 
-      // BullMQ component (optional but expected in full stack)
-      if (components.bullmq) {
-        expect(components.bullmq).toHaveProperty('status');
-        expect(components.bullmq.status).toBe('healthy');
+      // Queue component (BullMQ — derived from Redis health)
+      if (components.queue) {
+        expect(components.queue).toHaveProperty('status');
+        expect(components.queue.status).toBe('up');
       }
 
-      // Storage component (optional but expected in full stack)
+      // Storage component
       if (components.storage) {
         expect(components.storage).toHaveProperty('status');
-        expect(components.storage.status).toBe('healthy');
+        expect(components.storage.status).toBe('up');
       }
     });
 
@@ -795,8 +800,8 @@ test.describe('Observability Stack', () => {
       expect(unauthContext.status()).toBe(200);
 
       const body = (await unauthContext.json()) as HealthResponse;
-      expect(body).toHaveProperty('status');
-      expect(body.status).toBe('healthy');
+      expect(body).toHaveProperty('data');
+      expect(body.data.status).toBe('healthy');
     });
 
     test('health endpoint returns valid JSON with Content-Type', async () => {
@@ -822,14 +827,12 @@ test.describe('Observability Stack', () => {
 
       // All calls should report same overall status
       for (const result of results) {
-        expect(result.status).toBe('healthy');
+        expect(result.data.status).toBe('healthy');
       }
 
-      // Timestamps should be increasing
+      // Uptime should be non-decreasing across sequential calls
       for (let i = 1; i < results.length; i++) {
-        const prev = new Date(results[i - 1].timestamp).getTime();
-        const curr = new Date(results[i].timestamp).getTime();
-        expect(curr).toBeGreaterThanOrEqual(prev);
+        expect(results[i].data.uptime).toBeGreaterThanOrEqual(results[i - 1].data.uptime);
       }
     });
   });
@@ -1302,11 +1305,13 @@ test.describe('Observability Stack', () => {
       await apiContext.post(`${API_BASE_URL}/api/v1/keys/bundle`, {
         headers: { Authorization: `Bearer ${testAccessToken}` },
         data: {
-          identityKey: knownIdentityKey,
+          registrationId: 12345,
+          identityKey: { publicKey: knownIdentityKey },
           signedPreKey: {
             keyId: 1,
             publicKey: knownPreKeyMaterial,
             signature: 'fake-signature',
+            timestamp: Date.now(),
           },
           preKeys: [{ keyId: 1, publicKey: knownPreKeyMaterial }],
         },
@@ -1691,12 +1696,12 @@ test.describe('Observability Stack', () => {
       const body = (await res.json()) as HealthResponse;
 
       // Database component should report real status — not a mock
-      expect(body.components.database).toBeDefined();
-      expect(body.components.database.status).toBe('healthy');
+      expect(body.data.components.database).toBeDefined();
+      expect(body.data.components.database.status).toBe('up');
 
       // If latency is reported, it should be a realistic value (> 0ms)
-      if (body.components.database.latency !== undefined) {
-        expect(body.components.database.latency).toBeGreaterThan(0);
+      if (body.data.components.database.latency !== undefined) {
+        expect(body.data.components.database.latency).toBeGreaterThan(0);
       }
     });
 
@@ -1707,12 +1712,12 @@ test.describe('Observability Stack', () => {
       const body = (await res.json()) as HealthResponse;
 
       // Redis component should report real status
-      expect(body.components.redis).toBeDefined();
-      expect(body.components.redis.status).toBe('healthy');
+      expect(body.data.components.redis).toBeDefined();
+      expect(body.data.components.redis.status).toBe('up');
 
       // If latency is reported, it should be a realistic value
-      if (body.components.redis.latency !== undefined) {
-        expect(body.components.redis.latency).toBeGreaterThan(0);
+      if (body.data.components.redis.latency !== undefined) {
+        expect(body.data.components.redis.latency).toBeGreaterThan(0);
       }
     });
 

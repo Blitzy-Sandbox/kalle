@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useCallback } from 'react';
+import Image from 'next/image';
 
 // ---------------------------------------------------------------------------
 // Types & Interface
@@ -363,11 +364,11 @@ const ImageVideoMedia: React.FC<ImageVideoMediaProps> = ({
       "
     >
       {/* Thumbnail image */}
-      <img
+      <Image
         src={displayUrl}
         alt={fileName}
         loading="lazy"
-        decoding="async"
+        unoptimized
         className="
           block w-full
           max-h-[300px]
