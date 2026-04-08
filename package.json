@@ -1,0 +1,51 @@
+{
+  "name": "kalle",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Production-grade WhatsApp clone web application",
+  "license": "MIT",
+  "workspaces": [
+    "packages/*",
+    "apps/*",
+    "workers/*"
+  ],
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "lint": "turbo run lint",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "test:e2e": "npx playwright test --config=e2e/playwright.config.ts",
+    "clean": "turbo run clean",
+    "seed": "npx prisma db seed",
+    "migrate": "npx prisma migrate dev",
+    "migrate:deploy": "npx prisma migrate deploy",
+    "generate": "npx prisma generate",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "prepare": "npx prisma generate"
+  },
+  "devDependencies": {
+    "@axe-core/playwright": "^4.11.1",
+    "@playwright/test": "^1.59.1",
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^7.0.0",
+    "@typescript-eslint/parser": "^7.0.0",
+    "concurrently": "^8.2.0",
+    "eslint": "^8.57.0",
+    "prettier": "^3.2.0",
+    "prisma": "^5.14.0",
+    "ts-node": "^10.9.2",
+    "turbo": "^2.0.0",
+    "typescript": "^5.4.0"
+  },
+  "prisma": {
+    "schema": "prisma/schema.prisma",
+    "seed": "npx tsx prisma/seed.ts"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  },
+  "packageManager": "npm@11.1.0"
+}

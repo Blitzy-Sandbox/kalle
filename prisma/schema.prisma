@@ -1,0 +1,395 @@
+// =============================================================================
+// Kalle — WhatsApp Clone · Prisma Database Schema
+// =============================================================================
+//
+// Complete Prisma ORM schema defining ALL database models, enums, relations,
+// indexes, and constraints for PostgreSQL 16. This file is the single source
+// of truth for the database structure.
+//
+// Critical Rules:
+//   R12 — Messages encrypted client-side (Signal Protocol). Server stores only
+//         ciphertext. The ciphertext field on Message is nullable for tombstones.
+//   R20 — Deleted messages are soft-deleted — ciphertext nulled, row retained.
+//   R24 — All schema changes use Prisma Migrate, never prisma db push.
+//   R32 — audit_logs table is INSERT-only at database permission level.
+//   R35 — Stories/media purged after 24h. Audit logs after 90 days.
+//
+// =============================================================================
+
+generator client {
+  provider      = "prisma-client-js"
+  // Include both native (development host) and linux-musl-openssl-3.0.x
+  // (Alpine-based Docker containers). Node 20-alpine ships with OpenSSL 3.x,
+  // and the default "native" detection on Alpine often falls back to 1.1.x
+  // which fails at runtime. Explicitly listing both targets ensures Prisma
+  // generates the correct engine binary for Docker AND local development.
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// =============================================================================
+// Enums
+// =============================================================================
+
+/// Distinguishes between one-on-one and group conversations.
+enum ConversationType {
+  DIRECT
+  GROUP
+}
+
+/// Role a participant holds within a group conversation.
+enum ParticipantRole {
+  ADMIN
+  MEMBER
+}
+
+/// Discriminator for the payload type carried inside a message.
+/// Values must match the shared TypeScript MessageType enum exactly.
+enum MessageType {
+  TEXT
+  IMAGE
+  VIDEO
+  DOCUMENT
+  VOICE_NOTE
+  SYSTEM
+}
+
+/// Delivery lifecycle status of a message for a given recipient.
+enum MessageDeliveryStatus {
+  SENT
+  DELIVERED
+  READ
+}
+
+/// Discriminator for the content type of a story.
+/// Matches the shared TypeScript StoryType enum (R12: stories are NOT encrypted).
+enum StoryType {
+  TEXT
+  IMAGE
+  VIDEO
+}
+
+/// Security-sensitive actions recorded in the immutable audit log (R32).
+/// Exhaustive list per AAP Section 0.4.4.
+enum AuditAction {
+  USER_REGISTER
+  USER_LOGIN
+  USER_LOGIN_FAILED
+  SESSION_REVOKE
+  SESSION_REVOKE_ALL
+  USER_BLOCK
+  USER_UNBLOCK
+  GROUP_MEMBER_ADD
+  GROUP_MEMBER_REMOVE
+  GROUP_ADMIN_CHANGE
+  MESSAGE_DELETE
+  KEYS_BUNDLE_UPLOAD
+}
+
+// =============================================================================
+// Models
+// =============================================================================
+
+/// Registered user account. Email is the unique login identifier.
+model User {
+  id           String    @id @default(uuid())
+  email        String    @unique
+  passwordHash String
+  displayName  String
+  phoneNumber  String?
+  avatarUrl    String?
+  about        String?   @default("Hey there! I am using Kalle")
+  lastSeen     DateTime?
+  isOnline     Boolean   @default(false)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  // Relations
+  conversations        ConversationParticipant[]
+  sentMessages         Message[]                 @relation("SentMessages")
+  messageStatuses      MessageStatus[]
+  media                Media[]
+  stories              Story[]
+  storyViews           StoryView[]
+  preKeyBundle         PreKeyBundle?
+  sessions             Session[]
+  refreshTokens        RefreshToken[]
+  auditLogs            AuditLog[]                @relation("AuditActor")
+  blockedUsers         BlockedUser[]             @relation("Blocker")
+  blockedBy            BlockedUser[]             @relation("Blocked")
+  createdConversations Conversation[]            @relation("ConversationCreator")
+
+  @@map("users")
+}
+
+/// A conversation thread — either a 1:1 direct message or a named group.
+model Conversation {
+  id        String           @id @default(uuid())
+  type      ConversationType
+  title     String?
+  avatarUrl String?
+  createdBy String?
+  creator   User?            @relation("ConversationCreator", fields: [createdBy], references: [id], onDelete: SetNull)
+  createdAt DateTime         @default(now())
+  updatedAt DateTime         @updatedAt
+
+  // Relations
+  participants ConversationParticipant[]
+  messages     Message[]
+
+  @@map("conversations")
+}
+
+/// Join table linking a User to a Conversation with per-user settings.
+model ConversationParticipant {
+  id             String          @id @default(uuid())
+  userId         String
+  conversationId String
+  role           ParticipantRole @default(MEMBER)
+  isArchived     Boolean         @default(false)
+  isMuted        Boolean         @default(false)
+  muteExpiresAt  DateTime?
+  pinnedAt       DateTime?
+  lastReadAt     DateTime?
+  joinedAt       DateTime        @default(now())
+
+  // Relations
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  conversation Conversation @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, conversationId])
+  @@index([conversationId])
+  @@map("conversation_participants")
+}
+
+/// An encrypted message within a conversation.
+/// ciphertext is nullable — tombstone messages (R20) have ciphertext set to null.
+/// Server NEVER decrypts; all encryption/decryption happens client-side (R12).
+model Message {
+  id              String      @id @default(uuid())
+  conversationId  String
+  senderId        String
+  clientMessageId String?     @unique
+  ciphertext      String?
+  type            MessageType @default(TEXT)
+  replyToId       String?
+  isEdited        Boolean     @default(false)
+  isDeleted       Boolean     @default(false)
+  editedAt        DateTime?
+  deletedAt       DateTime?
+  linkPreview     Json?
+  serverTimestamp DateTime    @default(now())
+  clientTimestamp DateTime?
+
+  // Relations
+  conversation Conversation    @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  sender       User            @relation("SentMessages", fields: [senderId], references: [id], onDelete: Cascade)
+  replyTo      Message?        @relation("MessageReplies", fields: [replyToId], references: [id], onDelete: SetNull)
+  replies      Message[]       @relation("MessageReplies")
+  statuses     MessageStatus[]
+  media        Media[]
+
+  @@index([conversationId, serverTimestamp])
+  @@index([conversationId, senderId])
+  @@map("messages")
+}
+
+/// Per-recipient delivery status for a message (sent → delivered → read).
+model MessageStatus {
+  id          String                @id @default(uuid())
+  messageId   String
+  userId      String
+  status      MessageDeliveryStatus @default(SENT)
+  deliveredAt DateTime?
+  readAt      DateTime?
+
+  // Relations
+  message Message @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([messageId, userId])
+  @@map("message_statuses")
+}
+
+/// Encrypted media attachment associated with a message or story.
+/// size is in bytes; the application enforces a 25 MB (26 214 400 bytes) limit (R8).
+/// Encryption key/IV fields store the client-side encryption metadata for E2E (R12).
+model Media {
+  id                     String   @id @default(uuid())
+  userId                 String
+  messageId              String?
+  storyId                String?
+  mimeType               String
+  encryptedUrl           String
+  thumbnailUrl           String?
+  size                   Int
+  filename               String
+  encryptionKey          String?
+  encryptionIv           String?
+  thumbnailEncryptionKey String?
+  thumbnailEncryptionIv  String?
+  width                  Int?
+  height                 Int?
+  duration               Int?
+  waveform               String?
+  createdAt              DateTime @default(now())
+
+  // Relations
+  user    User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  message Message? @relation(fields: [messageId], references: [id], onDelete: SetNull)
+  story   Story?   @relation(fields: [storyId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([messageId])
+  @@index([storyId])
+  @@map("media")
+}
+
+/// A user-posted story (text or media) with a mandatory 24-hour expiration (R11).
+/// Stories are NOT encrypted — only messages use E2E encryption (R12).
+/// Expired stories and their media are purged by the hourly cleanup job (R35).
+model Story {
+  id              String    @id @default(uuid())
+  authorId        String
+  type            StoryType @default(TEXT)
+  textContent     String?
+  backgroundColor String?
+  fontStyle       String?
+  duration        Int?
+  createdAt       DateTime  @default(now())
+  expiresAt       DateTime
+
+  // Relations
+  author User        @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  media  Media[]
+  views  StoryView[]
+
+  @@index([authorId, expiresAt])
+  @@map("stories")
+}
+
+/// Tracks which user viewed which story and when.
+model StoryView {
+  id       String   @id @default(uuid())
+  storyId  String
+  viewerId String
+  viewedAt DateTime @default(now())
+
+  // Relations
+  story  Story @relation(fields: [storyId], references: [id], onDelete: Cascade)
+  viewer User  @relation(fields: [viewerId], references: [id], onDelete: Cascade)
+
+  @@unique([storyId, viewerId])
+  @@map("story_views")
+}
+
+/// Signal Protocol pre-key bundle for E2E encryption handshake.
+/// One bundle per user (userId is unique). preKeys stores a JSON array of
+/// { keyId: number, publicKey: string } objects.
+model PreKeyBundle {
+  id                    String   @id @default(uuid())
+  userId                String   @unique
+  identityKey           String
+  signedPreKey          String
+  signedPreKeySignature String
+  preKeys               Json
+  registrationId        Int
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("pre_key_bundles")
+}
+
+/// IMPORTANT — IMMUTABLE AUDIT LOG (R32):
+/// The application database role MUST have NO UPDATE or DELETE permissions on
+/// this table. Only INSERT and SELECT are permitted. This constraint is enforced
+/// at the database permission level (not in the ORM schema) and must be applied
+/// during production provisioning.
+///
+/// The metadata JSON field MUST NOT contain message content, encryption keys,
+/// JWT tokens, passwords, or file contents (R23, R32).
+///
+/// Records older than 90 days are purged by the audit-log-cleanup BullMQ job (R35).
+model AuditLog {
+  id            String      @id @default(uuid())
+  actorId       String?
+  action        AuditAction
+  targetType    String?
+  targetId      String?
+  metadata      Json?
+  ipAddress     String?
+  userAgent     String?
+  correlationId String?
+  createdAt     DateTime    @default(now())
+
+  // Relations
+  actor User? @relation("AuditActor", fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@index([actorId])
+  @@index([action])
+  @@index([createdAt])
+  @@map("audit_logs")
+}
+
+/// An authenticated user session tied to a single JWT access token (via jti).
+/// Revoked sessions are blacklisted in Redis for the remaining token TTL (R33).
+/// Expired sessions are purged on schedule (R35).
+model Session {
+  id         String   @id @default(uuid())
+  userId     String
+  jti        String   @unique
+  deviceInfo String?
+  createdAt  DateTime @default(now())
+  expiresAt  DateTime
+  isRevoked  Boolean  @default(false)
+
+  // Relations
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokens RefreshToken[]
+
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+/// Refresh token linked to a session for token rotation.
+/// Each refresh token belongs to exactly one session and is single-use.
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String
+  token     String   @unique
+  sessionId String
+  expiresAt DateTime
+  isRevoked Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  // Relations
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([sessionId])
+  @@map("refresh_tokens")
+}
+
+/// Records a unidirectional block between two users.
+model BlockedUser {
+  id        String   @id @default(uuid())
+  blockerId String
+  blockedId String
+  createdAt DateTime @default(now())
+
+  // Relations
+  blocker User @relation("Blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked User @relation("Blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+
+  @@unique([blockerId, blockedId])
+  @@map("blocked_users")
+}

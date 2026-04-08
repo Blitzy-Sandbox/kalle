@@ -1,0 +1,49 @@
+# Version control
+.git
+.gitignore
+
+# Dependencies (rebuilt in container)
+node_modules
+**/node_modules
+
+# Build outputs
+dist
+.next
+out
+build
+
+# Environment (injected at runtime)
+.env
+.env.local
+.env.*.local
+
+# IDE
+.idea
+.vscode
+*.swp
+
+# Documentation (not needed in container)
+docs/
+*.md
+!README.md
+
+# Testing (not needed in production container)
+coverage
+test-results
+playwright-report
+e2e/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backups
+backups/
+
+# Turbo cache
+.turbo
+
+# Docker files (prevent recursive context)
+docker-compose.yml
+docker-compose.override.yml
+Dockerfile.*

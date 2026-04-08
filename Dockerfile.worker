@@ -1,0 +1,216 @@
+# =============================================================================
+# Dockerfile.worker — BullMQ Worker Multi-Stage Build
+# =============================================================================
+# Production-grade multi-stage build for the Kalle WhatsApp clone BullMQ worker
+# process. The worker handles asynchronous background jobs including:
+#
+#   - Group message fan-out delivery
+#   - Sender Key distribution and rotation
+#   - Link preview (OG metadata) extraction
+#   - Expired story and media cleanup (hourly)
+#   - Audit log retention purge (90-day)
+#   - Low prekey replenish notifications
+#
+# Build stages:
+#   1. deps    — Install npm workspace dependencies (cached layer)
+#   2. builder — Compile @kalle/shared + worker TypeScript, generate Prisma client
+#   3. runner  — Minimal Alpine image with compiled output only
+#
+# Usage:
+#   Production:  docker build -f Dockerfile.worker -t kalle-worker .
+#   Dev mode:    docker-compose up worker  (overrides CMD with tsx watch)
+#
+# Requirements:
+#   - Node.js 20 Alpine (matches monorepo engine requirement >=20.0.0)
+#   - Prisma Client generated at build time for PostgreSQL access
+#   - Non-root user for production security
+#   - No exposed ports (worker does not serve HTTP)
+#   - Depends on PostgreSQL and Redis at runtime
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Stage 1: Dependencies — Install npm workspace packages
+# -----------------------------------------------------------------------------
+# This stage installs only the dependencies needed for the BullMQ worker and
+# the shared types package. By copying only package.json files first, Docker
+# can cache this layer and skip reinstallation when only source code changes.
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS deps
+
+# Alpine compatibility: libc6-compat is required by some npm native modules
+# (e.g., bcrypt, prisma engine binaries) that expect glibc. This prevents
+# runtime segfaults from missing shared libraries.
+# openssl is required so that Prisma can detect the libssl version during
+# `prisma generate` and download the correct query/schema engine binary
+# (linux-musl-openssl-3.0.x on Alpine 3.23+).
+RUN apk add --no-cache libc6-compat openssl
+
+WORKDIR /app
+
+# Copy root workspace manifests first for optimal Docker layer caching.
+# Only changes to package.json or package-lock.json will invalidate this cache.
+COPY package.json package-lock.json ./
+
+# Copy workspace package manifests needed for dependency resolution.
+# npm workspaces require all referenced workspace package.json files to be
+# present for the lockfile resolution to succeed.
+COPY packages/shared/package.json ./packages/shared/
+COPY workers/queue/package.json ./workers/queue/
+
+# Copy Prisma schema BEFORE npm ci — the root package.json "prepare" script
+# runs "npx prisma generate" during install, which requires the schema file.
+# Without this, npm ci fails with "prisma/schema.prisma not found".
+COPY prisma/ ./prisma/
+
+# Install ALL dependencies from the lockfile. We do NOT use --workspace flags
+# here because the root package.json devDependencies (including prisma ^5.14.x)
+# must be present for prisma generate to use the correct local version.
+# --ignore-scripts prevents the root "prepare" lifecycle script from running
+# "npx prisma generate" during install — without local prisma, npx would
+# download the latest (v7.x) which has breaking schema changes.
+# We run prisma generate explicitly below using the locally installed version.
+# --legacy-peer-deps handles peer dependency conflicts with some packages.
+RUN npm ci --legacy-peer-deps --ignore-scripts
+
+# Explicitly generate Prisma client using the version installed in node_modules
+# (^5.14.x per package.json), NOT the latest from the npm registry.
+RUN npx prisma generate
+
+# -----------------------------------------------------------------------------
+# Stage 2: Builder — Compile shared types, generate Prisma, build worker
+# -----------------------------------------------------------------------------
+# Builds the @kalle/shared TypeScript package first (dependency), generates the
+# Prisma client for database access, then compiles the worker TypeScript source
+# into JavaScript. This stage is also used directly by docker-compose in dev
+# mode (target: builder) with a tsx watch command override.
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+# Prisma OpenSSL 3.x Compatibility — Alpine 3.19+ ships ONLY with OpenSSL 3.x
+# (libssl.so.3). Prisma's auto-detection fails on Alpine and defaults to the
+# openssl-1.1 engine binary, which crashes at runtime with:
+#   "Error loading shared library libssl.so.1.1"
+# Fix: Install OpenSSL 3 shared libraries and explicitly tell Prisma which
+# engine binaries to load via environment variables, bypassing broken detection.
+# NOTE: docker-compose.yml uses `target: builder` so this stage IS the runtime.
+RUN apk add --no-cache openssl libssl3 libcrypto3
+
+# Copy installed node_modules from deps stage.
+# npm ci without --workspace hoists ALL dependencies to the root node_modules.
+# Workspace-specific node_modules are not created in this configuration.
+COPY --from=deps /app/node_modules ./node_modules
+
+# Copy root workspace configuration files needed for build resolution.
+# tsconfig.base.json is extended by both packages/shared and workers/queue.
+COPY package.json ./
+COPY tsconfig.base.json ./
+
+# Copy Prisma schema — required for generating the Prisma client.
+# The worker needs database access for job processing (reading messages,
+# updating stories, writing audit logs, etc.).
+COPY prisma/ ./prisma/
+
+# Generate the Prisma client from schema.prisma.
+# This produces the @prisma/client package with typed query methods matching
+# all 13 database models defined in the schema (User, Message, Story, etc.).
+# Must run before TypeScript compilation since worker source imports PrismaClient.
+RUN npx prisma generate
+
+# Copy shared package source — must be built before worker since worker
+# imports DTO types and constants from @kalle/shared.
+COPY packages/shared/ ./packages/shared/
+
+# Build the shared types package first (@kalle/shared).
+# This generates dist/ with compiled .js and .d.ts files that the worker
+# imports via the workspace dependency link.
+RUN npm run build --workspace=packages/shared
+
+# Copy worker source code.
+COPY workers/queue/ ./workers/queue/
+
+# Build the BullMQ worker TypeScript source.
+# Compiles src/**/*.ts to dist/**/*.js using the tsconfig.json that extends
+# tsconfig.base.json with outDir=./dist and rootDir=./src.
+RUN npm run build --workspace=workers/queue
+
+# -----------------------------------------------------------------------------
+# Stage 3: Runner — Minimal production image
+# -----------------------------------------------------------------------------
+# Uses a clean Alpine Node.js image with only the compiled JavaScript output,
+# production node_modules, and Prisma client. No source code, no devDependencies,
+# no build tools — minimal attack surface and image size.
+# Runs as non-root user for security hardening.
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+# Production environment — enables Node.js production optimizations and
+# signals to dependencies (e.g., Pino, BullMQ) to use production configs.
+ENV NODE_ENV=production
+
+# Prisma OpenSSL 3.x Compatibility — Alpine 3.19+ ships ONLY with OpenSSL 3.x
+# (libssl.so.3). Prisma's auto-detection fails on Alpine and defaults to the
+# openssl-1.1 engine binary, which crashes at runtime with:
+#   "Error loading shared library libssl.so.1.1"
+# Fix: Install OpenSSL 3 shared libraries and explicitly tell Prisma which
+# engine binaries to load via environment variables, bypassing broken detection.
+RUN apk add --no-cache openssl libssl3 libcrypto3
+
+# Create a dedicated non-root user and group for running the worker process.
+# Using fixed UID/GID (1001) ensures consistent file ownership across builds
+# and avoids running the worker as root in production.
+RUN addgroup --system --gid 1001 nodejs \
+    && adduser --system --uid 1001 worker
+
+# Copy compiled shared package output from the builder stage.
+# The worker imports DTO types and constants from @kalle/shared at runtime.
+COPY --from=builder --chown=worker:nodejs /app/packages/shared/dist ./packages/shared/dist
+COPY --from=builder --chown=worker:nodejs /app/packages/shared/package.json ./packages/shared/
+
+# Copy compiled worker output from the builder stage.
+# This includes all compiled job processors (message-fanout, sender-key-distribution,
+# link-preview, story-cleanup, audit-log-cleanup, prekey-replenish-notification).
+COPY --from=builder --chown=worker:nodejs /app/workers/queue/dist ./workers/queue/dist
+COPY --from=builder --chown=worker:nodejs /app/workers/queue/package.json ./workers/queue/
+
+# Copy production node_modules from the builder stage.
+# This includes runtime dependencies: bullmq, ioredis, @prisma/client, pino,
+# open-graph-scraper, socket.io-client, uuid, and their transitive deps.
+COPY --from=builder --chown=worker:nodejs /app/node_modules ./node_modules
+
+# Copy Prisma schema and generated client for database access.
+# The Prisma client engine binary is included in node_modules/.prisma/client,
+# but the schema directory is needed for migration state awareness.
+COPY --from=builder --chown=worker:nodejs /app/prisma ./prisma
+
+# Copy root package.json for workspace resolution at runtime.
+# npm workspace symlinks in node_modules reference the root manifest.
+COPY --from=builder --chown=worker:nodejs /app/package.json ./
+
+# Switch to non-root user for all subsequent commands and runtime execution.
+# The worker process runs with minimal privileges — it only needs read access
+# to its own compiled code and write access to Redis (via network).
+USER worker
+
+# No EXPOSE directive — the BullMQ worker does not serve HTTP traffic.
+# It connects outbound to Redis (for job queue polling) and PostgreSQL
+# (for database operations). No inbound ports are required.
+
+# Health check verifying the BullMQ worker can reach Redis (its core dependency).
+# Since the worker doesn't expose HTTP, we verify Redis connectivity instead of
+# an HTTP endpoint. A successful PING proves the worker process is alive AND its
+# Redis connection is functional — both are required for BullMQ job processing.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
+    CMD node -e "const Redis=require('ioredis');const r=new Redis(process.env.REDIS_URL,{connectTimeout:3000,maxRetriesPerRequest:1,retryStrategy:()=>null});r.ping().then(()=>{r.disconnect();process.exit(0)}).catch(()=>{r.disconnect();process.exit(1)})" || exit 1
+
+# Start the BullMQ worker process.
+# In production, this runs the compiled entry point that registers all job
+# processors (message-fanout, sender-key-distribution, link-preview,
+# story-cleanup, audit-log-cleanup, prekey-replenish-notification) and
+# connects to Redis to begin polling for jobs.
+# In development (via docker-compose override), this CMD is replaced with
+# `npx tsx watch workers/queue/src/index.ts` for hot module reload.
+CMD ["node", "workers/queue/dist/index.js"]

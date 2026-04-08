@@ -1,0 +1,187 @@
+/**
+ * Global CSS — WhatsApp Clone (Kalle)
+ *
+ * Entry point for all CSS processing via PostCSS and Tailwind CSS 3.4.x.
+ * Imported by the root layout (layout.tsx).
+ *
+ * Sources:
+ *  - AAP Section 0.6.1: Tailwind CSS 3.4.x as sole styling system
+ *  - AAP Section 0.6.4: Gaps Inventory — 0.33px borders, iOS safe area handling
+ *  - Rule R1:  Figma Fidelity — style values from Figma design tokens
+ *  - Rule R34: WCAG 2.1 AA — visible focus indicators, keyboard navigability
+ *
+ * Build-time dependencies:
+ *  - tailwind.config.ts  (theme.extend.colors.separator, theme.extend.borderWidth.hairline)
+ *  - postcss.config.js   (plugins.tailwindcss, plugins.autoprefixer)
+ */
+
+/* ================================================================
+ * 1. TAILWIND DIRECTIVES
+ *
+ * Inject Tailwind's base reset, component classes, and utility
+ * classes. Order matters — base → components → utilities ensures
+ * correct cascade specificity.
+ * ================================================================ */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ================================================================
+ * 2. BASE LAYER — Global resets and CSS custom properties
+ *
+ * Placed inside @layer base so Tailwind utilities can still
+ * override these values when needed.
+ * ================================================================ */
+@layer base {
+  /* ----------------------------------------------------------
+   * iOS safe area CSS custom properties
+   *
+   * Expose env() values as custom properties so they can be
+   * consumed by utility classes (.pt-safe, .pb-safe) and by
+   * components that need safe-area-aware positioning. Fallback
+   * to 0px for non-iOS environments.
+   * ---------------------------------------------------------- */
+  :root {
+    --safe-area-inset-top: env(safe-area-inset-top, 0px);
+    --safe-area-inset-bottom: env(safe-area-inset-bottom, 0px);
+    --safe-area-inset-left: env(safe-area-inset-left, 0px);
+    --safe-area-inset-right: env(safe-area-inset-right, 0px);
+  }
+
+  /* ----------------------------------------------------------
+   * HTML root — text size and scrolling behavior
+   *
+   * -webkit-text-size-adjust: 100%  prevents iOS from enlarging
+   * text after device rotation.
+   * scroll-behavior: smooth  enables native smooth scrolling for
+   * anchor links and programmatic scrollTo calls.
+   * ---------------------------------------------------------- */
+  html {
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+    scroll-behavior: smooth;
+  }
+
+  /* ----------------------------------------------------------
+   * Universal thin scrollbars
+   *
+   * Applies the narrower scrollbar track across the entire
+   * application, matching iOS visual language where scroll
+   * indicators are minimal.
+   * ---------------------------------------------------------- */
+  * {
+    scrollbar-width: thin;
+  }
+
+  /* ----------------------------------------------------------
+   * WCAG 2.1 AA — Accessible focus indicators (Rule R34)
+   *
+   * Remove the default browser outline on all elements, then
+   * re-apply a clearly visible focus ring ONLY for keyboard
+   * navigation (:focus-visible). Uses #007AFF (iOS blue /
+   * blue-ios token) as the focus color — consistent with the
+   * interactive color used throughout the Figma design.
+   *
+   * Specification:
+   *   - outline: 2px solid #007AFF
+   *   - outline-offset: 2px (gap between element and ring)
+   * ---------------------------------------------------------- */
+  *:focus {
+    outline: none;
+  }
+
+  *:focus-visible {
+    outline: 2px solid #007AFF;
+    outline-offset: 2px;
+  }
+
+  /* ----------------------------------------------------------
+   * Body — overscroll and touch behavior
+   *
+   * overscroll-behavior: none  prevents the "rubber-band" bounce
+   * at scroll boundaries on iOS, keeping the app feeling native.
+   * -webkit-overflow-scrolling: touch  enables momentum-based
+   * scrolling in older WebKit browsers.
+   * ---------------------------------------------------------- */
+  body {
+    overscroll-behavior: none;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* ================================================================
+ * 3. COMPONENT LAYER — Reusable visual component classes
+ *
+ * Placed inside @layer components so utility classes can still
+ * override them when needed.
+ * ================================================================ */
+@layer components {
+  /* ----------------------------------------------------------
+   * iOS-style hairline separator — full width
+   *
+   * Renders a 0.33px bottom border in the Figma separator color
+   * rgba(60, 60, 67, 0.29). The 0.33px width exactly matches
+   * the ultra-thin iOS separator measured from Figma (Section 0.6.4).
+   *
+   * Usage: <div class="hairline-separator" />
+   *
+   * The @apply directive uses the custom `border-separator`
+   * utility generated from theme.extend.colors.separator in
+   * tailwind.config.ts.
+   * ---------------------------------------------------------- */
+  .hairline-separator {
+    @apply border-b border-separator;
+    border-bottom-width: 0.33px;
+  }
+
+  /* ----------------------------------------------------------
+   * iOS-style hairline separator — indented (chat list)
+   *
+   * Identical to .hairline-separator but with a 79px left margin
+   * matching the Figma chat list separator positioning (Chats
+   * screen 0:8855, separators at x=79). This indent clears the
+   * avatar column so the separator spans only the text area.
+   *
+   * Usage: <div class="hairline-separator-indented" />
+   * ---------------------------------------------------------- */
+  .hairline-separator-indented {
+    @apply border-b border-separator;
+    border-bottom-width: 0.33px;
+    margin-inline-start: 79px;
+  }
+}
+
+/* ================================================================
+ * 4. UTILITY LAYER — Safe area padding utilities
+ *
+ * Placed inside @layer utilities for highest cascade priority.
+ * These enable safe-area-aware padding on any element, consuming
+ * the CSS custom properties defined in :root above.
+ * ================================================================ */
+@layer utilities {
+  /* ----------------------------------------------------------
+   * Safe area top padding
+   *
+   * Adds padding equal to the iOS safe area inset at the top
+   * (notch / dynamic island region). Evaluates to 0px on
+   * non-iOS environments via the custom property fallback.
+   *
+   * Usage: <div class="pt-safe" />
+   * ---------------------------------------------------------- */
+  .pt-safe {
+    padding-top: var(--safe-area-inset-top);
+  }
+
+  /* ----------------------------------------------------------
+   * Safe area bottom padding
+   *
+   * Adds padding equal to the iOS safe area inset at the bottom
+   * (home indicator region). Evaluates to 0px on non-iOS
+   * environments via the custom property fallback.
+   *
+   * Usage: <div class="pb-safe" />
+   * ---------------------------------------------------------- */
+  .pb-safe {
+    padding-bottom: var(--safe-area-inset-bottom);
+  }
+}

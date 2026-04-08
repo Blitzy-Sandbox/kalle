@@ -1,0 +1,30 @@
+{
+  "name": "@kalle/worker-queue",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BullMQ background job processing worker for the Kalle WhatsApp clone",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "dev": "tsx watch src/index.ts",
+    "start": "node dist/index.js",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src/ --ext .ts"
+  },
+  "dependencies": {
+    "@kalle/shared": "*",
+    "@prisma/client": "^5.14.0",
+    "bullmq": "^5.7.0",
+    "ioredis": "^5.4.0",
+    "open-graph-scraper": "^6.5.0",
+    "pino": "^8.21.0",
+    "socket.io-client": "^4.7.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "tsx": "^4.11.0",
+    "@types/node": "^20.0.0"
+  }
+}
