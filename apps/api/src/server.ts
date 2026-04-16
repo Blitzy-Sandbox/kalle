@@ -409,6 +409,7 @@ async function bootstrap(): Promise<void> {
     v1Router,
     pinoHttpMiddleware: pinoHttpMiddleware as unknown as import('express').RequestHandler,
     metricsService,
+    uploadDir: env.UPLOAD_DIR || './uploads',
   });
 
   // ─── Step 11: HTTP Server + Socket.IO Setup ──────────────────────────────
