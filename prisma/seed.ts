@@ -126,15 +126,50 @@ function generateDeterministicSignature(
 }
 
 /**
- * Generates deterministic Base64-encoded simulated ciphertext.
- * The marker format ensures content is identifiable as seed data while
- * satisfying the requirement that no plaintext is stored server-side (R12).
+ * Returns a human-readable UTF-8 plaintext string for a given seed message
+ * content key, or null for tombstone/deleted messages.
+ * Deterministic: same contentKey always returns the same string (R10).
  */
-function generateDeterministicCiphertext(
-  content: string,
-  nonce: number,
-): string {
-  return Buffer.from(`SEED_CIPHERTEXT:${content}:${nonce}`).toString('base64');
+function getSeedMessageText(contentKey: string): string | null {
+  const MESSAGE_TEXTS: Record<string, string> = {
+    // Conversation 0: Sabohiddin ↔ Martha Craig
+    'design-review-question':    'Hey! Have you had a chance to review the latest designs?',
+    'almost-done-mockups':       'Almost done with the mockups, just finishing up the details',
+    'share-latest-file':         'Can you share the latest file when you\'re done?',
+    'latest-design-screenshot':  'Here\'s the latest screenshot of the design',
+    'looks-amazing':             'This looks amazing! Great work on the color palette 🎨',
+    'design-document-img0475':   'Here\'s the full design document',
+
+    // Conversation 1: Sabohiddin ↔ Andrew Parker
+    'meetup-tonight':            'Hey, are you up for a meetup tonight?',
+    'definitely-what-time':      'Definitely! What time works for you?',
+    'seven-pm-usual-place':      'How about 7 PM at the usual place?',
+    'perfect-see-you':           'Perfect, see you there! 👋',
+
+    // Conversation 2: Sabohiddin ↔ Karen Castillo
+    'voice-note-014':            'Voice message',
+    'got-it-check-back':         'Got it, I\'ll check and get back to you',
+    'thanks':                    'Thanks! 🙏',
+
+    // Conversation 3: Design Team (GROUP)
+    'review-latest-designs':     'Team, let\'s review the latest designs before the deadline',
+    'updated-component-library': 'I\'ve updated the component library with the new tokens',
+    'great-minor-tweaks':        'Looks great! Just a few minor tweaks needed on the spacing',
+    'agreed-noticed-too':        'Agreed, I noticed that too. I\'ll fix it this afternoon',
+    'design-specs-document':     'Here are the updated design specs',
+    'updated-mockup-image':      'Updated mockup with the fixes applied',
+
+    // Conversation 4: Weekend Plans (GROUP)
+    'anyone-free-saturday':      'Anyone free this Saturday?',
+    'im-in-whats-plan':          "I'm in! What's the plan?",
+    'hiking-at-trails':          'How about hiking at the mountain trails?',
+    'sounds-perfect':            'Sounds perfect to me! 🏔️',
+    'count-me-in':               'Count me in!',
+    'great-idea-meet-9am':       "Great idea! Let's meet at 9 AM at the trailhead",
+  };
+
+  if (contentKey === 'deleted-message') return null;
+  return MESSAGE_TEXTS[contentKey] ?? contentKey;
 }
 
 /**
@@ -394,7 +429,7 @@ async function seedMessages(
     const isTombstone = def.isDeleted === true;
     const ciphertext = isTombstone
       ? null
-      : generateDeterministicCiphertext(def.contentKey, i);
+      : getSeedMessageText(def.contentKey);
 
     const replyToId =
       def.replyToMsgIndex !== undefined
@@ -513,9 +548,14 @@ async function seedMedia(
   for (let i = 0; i < mediaDefs.length; i++) {
     const md = mediaDefs[i];
     const mediaId = deterministicUUID(`media:${i}`);
-    const encryptedPath = `/uploads/encrypted/${mediaId}/${md.filename}`;
+    const isImage = md.mimeType.startsWith('image/');
+    const encryptedPath = isImage
+      ? `https://picsum.photos/seed/${mediaId}/400/300`
+      : `/uploads/encrypted/${mediaId}/${md.filename}`;
     const thumbPath = md.hasThumbnail
-      ? `/uploads/encrypted/${mediaId}/thumb_${md.filename}`
+      ? (isImage
+          ? `https://picsum.photos/seed/thumb-${mediaId}/200/150`
+          : `/uploads/encrypted/${mediaId}/thumb_${md.filename}`)
       : null;
 
     await prisma.media.create({
