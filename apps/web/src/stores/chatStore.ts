@@ -266,16 +266,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setConversations: (conversations: ConversationListItem[]): void => {
     const sorted = sortConversationsByRecent(conversations);
+    const existingUnreadCounts = get().unreadCounts;
+    const newUnreadCounts = new Map<string, number>(existingUnreadCounts);
 
-    /* Initialise unread counts from each conversation's unreadCount field */
-    const newUnreadCounts = new Map<string, number>(get().unreadCounts);
-    for (const conv of sorted) {
-      if (!newUnreadCounts.has(conv.id)) {
+    const merged = sorted.map((conv) => {
+      if (!existingUnreadCounts.has(conv.id)) {
+        // First time seeing this conversation — initialize from server data
         newUnreadCounts.set(conv.id, conv.unreadCount);
+        return conv;
       }
-    }
+      // Conversation already tracked — preserve locally-tracked count
+      const localCount = existingUnreadCounts.get(conv.id)!;
+      if (localCount !== conv.unreadCount) {
+        return { ...conv, unreadCount: localCount };
+      }
+      return conv;
+    });
 
-    set({ conversations: sorted, unreadCounts: newUnreadCounts });
+    set({ conversations: merged, unreadCounts: newUnreadCounts });
   },
 
   addConversation: (conversation: ConversationListItem): void => {
