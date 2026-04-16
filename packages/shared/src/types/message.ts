@@ -246,6 +246,21 @@ export interface MessageResponse {
   /** ID of the attached encrypted media asset; undefined for text-only messages */
   mediaId?: string;
 
+  /** Full-resolution media URL — maps from DB column `encryptedUrl` */
+  mediaUrl?: string;
+
+  /** Thumbnail media URL — maps from DB column `thumbnailUrl` */
+  mediaThumbnailUrl?: string;
+
+  /** Original filename of the attached media asset */
+  mediaFileName?: string;
+
+  /** MIME type of the attached media asset (e.g., 'image/jpeg', 'audio/ogg') */
+  mediaMimeType?: string;
+
+  /** File size of the attached media asset in bytes */
+  mediaFileSize?: number;
+
   /** Extracted OG metadata for URL messages; populated async via BullMQ job */
   linkPreview?: LinkPreviewData;
 
