@@ -239,6 +239,17 @@ function extractExtension(
   return 'bin';
 }
 
+/** API origin used to absolutize relative media URLs returned by the backend. */
+const apiOrigin = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:3001';
+
+/**
+ * Converts a relative media URL to an absolute URL by prefixing the API origin.
+ * Already-absolute URLs (starting with "http") pass through unchanged.
+ * Null / undefined inputs return undefined.
+ */
+const toAbsolute = (url?: string | null): string | undefined =>
+  url ? (url.startsWith('http') ? url : `${apiOrigin}${url}`) : undefined;
+
 /* ═══════════════════════════════════════════════════════════════════
  * COMPONENT
  * ═══════════════════════════════════════════════════════════════════ */
@@ -796,8 +807,8 @@ export default function ChatView({
                         msg.mediaFileName,
                         msg.mediaMimeType,
                       ),
-                      thumbnailUrl: msg.mediaThumbnailUrl ?? undefined,
-                      fullUrl: msg.mediaUrl,
+                      thumbnailUrl: toAbsolute(msg.mediaThumbnailUrl),
+                      fullUrl: toAbsolute(msg.mediaUrl),
                     }
                   : undefined;
 
