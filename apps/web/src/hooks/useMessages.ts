@@ -257,6 +257,12 @@ async function decryptSingleMessage(
     return '';
   }
 
+  // Signal Protocol bypass — seed/plaintext messages don't match wire format
+  // Wire-format messages always start with a digit followed by colon (e.g., "3:...")
+  if (!/^\d+:/.test(message.ciphertext)) {
+    return message.ciphertext;
+  }
+
   try {
     let decryptPromise: Promise<string>;
 
@@ -771,6 +777,22 @@ export function useMessages(): UseMessagesReturn {
           addMessages(conversationId, fetchedMessages);
         }
 
+        // ── Emit read receipts for fetched messages (D7A) ──────────
+        if (isConnected()) {
+          const currentUser = useAuthStore.getState().user;
+          const messageIds = fetchedMessages
+            .filter((m) => m.senderId !== currentUser?.id)
+            .map((m) => m.id);
+          if (messageIds.length > 0) {
+            emitEvent('message:read', {
+              messageIds,
+              conversationId,
+              correlationId: generateCorrelationId(),
+              timestamp: new Date().toISOString(),
+            });
+          }
+        }
+
         // ── Batch-index for search (R21) ───────────────────────────
         for (const msg of fetchedMessages) {
           const plaintext = decryptedContents.get(msg.id) ?? '';
@@ -951,6 +973,16 @@ export function useMessages(): UseMessagesReturn {
       const activeId = useChatStore.getState().activeConversationId;
       if (incomingMessage.conversationId !== activeId) {
         incrementUnread(incomingMessage.conversationId);
+      }
+
+      // Emit read receipt for messages in the active conversation (D7B)
+      if (incomingMessage.conversationId === activeId && isConnected()) {
+        emitEvent('message:read', {
+          messageIds: [incomingMessage.id],
+          conversationId: incomingMessage.conversationId,
+          correlationId: generateCorrelationId(),
+          timestamp: new Date().toISOString(),
+        });
       }
 
       // Index for client-side search (R21)
