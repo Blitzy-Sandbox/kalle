@@ -92,6 +92,11 @@ interface MessageRecord {
   }>;
   media?: Array<{
     id: string;
+    encryptedUrl: string | null;
+    thumbnailUrl: string | null;
+    filename: string | null;
+    mimeType: string | null;
+    size: number | null;
   }>;
 }
 
@@ -102,7 +107,7 @@ interface MessageRecord {
 /**
  * Full relation include used by most query and mutation methods.
  * Eagerly loads sender profile, replyTo preview, per-recipient statuses,
- * and the first media attachment ID.
+ * and the first media attachment with full metadata (URL, thumbnail, filename, MIME type, size).
  */
 const FULL_MESSAGE_INCLUDE = {
   sender: {
@@ -121,7 +126,7 @@ const FULL_MESSAGE_INCLUDE = {
     select: { userId: true, status: true, deliveredAt: true, readAt: true },
   },
   media: {
-    select: { id: true },
+    select: { id: true, encryptedUrl: true, thumbnailUrl: true, filename: true, mimeType: true, size: true },
     take: 1,
   },
 } as const;
@@ -596,6 +601,7 @@ export class MessageRepository implements IMessageRepository {
       record.media && record.media.length > 0
         ? record.media[0].id
         : undefined;
+    const primaryMedia = record.media && record.media.length > 0 ? record.media[0] : undefined;
 
     // Build reply-to preview if the replyTo relation was included
     let replyTo: ReplyToMessage | undefined;
@@ -620,6 +626,11 @@ export class MessageRepository implements IMessageRepository {
       status: aggregateStatus,
       replyTo,
       mediaId,
+      mediaUrl: primaryMedia?.encryptedUrl ?? undefined,
+      mediaThumbnailUrl: primaryMedia?.thumbnailUrl ?? undefined,
+      mediaFileName: primaryMedia?.filename ?? undefined,
+      mediaMimeType: primaryMedia?.mimeType ?? undefined,
+      mediaFileSize: primaryMedia?.size ?? undefined,
       isEdited: record.isEdited,
       isDeleted: record.isDeleted,
       editedAt: record.editedAt ? record.editedAt.toISOString() : undefined,
