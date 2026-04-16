@@ -50,10 +50,14 @@ interface AuthUserData {
   updatedAt: string;
 }
 
-/** Full API response from POST /api/v1/auth/login */
+/** Full API response from POST /api/v1/auth/login.
+ *  The API wraps all responses in a `{ data: … }` envelope per the
+ *  standard response format used by AuthController. */
 interface AuthLoginResponse {
-  tokens: AuthTokens;
-  user: AuthUserData;
+  data: {
+    tokens: AuthTokens;
+    user: AuthUserData;
+  };
 }
 
 /* =============================================================================
@@ -118,7 +122,11 @@ export default function LoginPage(): JSX.Element {
           return;
         }
 
-        const data: AuthLoginResponse = await response.json();
+        const responseBody: AuthLoginResponse = await response.json();
+
+        /* Unwrap the standard API `{ data: … }` envelope to extract the
+           AuthResponse payload containing tokens and user profile. */
+        const { tokens, user } = responseBody.data;
 
         /* Store tokens and user data (two-arg signature per authStore).
            Type assertion bridges local AuthLoginResponse types with the
@@ -128,8 +136,8 @@ export default function LoginPage(): JSX.Element {
         useAuthStore
           .getState()
           .login(
-            data.tokens as Parameters<typeof login>[0],
-            data.user as Parameters<typeof login>[1],
+            tokens as Parameters<typeof login>[0],
+            user as Parameters<typeof login>[1],
           );
 
         router.push('/chat');
