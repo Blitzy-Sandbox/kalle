@@ -7,7 +7,7 @@
  * dependencies from server.ts and assembles the Express middleware chain in
  * the correct order.
  *
- * **Middleware ordering is critical.** Steps are numbered 1–12 and must remain
+ * **Middleware ordering is critical.** Steps are numbered 1–13 and must remain
  * in the documented order for correct behavior (correlation IDs available to
  * the logger, metrics measured around routes, error handler is the final
  * catch-all, etc.).
@@ -96,6 +96,13 @@ export interface AppDependencies {
    * into the HTTP middleware chain at step 9.
    */
   metricsService: MetricsService;
+
+  /**
+   * Absolute or relative path to the directory containing uploaded files.
+   * Served as static files at the `/uploads` prefix with Cross-Origin-Resource-Policy
+   * set to 'cross-origin' for cross-origin image loading from the frontend.
+   */
+  uploadDir: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -106,7 +113,7 @@ export interface AppDependencies {
  * Creates and configures the Express application with the complete ordered
  * middleware chain.
  *
- * **Middleware chain (12 steps — order is CRITICAL):**
+ * **Middleware chain (13 steps — order is CRITICAL):**
  *
  * | # | Middleware              | Purpose                                    |
  * |---|------------------------|--------------------------------------------|
@@ -119,9 +126,10 @@ export interface AppDependencies {
  * | 7 | Correlation ID         | UUID v4 per request (Rule R29)             |
  * | 8 | Pino HTTP logger       | Structured request logging (Rule R28)      |
  * | 9 | Metrics                | HTTP instrumentation (Rule R37)            |
- * |10 | API v1 routes          | All versioned endpoints (Rule R30)         |
- * |11 | 404 catch-all          | Unmatched routes (Rule R22)                |
- * |12 | Error handler          | Global error handler — MUST be last (R22)  |
+ * |10 | Static uploads         | Serve /uploads with CORP header            |
+ * |11 | API v1 routes          | All versioned endpoints (Rule R30)         |
+ * |12 | 404 catch-all          | Unmatched routes (Rule R22)                |
+ * |13 | Error handler          | Global error handler — MUST be last (R22)  |
  *
  * @param deps - Pre-configured dependencies from the composition root
  * @returns Fully configured Express Application instance ready for
@@ -179,7 +187,7 @@ export function createApp(deps: AppDependencies): Application {
   // protocol overhead (base64 encoding, metadata envelope).
   //
   // Express body-parser returns 413 (Payload Too Large) when the limit is
-  // exceeded. The global error handler (step 12) translates this into the
+  // exceeded. The global error handler (step 13) translates this into the
   // standardized error response shape.
   // -------------------------------------------------------------------------
   app.use(express.json({ limit: '26mb' }));
@@ -237,7 +245,20 @@ export function createApp(deps: AppDependencies): Application {
   app.use(createMetricsMiddleware(deps.metricsService));
 
   // -------------------------------------------------------------------------
-  // Step 10: API Routes — All Versioned Endpoints (Rule R30)
+  // Step 10: Static File Serving — Uploaded Media Assets
+  //
+  // Serves the uploads directory as static files at the /uploads prefix.
+  // An inline middleware sets Cross-Origin-Resource-Policy: cross-origin on
+  // EVERY response (including 404s) so the frontend at a different origin
+  // can load images and media without CORS blocks.
+  // -------------------------------------------------------------------------
+  app.use('/uploads', (_req, res, next) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    next();
+  }, express.static(deps.uploadDir));
+
+  // -------------------------------------------------------------------------
+  // Step 11: API Routes — All Versioned Endpoints (Rule R30)
   //
   // Mounts the fully assembled v1 router under the /api/v1 prefix. The
   // router contains all route handlers with auth middleware, rate limiting,
@@ -251,9 +272,9 @@ export function createApp(deps: AppDependencies): Application {
   app.use('/api/v1', deps.v1Router);
 
   // -------------------------------------------------------------------------
-  // Step 11: 404 Catch-All Handler
+  // Step 12: 404 Catch-All Handler
   //
-  // Catches all requests that did not match any route in step 10. Returns
+  // Catches all requests that did not match any route in step 11. Returns
   // the standardized error response shape (Rule R22) so clients receive
   // consistent error payloads regardless of the error type.
   // -------------------------------------------------------------------------
@@ -268,7 +289,7 @@ export function createApp(deps: AppDependencies): Application {
   });
 
   // -------------------------------------------------------------------------
-  // Step 12: Global Error Handler — MUST BE LAST (Rule R22)
+  // Step 13: Global Error Handler — MUST BE LAST (Rule R22)
   //
   // Express identifies error-handling middleware by its 4-argument signature
   // (err, req, res, next). This middleware catches all errors thrown by

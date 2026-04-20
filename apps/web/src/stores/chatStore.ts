@@ -266,16 +266,24 @@ export const useChatStore = create<ChatState>((set, get) => ({
 
   setConversations: (conversations: ConversationListItem[]): void => {
     const sorted = sortConversationsByRecent(conversations);
+    const existingUnreadCounts = get().unreadCounts;
+    const newUnreadCounts = new Map<string, number>(existingUnreadCounts);
 
-    /* Initialise unread counts from each conversation's unreadCount field */
-    const newUnreadCounts = new Map<string, number>(get().unreadCounts);
-    for (const conv of sorted) {
-      if (!newUnreadCounts.has(conv.id)) {
+    const merged = sorted.map((conv) => {
+      if (!existingUnreadCounts.has(conv.id)) {
+        // First time seeing this conversation — initialize from server data
         newUnreadCounts.set(conv.id, conv.unreadCount);
+        return conv;
       }
-    }
+      // Conversation already tracked — preserve locally-tracked count
+      const localCount = existingUnreadCounts.get(conv.id)!;
+      if (localCount !== conv.unreadCount) {
+        return { ...conv, unreadCount: localCount };
+      }
+      return conv;
+    });
 
-    set({ conversations: sorted, unreadCounts: newUnreadCounts });
+    set({ conversations: merged, unreadCounts: newUnreadCounts });
   },
 
   addConversation: (conversation: ConversationListItem): void => {
@@ -352,15 +360,44 @@ export const useChatStore = create<ChatState>((set, get) => ({
   setActiveConversation: (conversationId: string | null): void => {
     const state = get();
 
-    /* When navigating into a conversation, reset its unread count to 0 */
+    /* When navigating into a conversation, reset its unread count to 0.
+       Both the unreadCounts Map AND the conversation object's unreadCount
+       property must be zeroed so that components reading either source
+       (Map selector or conversation.unreadCount) reflect the update
+       immediately without waiting for a server refetch.
+
+       IMPORTANT: We only create a new conversations array when the
+       target conversation's unreadCount is actually non-zero.  This
+       avoids producing a new array reference on repeated / bounced-back
+       calls (e.g. from ChatView effect cleanup→setup cycles that
+       re-invoke setActiveConversation with the same ID), which would
+       otherwise trigger parent re-renders and cause an infinite React
+       update loop through the chat/[id]/page → ChatView → usePresence
+       (unstable inline stopTyping callback) → effect cleanup chain. */
     if (conversationId !== null) {
       const newUnreadCounts = new Map(state.unreadCounts);
       newUnreadCounts.set(conversationId, 0);
 
-      set({
-        activeConversationId: conversationId,
-        unreadCounts: newUnreadCounts,
-      });
+      const idx = state.conversations.findIndex((c) => c.id === conversationId);
+      if (idx !== -1 && state.conversations[idx].unreadCount !== 0) {
+        /* Conversation exists and has a stale unread count — create a
+           new array with the zeroed copy so ChatList sees the change. */
+        const updatedConversations = [...state.conversations];
+        updatedConversations[idx] = { ...updatedConversations[idx], unreadCount: 0 };
+        set({
+          activeConversationId: conversationId,
+          unreadCounts: newUnreadCounts,
+          conversations: updatedConversations,
+        });
+      } else {
+        /* Conversation not found or unreadCount already 0 — skip the
+           conversations update to preserve the existing array reference
+           and prevent unnecessary re-render cascades. */
+        set({
+          activeConversationId: conversationId,
+          unreadCounts: newUnreadCounts,
+        });
+      }
     } else {
       set({ activeConversationId: null });
     }
