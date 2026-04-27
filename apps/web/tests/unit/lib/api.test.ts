@@ -362,8 +362,17 @@ describe('token refresh interceptor', () => {
     expect(mockClearTokens).toHaveBeenCalled();
   });
 
-  it('should not attempt refresh when isRetry is true (prevent infinite loop)', async () => {
-    // Original → 401, refresh → 200, retry → another 401
+  it('should bail to logout-and-redirect on retry-401 with no second refresh (FR-8 + FR-9)', async () => {
+    // Original → 401, refresh → 200, retry → another 401, logout → 204.
+    //
+    // Per AAP FR-8 + FR-9 + Rule R7: when the retry (isRetry === true) ALSO
+    // returns 401, the V2 client does NOT attempt a second refresh (anti-
+    // infinite-loop invariant); instead it issues a best-effort
+    // POST /api/v1/auth/logout to clear the httpOnly refresh cookie, then
+    // calls clearTokens() and redirects to /login. The original retry-401
+    // response code (e.g. 'STILL_UNAUTHORIZED') is intentionally NOT
+    // propagated; the surface error is the consolidated session-expired
+    // 'AUTHENTICATION_ERROR' so callers/UX uniformly handle session loss.
     mockFetch.mockResolvedValueOnce(
       createMockResponse(401, {
         error: { code: 'TOKEN_EXPIRED', message: 'expired' },
@@ -377,17 +386,43 @@ describe('token refresh interceptor', () => {
         error: { code: 'STILL_UNAUTHORIZED', message: 'still bad' },
       }),
     );
+    // Best-effort logout fetch (FR-9): server returns HTTP 204 on success.
+    mockFetch.mockResolvedValueOnce(createMockResponse(204, null));
 
     try {
       await apiClient.get('/api/v1/protected');
       expect.unreachable('Should have thrown');
     } catch (err) {
       expect(err).toBeInstanceOf(ApiError);
-      expect((err as ApiError).code).toBe('STILL_UNAUTHORIZED');
+      const apiErr = err as ApiError;
+      expect(apiErr.code).toBe('AUTHENTICATION_ERROR');
+      expect(apiErr.status).toBe(401);
     }
 
-    // Only 3 fetch calls: initial, refresh, retry (no second refresh)
-    expect(mockFetch).toHaveBeenCalledTimes(3);
+    // Anti-infinite-loop invariant: exactly ONE refresh attempt per outer request.
+    const refreshCalls = mockFetch.mock.calls.filter(
+      (call) =>
+        typeof call[0] === 'string' &&
+        (call[0] as string).includes('/api/v1/auth/refresh'),
+    );
+    expect(refreshCalls).toHaveLength(1);
+
+    // FR-9: best-effort logout fetch was issued before in-memory clear.
+    const logoutCalls = mockFetch.mock.calls.filter(
+      (call) =>
+        typeof call[0] === 'string' &&
+        (call[0] as string).includes('/api/v1/auth/logout'),
+    );
+    expect(logoutCalls).toHaveLength(1);
+    const [, logoutOpts] = logoutCalls[0] as [string, RequestInit];
+    expect(logoutOpts.method).toBe('POST');
+    expect(logoutOpts.credentials).toBe('include');
+
+    // In-memory state cleared (R7) for redirect to /login.
+    expect(mockClearTokens).toHaveBeenCalled();
+
+    // Total fetch sequence: initial 401, refresh 200, retry 401, logout 204.
+    expect(mockFetch).toHaveBeenCalledTimes(4);
   });
 
   it('should not attempt refresh when no token accessor is registered', async () => {

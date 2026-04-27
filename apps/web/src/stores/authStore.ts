@@ -44,6 +44,55 @@ import type { UserResponse, TokenPair, UpdateProfileDTO } from '@kalle/shared';
 import { setTokenAccessor, apiClient } from '../lib/api';
 
 // =============================================================================
+// Local Token Set Type (V2 Cookie Compatibility)
+// =============================================================================
+
+/**
+ * Token set passed to `refreshTokens()` and to the `setTokens` callback
+ * registered with the API client via `setTokenAccessor`.
+ *
+ * Structurally mirrors the (internal, non-exported) `TokenSet` interface in
+ * `lib/api.ts`. TypeScript's structural typing makes the two interfaces
+ * cross-module compatible; no nominal binding is required.
+ *
+ * The key difference from `TokenPair` (in `@kalle/shared`) is that
+ * `refreshToken` may be `null`. In **V2 mode** (per AAP FR-8 + Rule R7),
+ * the refresh token lives in an `httpOnly; Secure; SameSite=Strict` cookie
+ * that is invisible to JavaScript, so the JS state holds `refreshToken: null`
+ * while the access token still lives in memory. In **legacy mode**
+ * (`AUTH_V2_ENABLED=false`), `refreshToken` is the in-memory string
+ * returned alongside the access token by `POST /api/v1/auth/login` and
+ * `POST /api/v1/auth/refresh`.
+ *
+ * Why this lives in authStore.ts rather than @kalle/shared:
+ *   The V2 work is constrained to the auth/flag codepath; modifying the
+ *   shared types package is out of scope for this AAP. A local structural
+ *   duplicate keeps cross-folder coordination minimal while satisfying the
+ *   compile-time type contract with `lib/api.ts`.
+ *
+ * @see lib/api.ts — canonical TokenSet definition
+ * @see R7   — Token storage policy (refresh in cookie, access in memory)
+ * @see FR-8 — Web PKCE flow with httpOnly refresh-token cookie
+ */
+interface TokenSet {
+  /** Short-lived JWT access token; ALWAYS present after a successful auth/refresh. */
+  accessToken: string;
+
+  /**
+   * Opaque refresh token — string in legacy mode, null in V2 mode (cookie-only).
+   * When null, the in-memory store MUST NOT persist any refresh-token value
+   * (R7); the cookie alone authorizes the next refresh.
+   */
+  refreshToken: string | null;
+
+  /** Access token TTL in seconds; 0 if absent from response (V2 may omit). */
+  expiresIn: number;
+
+  /** Refresh token TTL in seconds; 0 if absent from response (V2 omits). */
+  refreshExpiresIn: number;
+}
+
+// =============================================================================
 // State Interface
 // =============================================================================
 
@@ -122,9 +171,15 @@ interface AuthState {
    * received and the refresh succeeds. The user remains authenticated
    * with fresh tokens.
    *
-   * @param newTokens - Fresh token pair from the refresh endpoint
+   * In V2 mode (per AAP FR-8 + Rule R7) the `refreshToken` field is `null`
+   * because the refresh token lives in an httpOnly cookie that JavaScript
+   * cannot read; the in-memory state correctly stores `null` to avoid
+   * holding any stale value. In legacy mode the field is the opaque refresh
+   * token string returned by the API.
+   *
+   * @param newTokens - Fresh token set from the refresh endpoint
    */
-  refreshTokens: (newTokens: TokenPair) => void;
+  refreshTokens: (newTokens: TokenSet) => void;
 
   /**
    * Partially merges profile updates into the existing user object.
@@ -227,10 +282,15 @@ export const useAuthStore = create<AuthState>()(
         // Re-register token accessor with the API client after login to
         // ensure callbacks reference the latest store instance. Uses
         // getState() to always retrieve fresh values on each API call.
+        //
+        // The `setTokens` callback accepts `TokenSet` (broader than TokenPair)
+        // so V2 mode can pass `refreshToken: null` when the refresh token
+        // lives in the httpOnly cookie and is intentionally absent from the
+        // refresh response body (per AAP FR-8 + Rule R7).
         setTokenAccessor({
           getAccessToken: () => useAuthStore.getState().accessToken,
           getRefreshToken: () => useAuthStore.getState().refreshToken,
-          setTokens: (newTokens: TokenPair) =>
+          setTokens: (newTokens: TokenSet) =>
             useAuthStore.getState().refreshTokens(newTokens),
           clearTokens: () => useAuthStore.getState().logout(),
         });
@@ -256,7 +316,12 @@ export const useAuthStore = create<AuthState>()(
         }
       },
 
-      refreshTokens: (newTokens: TokenPair): void => {
+      refreshTokens: (newTokens: TokenSet): void => {
+        // In V2 mode, `newTokens.refreshToken` is `null` (the value lives in
+        // the httpOnly cookie, not in JS). The state's `refreshToken` field
+        // is `string | null`, so the assignment is type-safe in both modes.
+        // In legacy mode, `newTokens.refreshToken` is the opaque string from
+        // the API response and is stored in memory as before.
         set({
           accessToken: newTokens.accessToken,
           refreshToken: newTokens.refreshToken,
@@ -401,10 +466,14 @@ export const useAuthStore = create<AuthState>()(
  * and other browser APIs are unavailable.
  */
 if (typeof window !== 'undefined') {
+  // The `setTokens` callback accepts `TokenSet` (broader than TokenPair) so
+  // V2 mode can pass `refreshToken: null` when the refresh token lives in
+  // the httpOnly cookie and is intentionally absent from the refresh
+  // response body (per AAP FR-8 + Rule R7).
   setTokenAccessor({
     getAccessToken: () => useAuthStore.getState().accessToken,
     getRefreshToken: () => useAuthStore.getState().refreshToken,
-    setTokens: (tokens: TokenPair) =>
+    setTokens: (tokens: TokenSet) =>
       useAuthStore.getState().refreshTokens(tokens),
     clearTokens: () => useAuthStore.getState().logout(),
   });
