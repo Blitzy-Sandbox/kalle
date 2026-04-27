@@ -17,8 +17,8 @@
     "clean": "rm -rf dist coverage .turbo"
   },
   "dependencies": {
-    "@blitzy/admin-ui": "workspace:*",
-    "@blitzy/auth": "workspace:*",
+    "@blitzy/admin-ui": "file:../../../packages/admin-ui",
+    "@blitzy/auth": "file:../../../packages/auth",
     "@kalle/shared": "*",
     "@opentelemetry/api": "^1.8.0",
     "@opentelemetry/exporter-metrics-otlp-http": "^0.51.1",

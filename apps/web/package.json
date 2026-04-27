@@ -13,7 +13,7 @@
     "clean": "rm -rf .next dist coverage"
   },
   "dependencies": {
-    "@blitzy/auth": "workspace:*",
+    "@blitzy/auth": "file:../../../packages/auth",
     "@kalle/shared": "*",
     "@privacyresearch/libsignal-protocol-typescript": "^0.0.16",
     "dexie": "^4.0.0",
