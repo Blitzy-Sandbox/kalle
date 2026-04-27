@@ -12,6 +12,33 @@
  * AuthController (thin delegation) and correspond to REST endpoints under
  * /api/v1/auth/*.
  *
+ * **V2 OAuth Bypass (FR-9, R3, R4):**
+ * This service is BYPASSED when `AUTH_V2_ENABLED=true`. Per Rule R4 (mutual
+ * exclusion at runtime), legacy `AuthService` and the V2 OAuth path
+ * (`createExpressMiddleware` from `@blitzy/auth`) MUST NOT both execute on a
+ * single request. The bypass is enforced inside `middleware/auth.ts`'s
+ * flag-first synchronous check — when the flag resolves to true, the
+ * V2-aware factory dispatches to `@blitzy/auth` and this service is
+ * never invoked. When the flag resolves to false (DB or env-var fallback
+ * per Rule RF3), this service handles the request as before.
+ *
+ * The R-rule list below remains AUTHORITATIVE for the legacy path. All
+ * methods, types, signatures, error responses, audit log entries, JWT
+ * payloads, refresh-token rotation, and Redis blacklist semantics are
+ * preserved byte-identical (Rule R12 API stability) so the existing
+ * 1,814-test kalle suite passes byte-identically when AUTH_V2_ENABLED=false
+ * (whether resolved via DB or env-var fallback).
+ *
+ * **Backchannel Logout Compatibility (IR-G):**
+ * The `BLACKLIST_PREFIX = 'blacklist:'` constant declared inside this
+ * module is INTENTIONALLY byte-identical to `KALLE_REDIS_BLACKLIST_KEY_PREFIX`
+ * consumed by the V2 sidecar's `POST /backchannel-logout` handler. A
+ * single Redis namespace (`blacklist:${jti}`) serves both V1 and V2 modes,
+ * so a Keycloak-initiated backchannel logout invalidates V1-issued tokens
+ * AND V2-issued tokens through the same key prefix. Do NOT change this
+ * prefix without also updating @blitzy/auth's KALLE_REDIS_BLACKLIST_KEY_PREFIX
+ * default and the corresponding Docker Compose env-var.
+ *
  * Architecture Rules Enforced:
  * - R17: Interface-driven dependencies — all dependencies received via constructor
  *        injection typed as INTERFACES. Never imports concrete repository/provider classes.
