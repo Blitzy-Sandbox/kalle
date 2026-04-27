@@ -88,6 +88,78 @@ services:
       start_period: 10s
 
   # ---------------------------------------------------------------------------
+  # Keycloak 24 — OAuth 2.0 / OIDC Identity Provider for V2 Auth (FR-1, FR-11)
+  # ---------------------------------------------------------------------------
+  # Acts as the OAuth Authorization Server backing the V2 auth path. Bootstraps
+  # the `blitzy` realm via --import-realm using the realm export bind-mounted
+  # from packages/auth/keycloak/realm-export.json (one directory above kalle/).
+  #
+  # Per AAP Section 0.5.1.4 (Group 4) and Section 0.4.1.6 (sequence diagram),
+  # this service is required for:
+  #   * Kalle PKCE login redirect (FR-8)
+  #   * Cross-app SSO audience chain (FR-11) — issues tokens carrying both
+  #     "kalle-app" AND "odoo-app" in the aud claim when odoo:basic/odoo:admin
+  #     scopes are requested.
+  #   * Backchannel logout token push to the auth sidecar.
+  #
+  # Operational hardening (resolves QA C1 findings):
+  #   * --health-enabled=true exposes /health/{live,ready,started} on :8080
+  #     for the docker-compose healthcheck below (Issue 5).
+  #   * --log-console-output=json emits structured JSON log lines to satisfy
+  #     the Observability rule (Issue 6).
+  #   * Healthcheck uses bash's built-in /dev/tcp instead of curl/wget because
+  #     the keycloak:24.0 image (UBI 9 minimal) does NOT ship curl or wget.
+  #     Bash 5.1 is available at /bin/sh -> bash, supporting /dev/tcp natively.
+  # ---------------------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: kalle-keycloak
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Master-realm admin credentials for bootstrapping the blitzy realm and
+      # for seed-admin.ts to call the Admin REST API. Defaults are for local
+      # dev only; production deployments MUST override via .env (R8 spirit —
+      # though placeholders here are sourced from environment, never committed).
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      # Enables the Quarkus health extension so /health/ready returns 200/503
+      # instead of 404. Required for the healthcheck below to function.
+      KC_HEALTH_ENABLED: "true"
+      # Switches Quarkus log handler from human-readable text to structured JSON
+      # output. Satisfies User-Specified Observability rule.
+      KC_LOG_CONSOLE_OUTPUT: "json"
+    command:
+      - start-dev
+      - --import-realm
+      - --health-enabled=true
+      - --log-console-output=json
+    volumes:
+      # Bind-mount ONLY the realm-export.json file into Keycloak's import
+      # directory (NOT the entire packages/auth/keycloak/ directory). Keycloak's
+      # --import-realm flag scans /opt/keycloak/data/import for ALL *.json
+      # files; the sibling google-broker-flow.json is a standalone documentation
+      # artifact (per its own $schema-comment) and is NOT a valid
+      # RealmRepresentation, so mounting it would cause Keycloak to fail
+      # startup with an UnrecognizedPropertyException. The single-file mount
+      # keeps the documentation file in the source tree while ensuring only
+      # the realm export reaches Keycloak's importer.
+      - ../packages/auth/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+    healthcheck:
+      # Uses bash /dev/tcp because curl and wget are NOT installed in the
+      # quay.io/keycloak/keycloak:24.0 image (verified 2026-04-27). Sends a
+      # raw HTTP GET to /health/ready and asserts that the first response
+      # line contains "200" (HTTP/1.0 200 OK).
+      test:
+        - CMD-SHELL
+        - "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /health/ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q '200' || exit 1"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
   # Express API + Socket.IO Backend (port 3001)
   # ---------------------------------------------------------------------------
   # Composition root wiring all domain services, repositories, and providers.
