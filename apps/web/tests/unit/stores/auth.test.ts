@@ -688,7 +688,7 @@ describe('authStore', () => {
       );
     });
 
-    it('should persist only partialized state (no isLoading or isInitialized)', () => {
+    it('should persist only partialized state (R7: tokens excluded; isLoading/isInitialized excluded)', () => {
       useAuthStore.getState().login(makeTokenPair(), makeUser());
 
       // Find the setItem call for the auth storage key
@@ -700,13 +700,17 @@ describe('authStore', () => {
       const lastCall = calls[calls.length - 1];
       const persisted = JSON.parse(lastCall[1]);
 
-      // Should contain partialized state
-      expect(persisted.state).toHaveProperty('accessToken');
-      expect(persisted.state).toHaveProperty('refreshToken');
+      // FOUC-prevention slice — these fields SHOULD be in persisted state
       expect(persisted.state).toHaveProperty('user');
       expect(persisted.state).toHaveProperty('isAuthenticated');
 
-      // Should NOT contain transient state
+      // R7 (CRITICAL): tokens are NEVER persisted to sessionStorage —
+      // they live ONLY in JS memory and the in-memory refreshToken slice
+      // is null in V2 mode (refresh value lives in httpOnly cookie).
+      expect(persisted.state).not.toHaveProperty('accessToken');
+      expect(persisted.state).not.toHaveProperty('refreshToken');
+
+      // Transient state should NOT be persisted
       expect(persisted.state).not.toHaveProperty('isLoading');
       expect(persisted.state).not.toHaveProperty('isInitialized');
     });
