@@ -1,5 +1,5 @@
 # =============================================================================
-# Dockerfile.worker — BullMQ Worker Multi-Stage Build
+# Dockerfile.worker — BullMQ Worker Multi-Stage Build (V2 / OAuth-aware)
 # =============================================================================
 # Production-grade multi-stage build for the Kalle WhatsApp clone BullMQ worker
 # process. The worker handles asynchronous background jobs including:
@@ -11,14 +11,36 @@
 #   - Audit log retention purge (90-day)
 #   - Low prekey replenish notifications
 #
+# F-CRITICAL-1 fix (QA Checkpoint F2): The build context is the REPOSITORY
+# ROOT (one level above this Dockerfile). This change is required so that
+# the same docker-compose.yml can build api, web, and worker from the same
+# context (since api/web require it for @blitzy packages). The worker itself
+# does NOT import @blitzy/auth or @blitzy/admin-ui, but it shares the
+# kalle/package-lock.json with the api/web workspaces, and the lockfile
+# contains file:../../../packages/auth references from sibling workspaces.
+#
+# Filesystem-Root Layout — see Dockerfile.api for full explanation.
+# Summary:
+#   /node_modules/.pnpm/...                        ← pnpm virtual store
+#   /packages/auth/{dist,prisma,...}               ← built @blitzy/auth
+#   /packages/admin-ui/{dist,prisma,...}           ← built @blitzy/admin-ui
+#   /app/...                                        ← kalle workspace
+#
 # Build stages:
-#   1. deps    — Install npm workspace dependencies (cached layer)
-#   2. builder — Compile @kalle/shared + worker TypeScript, generate Prisma client
-#   3. runner  — Minimal Alpine image with compiled output only
+#   1. pnpm-deps — Install root pnpm workspace; build @blitzy/auth + @blitzy/admin-ui
+#                  (required so npm ci can resolve sibling workspace file:
+#                  references in apps/{api,web}/package.json — even though the
+#                  worker itself doesn't depend on @blitzy)
+#   2. deps      — Install kalle's npm workspace dependencies
+#   3. builder   — Compile @kalle/shared, generate Prisma, build worker
+#   4. runner    — Minimal Alpine image with compiled output only
+#                  (does NOT include /packages or /node_modules/.pnpm at
+#                  runtime since worker has no @blitzy imports — minimal
+#                  attack surface and image size)
 #
 # Usage:
-#   Production:  docker build -f Dockerfile.worker -t kalle-worker .
-#   Dev mode:    docker-compose up worker  (overrides CMD with tsx watch)
+#   Production:  docker build -f kalle/Dockerfile.worker -t kalle-worker .
+#   Dev mode:    docker compose up worker  (overrides CMD with tsx watch)
 #
 # Requirements:
 #   - Node.js 20 Alpine (matches monorepo engine requirement >=20.0.0)
@@ -29,7 +51,54 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Stage 1: Dependencies — Install npm workspace packages
+# Stage 1: pnpm-deps — Install + build @blitzy/auth and @blitzy/admin-ui
+# -----------------------------------------------------------------------------
+# Even though the worker itself does NOT import @blitzy/auth or @blitzy/admin-ui,
+# the kalle workspace's package-lock.json contains file:../../../packages/auth
+# references from sibling apps/api and apps/web workspaces. When npm ci
+# processes the lockfile in the next stage, it scans these references and
+# fails if the referenced packages cannot be located on disk.
+#
+# F-CRITICAL-1: Build context is the repo root. Source paths in COPY are
+# therefore root-relative (e.g. `packages/auth/...` not `../packages/auth/...`).
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS pnpm-deps
+
+# Alpine compatibility deps. openssl + libssl3 + libcrypto3 are needed so
+# Prisma can generate the correct query/schema engine binaries against
+# OpenSSL 3.x (Alpine 3.19+ default).
+RUN apk add --no-cache libc6-compat openssl libssl3 libcrypto3 ca-certificates
+
+# Pin pnpm to the version declared in repo-root package.json packageManager.
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+
+# Use a distinct WORKDIR for this stage so we don't collide with /app later.
+WORKDIR /pnpm-workspace
+
+# 1. Copy root pnpm workspace manifests FIRST for optimal layer caching.
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+
+# 2. Copy each package's package.json so pnpm-lock.yaml resolves correctly.
+COPY packages/auth/package.json     ./packages/auth/
+COPY packages/admin-ui/package.json ./packages/admin-ui/
+
+# 3. Install ALL workspace deps deterministically (incl. devDependencies).
+RUN pnpm install --frozen-lockfile --prefer-offline
+
+# 4. Copy package source for both libraries.
+COPY packages/auth     ./packages/auth/
+COPY packages/admin-ui ./packages/admin-ui/
+
+# 5. Generate Prisma clients (each package has its own schema).
+RUN cd packages/auth     && pnpm exec prisma generate --schema prisma/schema.prisma
+RUN cd packages/admin-ui && pnpm exec prisma generate --schema prisma/schema.prisma
+
+# 6. Build both packages.
+RUN pnpm --filter @blitzy/auth     build
+RUN pnpm --filter @blitzy/admin-ui build
+
+# -----------------------------------------------------------------------------
+# Stage 2: deps — Install kalle npm workspace + carry pnpm artifacts forward
 # -----------------------------------------------------------------------------
 # This stage installs only the dependencies needed for the BullMQ worker and
 # the shared types package. By copying only package.json files first, Docker
@@ -47,20 +116,32 @@ RUN apk add --no-cache libc6-compat openssl
 
 WORKDIR /app
 
-# Copy root workspace manifests first for optimal Docker layer caching.
-# Only changes to package.json or package-lock.json will invalidate this cache.
-COPY package.json package-lock.json ./
+# F-CRITICAL-1: Place the built workspace packages and the pnpm virtual store
+# at FILESYSTEM ROOT (not under /app). The kalle lockfile has file: references
+# to /packages/auth and /packages/admin-ui from sibling workspaces (apps/api,
+# apps/web). Even though the worker doesn't import @blitzy, npm ci will scan
+# these file references during workspace resolution and fail if they're missing.
+COPY --from=pnpm-deps /pnpm-workspace/node_modules        /node_modules
+COPY --from=pnpm-deps /pnpm-workspace/packages/auth       /packages/auth
+COPY --from=pnpm-deps /pnpm-workspace/packages/admin-ui   /packages/admin-ui
 
-# Copy workspace package manifests needed for dependency resolution.
+# Copy root workspace manifests first for optimal Docker layer caching.
+# Source paths are kalle/-prefixed because build context is the repo root.
+COPY kalle/package.json kalle/package-lock.json ./
+
+# Copy ALL workspace package manifests needed for dependency resolution.
 # npm workspaces require all referenced workspace package.json files to be
 # present for the lockfile resolution to succeed.
-COPY packages/shared/package.json ./packages/shared/
-COPY workers/queue/package.json ./workers/queue/
+# kalle/package.json declares workspaces: ['packages/*', 'apps/*', 'workers/*']
+COPY kalle/packages/shared/package.json ./packages/shared/
+COPY kalle/apps/api/package.json ./apps/api/
+COPY kalle/apps/web/package.json ./apps/web/
+COPY kalle/workers/queue/package.json ./workers/queue/
 
 # Copy Prisma schema BEFORE npm ci — the root package.json "prepare" script
 # runs "npx prisma generate" during install, which requires the schema file.
 # Without this, npm ci fails with "prisma/schema.prisma not found".
-COPY prisma/ ./prisma/
+COPY kalle/prisma/ ./prisma/
 
 # Install ALL dependencies from the lockfile. We do NOT use --workspace flags
 # here because the root package.json devDependencies (including prisma ^5.14.x)
@@ -77,7 +158,7 @@ RUN npm ci --legacy-peer-deps --ignore-scripts
 RUN npx prisma generate
 
 # -----------------------------------------------------------------------------
-# Stage 2: Builder — Compile shared types, generate Prisma, build worker
+# Stage 3: Builder — Compile shared types, generate Prisma, build worker
 # -----------------------------------------------------------------------------
 # Builds the @kalle/shared TypeScript package first (dependency), generates the
 # Prisma client for database access, then compiles the worker TypeScript source
@@ -94,23 +175,30 @@ WORKDIR /app
 #   "Error loading shared library libssl.so.1.1"
 # Fix: Install OpenSSL 3 shared libraries and explicitly tell Prisma which
 # engine binaries to load via environment variables, bypassing broken detection.
-# NOTE: docker-compose.yml uses `target: builder` so this stage IS the runtime.
+# NOTE: docker-compose.yml uses `target: builder` so this stage IS the runtime
+# in dev mode (with tsx watch override).
 RUN apk add --no-cache openssl libssl3 libcrypto3
 
-# Copy installed node_modules from deps stage.
+# F-CRITICAL-1: Carry filesystem-root layout forward into builder.
+# Required during build for npm workspace symlinks (apps/api, apps/web)
+# even though we don't build those workspaces here.
+COPY --from=deps /node_modules /node_modules
+COPY --from=deps /packages     /packages
+
+# Copy installed node_modules from deps stage (kalle workspace).
 # npm ci without --workspace hoists ALL dependencies to the root node_modules.
 # Workspace-specific node_modules are not created in this configuration.
 COPY --from=deps /app/node_modules ./node_modules
 
 # Copy root workspace configuration files needed for build resolution.
 # tsconfig.base.json is extended by both packages/shared and workers/queue.
-COPY package.json ./
-COPY tsconfig.base.json ./
+COPY kalle/package.json ./
+COPY kalle/tsconfig.base.json ./
 
 # Copy Prisma schema — required for generating the Prisma client.
 # The worker needs database access for job processing (reading messages,
 # updating stories, writing audit logs, etc.).
-COPY prisma/ ./prisma/
+COPY kalle/prisma/ ./prisma/
 
 # Generate the Prisma client from schema.prisma.
 # This produces the @prisma/client package with typed query methods matching
@@ -120,7 +208,7 @@ RUN npx prisma generate
 
 # Copy shared package source — must be built before worker since worker
 # imports DTO types and constants from @kalle/shared.
-COPY packages/shared/ ./packages/shared/
+COPY kalle/packages/shared/ ./packages/shared/
 
 # Build the shared types package first (@kalle/shared).
 # This generates dist/ with compiled .js and .d.ts files that the worker
@@ -128,7 +216,7 @@ COPY packages/shared/ ./packages/shared/
 RUN npm run build --workspace=packages/shared
 
 # Copy worker source code.
-COPY workers/queue/ ./workers/queue/
+COPY kalle/workers/queue/ ./workers/queue/
 
 # Build the BullMQ worker TypeScript source.
 # Compiles src/**/*.ts to dist/**/*.js using the tsconfig.json that extends
@@ -136,12 +224,16 @@ COPY workers/queue/ ./workers/queue/
 RUN npm run build --workspace=workers/queue
 
 # -----------------------------------------------------------------------------
-# Stage 3: Runner — Minimal production image
+# Stage 4: Runner — Minimal production image
 # -----------------------------------------------------------------------------
 # Uses a clean Alpine Node.js image with only the compiled JavaScript output,
 # production node_modules, and Prisma client. No source code, no devDependencies,
 # no build tools — minimal attack surface and image size.
 # Runs as non-root user for security hardening.
+#
+# Note: The worker runner does NOT carry forward /packages or /node_modules/.pnpm
+# because the worker has zero @blitzy/* imports. This keeps the runtime image
+# minimal compared to api/web runners.
 # -----------------------------------------------------------------------------
 FROM node:20-alpine AS runner
 

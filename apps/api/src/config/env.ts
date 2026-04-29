@@ -246,6 +246,71 @@ export const envSchema = z.object({
     .describe('Keycloak client ID for the kalle public PKCE client'),
 
   /**
+   * Optional override for the JWKS endpoint URL (QA F-CRITICAL-4).
+   *
+   * In SPLIT-ENDPOINT deployments, kalle reaches Keycloak via an internal
+   * Docker hostname (e.g., `http://keycloak:8080`) while browsers reach
+   * Keycloak at a public URL (e.g., `http://localhost:8080`). The kalle
+   * server fetches JWKS via the INTERNAL URL but must validate the token's
+   * `iss` claim against the PUBLIC URL Keycloak embedded at mint time.
+   *
+   * When set, `initAuth()` uses this URL verbatim for JWKS fetching.
+   * When omitted, `initAuth()` derives the JWKS URI from `KEYCLOAK_BASE_URL`
+   * per the OIDC discovery convention
+   * (`${baseUrl}/realms/${realm}/protocol/openid-connect/certs`) — the
+   * single-network deployment default.
+   *
+   * The `z.preprocess` wrapper coerces empty strings (a common artifact
+   * of leaving the variable as `KEYCLOAK_JWKS_URI=` in `.env` or of
+   * docker-compose's `${KEYCLOAK_JWKS_URI:-}` expansion when unset) to
+   * `undefined` so the optional URL validator passes cleanly.
+   *
+   * See `packages/auth/src/auth/types.ts` `AuthConfig.jwksUri` JSDoc and
+   * the F-CRITICAL-4 entry in the QA Test Report.
+   */
+  KEYCLOAK_JWKS_URI: z
+    .preprocess(
+      (val) => (typeof val === 'string' && val.length === 0 ? undefined : val),
+      z.string().url('KEYCLOAK_JWKS_URI must be a valid URL').optional(),
+    )
+    .describe(
+      'Optional override for the JWKS endpoint URL (split-endpoint deployments)',
+    ),
+
+  /**
+   * Optional override for the expected JWT `iss` claim (QA F-CRITICAL-4).
+   *
+   * In SPLIT-ENDPOINT deployments, Keycloak embeds the BROWSER-perspective
+   * issuer URL in the `iss` claim of access tokens (because the realm's
+   * `frontendUrl` is set to the public URL, or because Keycloak honored
+   * the `Host` header during the token-mint flow). The kalle server must
+   * therefore validate against this PUBLIC issuer, even though it fetches
+   * JWKS via the INTERNAL URL set by `KEYCLOAK_JWKS_URI`.
+   *
+   * Example values:
+   *   - Internal:  `http://keycloak:8080/realms/blitzy`
+   *   - Public:    `http://localhost:8080/realms/blitzy`
+   *
+   * When set, `initAuth()` uses this URL verbatim for the `iss` claim
+   * assertion. When omitted, `initAuth()` derives the issuer from
+   * `KEYCLOAK_BASE_URL` (single-network deployment default).
+   *
+   * The `z.preprocess` wrapper coerces empty strings to `undefined` for
+   * the same reason as `KEYCLOAK_JWKS_URI` above.
+   *
+   * See `packages/auth/src/auth/types.ts` `AuthConfig.issuer` JSDoc and
+   * the F-CRITICAL-4 entry in the QA Test Report.
+   */
+  KEYCLOAK_ISSUER: z
+    .preprocess(
+      (val) => (typeof val === 'string' && val.length === 0 ? undefined : val),
+      z.string().url('KEYCLOAK_ISSUER must be a valid URL').optional(),
+    )
+    .describe(
+      'Optional override for the expected JWT `iss` claim (split-endpoint deployments)',
+    ),
+
+  /**
    * Base URL of the auth-sidecar service (no trailing slash).
    *
    * Example: `http://auth-sidecar:4001` (Docker Compose internal).

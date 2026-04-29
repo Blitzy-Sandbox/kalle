@@ -1,19 +1,36 @@
 # =============================================================================
-# Dockerfile.web — Next.js 14 Frontend Multi-Stage Build
+# Dockerfile.web — Next.js 14 Frontend Multi-Stage Build (V2 / OAuth-aware)
 # =============================================================================
 # Production-grade multi-stage build for the Kalle WhatsApp clone frontend.
 #
+# F-CRITICAL-1 fix (QA Checkpoint F2): The build context is the REPOSITORY
+# ROOT (one level above this Dockerfile). This change is required so the
+# build can include both the kalle/ workspace AND the new sibling
+# packages/auth and packages/admin-ui workspace libraries, which are referenced
+# from kalle/apps/web/package.json via the
+# `file:../../../packages/auth` protocol.
+#
+# Filesystem-Root Layout — see Dockerfile.api for full explanation.
+# Summary:
+#   /node_modules/.pnpm/...                        ← pnpm virtual store
+#   /packages/auth/{dist,prisma,...}               ← built @blitzy/auth
+#   /packages/admin-ui/{dist,prisma,...}           ← built @blitzy/admin-ui
+#   /app/...                                        ← kalle workspace
+#
 # Build stages:
-#   1. deps    — Install npm workspace dependencies (cached layer)
-#   2. builder — Compile @kalle/shared + Next.js production build
-#   3. runner  — Minimal Alpine image with standalone server
+#   1. pnpm-deps — Install root pnpm workspace; build @blitzy/auth + @blitzy/admin-ui
+#   2. deps      — Install kalle's npm workspace dependencies
+#   3. builder   — Compile @kalle/shared + Next.js production build
+#   4. runner    — Minimal Alpine image with standalone server
 #
 # Usage:
-#   Production:  docker build -f Dockerfile.web -t kalle-web .
-#   Dev mode:    docker-compose up web  (overrides CMD with next dev)
+#   Production:  docker build -f kalle/Dockerfile.web -t kalle-web .
+#   Dev mode:    docker compose up web  (overrides CMD with next dev)
 #
 # Requirements:
 #   - Node.js 20 Alpine (matches monorepo engine requirement)
+#   - pnpm 9.15.0 (root packages workspace)
+#   - npm 11.1.0 (kalle workspace)
 #   - Next.js standalone output mode (next.config.js: output: 'standalone')
 #   - Non-root user for production security
 #   - Port 3000 exposed
@@ -21,7 +38,54 @@
 # =============================================================================
 
 # -----------------------------------------------------------------------------
-# Stage 1: Dependencies — Install npm workspace packages
+# Stage 1: pnpm-deps — Install + build @blitzy/auth and @blitzy/admin-ui
+# -----------------------------------------------------------------------------
+# This stage uses pnpm@9.15.0 (per repo-root packageManager) to install and
+# build the two workspace libraries. The output is the pnpm node_modules tree
+# (with relative symlinks into .pnpm) plus packages/{auth,admin-ui}/dist/.
+#
+# F-CRITICAL-1: Build context is the repo root. Source paths in COPY are
+# therefore root-relative (e.g. `packages/auth/...` not `../packages/auth/...`).
+# -----------------------------------------------------------------------------
+FROM node:20-alpine AS pnpm-deps
+
+# Alpine compatibility deps. openssl + libssl3 + libcrypto3 are needed so
+# Prisma can generate the correct query/schema engine binaries against
+# OpenSSL 3.x (Alpine 3.19+ default). These are required because @blitzy/auth
+# and @blitzy/admin-ui both run prisma generate during build.
+RUN apk add --no-cache libc6-compat openssl libssl3 libcrypto3 ca-certificates
+
+# Pin pnpm to the version declared in repo-root package.json packageManager.
+RUN corepack enable && corepack prepare pnpm@9.15.0 --activate
+
+# Use a distinct WORKDIR for this stage so we don't accidentally collide
+# with /app (kalle workspace) in subsequent stages.
+WORKDIR /pnpm-workspace
+
+# 1. Copy root pnpm workspace manifests FIRST for optimal layer caching.
+COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
+
+# 2. Copy each package's package.json so pnpm-lock.yaml resolves correctly.
+COPY packages/auth/package.json     ./packages/auth/
+COPY packages/admin-ui/package.json ./packages/admin-ui/
+
+# 3. Install ALL workspace deps deterministically (incl. devDependencies for build).
+RUN pnpm install --frozen-lockfile --prefer-offline
+
+# 4. Copy package source for both libraries.
+COPY packages/auth     ./packages/auth/
+COPY packages/admin-ui ./packages/admin-ui/
+
+# 5. Generate Prisma clients (each package has its own schema).
+RUN cd packages/auth     && pnpm exec prisma generate --schema prisma/schema.prisma
+RUN cd packages/admin-ui && pnpm exec prisma generate --schema prisma/schema.prisma
+
+# 6. Build both packages.
+RUN pnpm --filter @blitzy/auth     build
+RUN pnpm --filter @blitzy/admin-ui build
+
+# -----------------------------------------------------------------------------
+# Stage 2: deps — Install kalle npm workspace + carry pnpm artifacts forward
 # -----------------------------------------------------------------------------
 # This stage installs only the dependencies needed for the web frontend and
 # the shared types package. By copying only package.json files first, Docker
@@ -35,29 +99,43 @@ RUN apk add --no-cache libc6-compat
 
 WORKDIR /app
 
+# F-CRITICAL-1: Place the built workspace packages and the pnpm virtual store
+# at FILESYSTEM ROOT (not under /app), mirroring the host repo layout. The
+# pnpm-internal relative symlinks (../../../node_modules/.pnpm/...) and
+# kalle's npm-internal symlinks (created in the next step) both resolve into
+# this layout via Node's standard upward node_modules walk.
+#
+# Note: kalle's npm ci will create /app/node_modules/@blitzy/auth as a relative
+# symlink with target ../../../packages/auth → /packages/auth. ✓
+COPY --from=pnpm-deps /pnpm-workspace/node_modules        /node_modules
+COPY --from=pnpm-deps /pnpm-workspace/packages/auth       /packages/auth
+COPY --from=pnpm-deps /pnpm-workspace/packages/admin-ui   /packages/admin-ui
+
 # Copy root workspace manifests first for optimal Docker layer caching.
 # Only changes to package.json or package-lock.json will invalidate this cache.
-COPY package.json package-lock.json ./
+# Source paths are kalle/-prefixed because build context is the repo root.
+COPY kalle/package.json kalle/package-lock.json ./
 
-# Copy workspace package manifests needed for dependency resolution.
+# Copy ALL workspace package manifests needed for dependency resolution.
 # npm workspaces require all referenced workspace package.json files to be
 # present for the lockfile resolution to succeed.
-COPY packages/shared/package.json ./packages/shared/
-COPY apps/web/package.json ./apps/web/
+# Even though we only build apps/web here, npm ci will fail if any workspace
+# manifest is missing because the lockfile contains entries for ALL workspaces.
+COPY kalle/packages/shared/package.json ./packages/shared/
+COPY kalle/apps/api/package.json ./apps/api/
+COPY kalle/apps/web/package.json ./apps/web/
+COPY kalle/workers/queue/package.json ./workers/queue/
 
 # Copy Prisma schema BEFORE npm ci — the root package.json "prepare" script
 # runs "npx prisma generate" during install, which requires the schema file.
 # Without this, npm ci fails with "prisma/schema.prisma not found".
-COPY prisma/ ./prisma/
+COPY kalle/prisma/ ./prisma/
 
-# Install ALL dependencies from the lockfile. We do NOT use --workspace flags
-# here because the root package.json devDependencies (including prisma ^5.14.x)
-# must be present for prisma generate to use the correct local version.
-# --ignore-scripts prevents the root "prepare" lifecycle script from running
-# "npx prisma generate" during install — without local prisma, npx would
-# download the latest (v7.x) which has breaking schema changes.
-# We run prisma generate explicitly below using the locally installed version.
-# --legacy-peer-deps handles React 18 peer dependency conflicts with some packages.
+# Install ALL dependencies from the lockfile.
+# At this point npm will create /app/node_modules/@blitzy/auth as a symlink
+# whose target resolves to /packages/auth (file:// reference in
+# apps/web/package.json). Symlink resolves via the filesystem-root layout
+# established above. ✓
 RUN npm ci --legacy-peer-deps --ignore-scripts
 
 # Explicitly generate Prisma client using the version installed in node_modules
@@ -65,7 +143,7 @@ RUN npm ci --legacy-peer-deps --ignore-scripts
 RUN npx prisma generate
 
 # -----------------------------------------------------------------------------
-# Stage 2: Builder — Compile shared types and Next.js application
+# Stage 3: Builder — Compile shared types and Next.js application
 # -----------------------------------------------------------------------------
 # Builds the @kalle/shared TypeScript package first (dependency), then runs
 # the Next.js production build which generates the standalone output bundle.
@@ -77,20 +155,26 @@ WORKDIR /app
 # Disable Next.js anonymous telemetry during build
 ENV NEXT_TELEMETRY_DISABLED=1
 
+# F-CRITICAL-1: Carry the filesystem-root @blitzy packages and pnpm store
+# forward into the builder stage. They are required at build time because
+# kalle apps/web source imports types from @blitzy/auth.
+COPY --from=deps /node_modules /node_modules
+COPY --from=deps /packages     /packages
+
 # Copy installed node_modules from deps stage.
 # npm ci without --workspace hoists ALL dependencies to the root node_modules.
 # Workspace-specific node_modules are not created in this configuration.
 COPY --from=deps /app/node_modules ./node_modules
 
 # Copy root workspace configuration files needed for build resolution
-COPY package.json ./
-COPY tsconfig.base.json ./
+COPY kalle/package.json ./
+COPY kalle/tsconfig.base.json ./
 
 # Copy shared package source — must be built before web since web imports from it
-COPY packages/shared/ ./packages/shared/
+COPY kalle/packages/shared/ ./packages/shared/
 
 # Copy web application source (pages, components, styles, assets, configs)
-COPY apps/web/ ./apps/web/
+COPY kalle/apps/web/ ./apps/web/
 
 # Build the shared types package first (@kalle/shared).
 # This generates dist/ with compiled .js and .d.ts files that the web app
@@ -110,7 +194,7 @@ RUN mkdir -p /app/apps/web/public
 RUN npm run build --workspace=apps/web
 
 # -----------------------------------------------------------------------------
-# Stage 3: Runner — Minimal production image
+# Stage 4: Runner — Minimal production image
 # -----------------------------------------------------------------------------
 # Uses a clean Alpine Node.js image with only the standalone build output.
 # No source code, no devDependencies, no build tools — minimal attack surface.
@@ -131,6 +215,15 @@ ENV NEXT_TELEMETRY_DISABLED=1
 # and avoids running the web server as root in production.
 RUN addgroup --system --gid 1001 nodejs \
     && adduser --system --uid 1001 nextjs
+
+# F-CRITICAL-1: Copy the filesystem-root @blitzy packages from the builder
+# stage. Next.js standalone output bundles SSR code that may reference
+# @blitzy/auth, so the package directory + pnpm store must remain reachable.
+# Note: Next.js standalone output usually inlines required modules into
+# .next/standalone/node_modules/, so this is precautionary for any code paths
+# that resolve dynamically.
+COPY --from=builder --chown=nextjs:nodejs /node_modules /node_modules
+COPY --from=builder --chown=nextjs:nodejs /packages     /packages
 
 # Copy the standalone build output from the builder stage.
 # The standalone output includes a complete node_modules tree with only the

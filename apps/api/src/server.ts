@@ -316,6 +316,17 @@ async function bootstrap(): Promise<void> {
       // INTENTIONALLY OMITTED: dbUrl. Kalle is in sidecar mode (Rule R2).
       sidecarUrl: env.AUTH_SERVICE_URL,
       sidecarSecret: env.AUTH_SIDECAR_SECRET,
+      // QA F-CRITICAL-4 — Forward the optional split-endpoint overrides
+      // when set. `KEYCLOAK_JWKS_URI` lets kalle's library-mode `initAuth`
+      // (when used directly rather than via the sidecar) fetch JWKS from
+      // an internal Docker hostname; `KEYCLOAK_ISSUER` lets it validate
+      // tokens against the browser-perspective public issuer. When
+      // unset, `initAuth()` derives both from `KEYCLOAK_BASE_URL` per
+      // the OIDC convention (single-network deployments). See
+      // `packages/auth/src/auth/types.ts` `AuthConfig.issuer` JSDoc and
+      // the F-CRITICAL-4 entry in the QA Test Report.
+      jwksUri: env.KEYCLOAK_JWKS_URI,
+      issuer: env.KEYCLOAK_ISSUER,
     });
     logger.info('V2 auth instance initialized (sidecar mode)');
   } else {

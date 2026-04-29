@@ -64,10 +64,11 @@ RUN mkdir -p /backups /var/log
 #   3. Backup integrity verification (non-empty file check)
 #   4. Retention cleanup — removes archives older than BACKUP_RETENTION_DAYS
 #
-# Build context is the repository root (context: . in docker-compose.yml),
-# so the COPY path is relative to the repo root.
+# F-CRITICAL-1 fix (QA Checkpoint F2): Build context is now the COMPOSITE
+# REPOSITORY ROOT (`context: ../` in kalle/docker-compose.yml), one level
+# above kalle/. The COPY path is therefore prefixed with `kalle/`.
 # ---------------------------------------------------------------------------
-COPY scripts/backup.sh /usr/local/bin/backup.sh
+COPY kalle/scripts/backup.sh /usr/local/bin/backup.sh
 RUN chmod +x /usr/local/bin/backup.sh
 
 # ---------------------------------------------------------------------------

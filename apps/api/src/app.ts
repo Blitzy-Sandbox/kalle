@@ -54,6 +54,7 @@
 
 import express from 'express';
 import type { Application, Router, Request, Response } from 'express';
+import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
@@ -134,7 +135,7 @@ export interface AppDependencies {
    * logging (Rule R28). Created by `server.ts` with a Pino logger configured
    * for JSON output and authorization header redaction (Rule R23).
    *
-   * Placed AFTER the correlation ID middleware (step 7) so that
+   * Placed AFTER the correlation ID middleware (step 8) so that
    * `req.correlationId` is available when the logger generates the log
    * entry's request identifier.
    */
@@ -146,7 +147,7 @@ export interface AppDependencies {
    * request counts, duration histograms, and active request gauges.
    *
    * Created by `server.ts` and passed here to wire the Prometheus exporter
-   * into the HTTP middleware chain at step 9.
+   * into the HTTP middleware chain at step 10.
    */
   metricsService: MetricsService;
 
@@ -223,7 +224,7 @@ export interface AppDependencies {
  * Creates and configures the Express application with the complete ordered
  * middleware chain.
  *
- * **Middleware chain (13 steps — order is CRITICAL):**
+ * **Middleware chain (14 steps — order is CRITICAL):**
  *
  * | # | Middleware              | Purpose                                    |
  * |---|------------------------|--------------------------------------------|
@@ -233,13 +234,14 @@ export interface AppDependencies {
  * | 4 | Compression            | gzip / deflate response compression        |
  * | 5 | JSON body parsing      | Parse JSON bodies (26 MB limit, Rule R8)   |
  * | 6 | URL-encoded parsing    | Parse URL-encoded bodies (same limit)      |
- * | 7 | Correlation ID         | UUID v4 per request (Rule R29)             |
- * | 8 | Pino HTTP logger       | Structured request logging (Rule R28)      |
- * | 9 | Metrics                | HTTP instrumentation (Rule R37)            |
- * |10 | Static uploads         | Serve /uploads with CORP header            |
- * |11 | API v1 routes          | All versioned endpoints (Rule R30)         |
- * |12 | 404 catch-all          | Unmatched routes (Rule R22)                |
- * |13 | Error handler          | Global error handler — MUST be last (R22)  |
+ * | 7 | Cookie parser          | Parse Cookie header into req.cookies (FR-8)|
+ * | 8 | Correlation ID         | UUID v4 per request (Rule R29)             |
+ * | 9 | Pino HTTP logger       | Structured request logging (Rule R28)      |
+ * |10 | Metrics                | HTTP instrumentation (Rule R37)            |
+ * |11 | Static uploads         | Serve /uploads with CORP header            |
+ * |12 | API v1 routes          | All versioned endpoints (Rule R30)         |
+ * |13 | 404 catch-all          | Unmatched routes (Rule R22)                |
+ * |14 | Error handler          | Global error handler — MUST be last (R22)  |
  *
  * @param deps - Pre-configured dependencies from the composition root
  * @returns Fully configured Express Application instance ready for
@@ -297,7 +299,7 @@ export function createApp(deps: AppDependencies): Application {
   // protocol overhead (base64 encoding, metadata envelope).
   //
   // Express body-parser returns 413 (Payload Too Large) when the limit is
-  // exceeded. The global error handler (step 13) translates this into the
+  // exceeded. The global error handler (step 14) translates this into the
   // standardized error response shape.
   // -------------------------------------------------------------------------
   app.use(express.json({ limit: '26mb' }));
@@ -312,30 +314,75 @@ export function createApp(deps: AppDependencies): Application {
   app.use(express.urlencoded({ extended: true, limit: '26mb' }));
 
   // -------------------------------------------------------------------------
-  // Step 7: Correlation ID — UUID v4 Per Request (Rule R29)
+  // Step 7: Cookie Parser — Parse Cookie Header into req.cookies (FR-8 / V2)
+  //
+  // **F-CRITICAL-6 (QA Checkpoint F2 final report):** The V2 (FR-8) silent
+  // refresh-then-retry flow at `apps/web/src/lib/api.ts` issues
+  // `POST /api/v1/auth/refresh` with `credentials: 'include'` and an empty
+  // request body, expecting the server to read the refresh token from the
+  // `httpOnly; Secure; SameSite=Strict` cookie that the auth/callback page
+  // wrote at PKCE completion. Without `cookie-parser` registered, `req.cookies`
+  // is undefined, the V2 silent refresh fails with HTTP 400 VALIDATION_ERROR,
+  // and the user enters a redirect loop.
+  //
+  // This middleware populates `req.cookies` (an object keyed by cookie name)
+  // for ALL incoming requests. Downstream consumers:
+  // - `routes/v1/auth.routes.ts` /refresh handler (V2 path) reads
+  //   `req.cookies.refreshToken` when the request body omits the token.
+  // - The /logout handler (FR-9) sets and clears cookies via `res.cookie()`
+  //   which does NOT depend on this middleware (response side); however,
+  //   any future cookie-reading logic on protected routes will benefit.
+  //
+  // Placed AFTER body parsers (steps 5-6) and BEFORE correlation ID (step 8)
+  // because:
+  //   1. Body parsing and cookie parsing are independent — they parse
+  //      different parts of the HTTP request — so they may execute in
+  //      either order without interference.
+  //   2. Correlation ID generation (step 8) currently does not consume
+  //      cookies, but placing cookie parsing before it future-proofs the
+  //      pipeline against optional cookie-based correlation ID propagation.
+  //   3. Logger (step 9) and metrics (step 10) do not need cookies.
+  //
+  // No secret key is configured: cookies are NOT signed at the HTTP layer.
+  // The refresh token cookie is protected against tampering by the V2 design
+  // (httpOnly prevents JS access; Secure prevents non-HTTPS leakage in prod;
+  // SameSite=Strict prevents CSRF) AND by AuthService.refreshToken() which
+  // validates the token's database row before issuing a new pair.
+  //
+  // Architecture rule references:
+  // - FR-8 (Kalle Web PKCE Flow): refresh token persisted only in cookie
+  // - R7 (Token Storage): access in JS memory, refresh in httpOnly cookie
+  // - R12 (API Stability): legacy /refresh body path remains supported;
+  //        cookie path is additive — no breaking change to existing callers.
+  // - R28 (Structured Logging): cookie-parser produces zero log output
+  // -------------------------------------------------------------------------
+  app.use(cookieParser());
+
+  // -------------------------------------------------------------------------
+  // Step 8: Correlation ID — UUID v4 Per Request (Rule R29)
   //
   // Assigns a unique UUID v4 correlation ID to every request, sets the
   // X-Correlation-ID response header, and attaches `req.correlationId` for
   // downstream consumers. If the client sends an X-Correlation-ID header,
   // it is reused for cross-service tracing.
   //
-  // MUST be registered BEFORE the logger (step 8) so that the Pino HTTP
+  // MUST be registered BEFORE the logger (step 9) so that the Pino HTTP
   // middleware can use `req.correlationId` as the log request identifier.
   // -------------------------------------------------------------------------
   app.use(correlationIdMiddleware);
 
   // -------------------------------------------------------------------------
-  // Step 8: Pino HTTP Logger — Structured Request Logging (Rule R28)
+  // Step 9: Pino HTTP Logger — Structured Request Logging (Rule R28)
   //
   // Logs every HTTP request/response cycle as structured JSON. Uses the
-  // correlation ID set by step 7 as the log entry's request identifier.
+  // correlation ID set by step 8 as the log entry's request identifier.
   // Configured by server.ts with authorization header redaction (Rule R23)
   // and custom log levels (5xx → error, 4xx → warn, 2xx/3xx → info).
   // -------------------------------------------------------------------------
   app.use(deps.pinoHttpMiddleware);
 
   // -------------------------------------------------------------------------
-  // Step 9: HTTP Metrics Instrumentation (Rule R37)
+  // Step 10: HTTP Metrics Instrumentation (Rule R37)
   //
   // Instruments HTTP request/response cycles for Prometheus-compatible
   // metrics using the injected MetricsService instance. The factory
@@ -355,7 +402,7 @@ export function createApp(deps: AppDependencies): Application {
   app.use(createMetricsMiddleware(deps.metricsService));
 
   // -------------------------------------------------------------------------
-  // Step 10: Static File Serving — Uploaded Media Assets
+  // Step 11: Static File Serving — Uploaded Media Assets
   //
   // Serves the uploads directory as static files at the /uploads prefix.
   // An inline middleware sets Cross-Origin-Resource-Policy: cross-origin on
@@ -368,7 +415,7 @@ export function createApp(deps: AppDependencies): Application {
   }, express.static(deps.uploadDir));
 
   // -------------------------------------------------------------------------
-  // Step 11: API Routes — All Versioned Endpoints (Rule R30)
+  // Step 12: API Routes — All Versioned Endpoints (Rule R30)
   //
   // Mounts the fully assembled v1 router under the /api/v1 prefix. The
   // router contains all route handlers with auth middleware, rate limiting,
@@ -394,9 +441,9 @@ export function createApp(deps: AppDependencies): Application {
   app.use('/api/v1', deps.v1Router);
 
   // -------------------------------------------------------------------------
-  // Step 12: 404 Catch-All Handler
+  // Step 13: 404 Catch-All Handler
   //
-  // Catches all requests that did not match any route in step 11. Returns
+  // Catches all requests that did not match any route in step 12. Returns
   // the standardized error response shape (Rule R22) so clients receive
   // consistent error payloads regardless of the error type.
   // -------------------------------------------------------------------------
@@ -411,7 +458,7 @@ export function createApp(deps: AppDependencies): Application {
   });
 
   // -------------------------------------------------------------------------
-  // Step 13: Global Error Handler — MUST BE LAST (Rule R22)
+  // Step 14: Global Error Handler — MUST BE LAST (Rule R22)
   //
   // Express identifies error-handling middleware by its 4-argument signature
   // (err, req, res, next). This middleware catches all errors thrown by

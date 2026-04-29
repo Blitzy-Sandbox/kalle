@@ -1,69 +1,124 @@
 'use client';
 
 /* =============================================================================
- * Login Page — PKCE Redirect Landing (V2 OAuth 2.0 / OIDC via Keycloak)
+ * Login Page — Runtime-Flag-Aware Auth Mode Selection (V2 PKCE OR Legacy Form)
  * =============================================================================
  *
  * URL: /login (within (auth) route group — parentheses excluded from URL)
  *
- * REPLACES the previous email + password form with a redirect-only landing
- * page that initiates the OAuth 2.0 Authorization Code + PKCE flow against
- * Keycloak's `authorization_endpoint`. After the user authenticates with
- * Keycloak (and any federated identity provider, e.g. Google), the browser
- * is redirected to `/auth/callback` with `code` and `state` parameters; the
- * callback page exchanges the authorization code for tokens via the
- * Keycloak `token_endpoint` and persists them per Rule R7.
+ * **F-CRITICAL-3 (QA Checkpoint F2 final report):** Prior to this revision,
+ * this page was hardcoded to a PKCE-redirect-only behavior with zero
+ * references to any flag. The QA report identified this as a CRITICAL
+ * defect because it broke the runtime kill-switch from a UX perspective:
+ * with `AUTH_V2_ENABLED=false` in flags-db, the API correctly accepted
+ * legacy email/password POSTs (verified HTTP 200 in Test 1) but the UI sent
+ * users to Keycloak — a half-broken state from the user's perspective. The
+ * legacy and V2 paths were mutually exclusive on the API side (Rule R4) but
+ * the UI was V2-only, violating the spirit of R4 from the user perspective.
+ *
+ * **This revision resolves the defect** by fetching the runtime
+ * `AUTH_V2_ENABLED` flag from `GET /api/v1/auth/feature-flags` on mount and
+ * rendering one of three states based on the response:
+ *   1. **Loading** (default while fetching the flag) — minimal spinner
+ *      with `aria-busy="true"`, identical to the previous PKCE-redirect
+ *      loading state for visual continuity.
+ *   2. **V2 ENABLED** — initiate the OAuth 2.0 Authorization Code + PKCE
+ *      flow against Keycloak's `authorization_endpoint`. After the user
+ *      authenticates with Keycloak (and any federated identity provider,
+ *      e.g. Google), the browser is redirected to `/auth/callback` with
+ *      `code` and `state` parameters; the callback page exchanges the
+ *      authorization code for tokens and persists them per Rule R7.
+ *   3. **V2 DISABLED** — render the legacy email + password form that
+ *      POSTs to `POST /api/v1/auth/login` (the existing legacy endpoint,
+ *      preserved verbatim per Rule R12 API stability). On success, the
+ *      response is `{ data: { user, tokens } }`; the user/tokens are
+ *      persisted to the Zustand authStore (via `login(tokens, user)`)
+ *      and the user is redirected to `/chat`.
  *
  * Authority:
  * - AAP FR-8  — Kalle Web PKCE flow (Section 0.1.1)
+ * - AAP FR-9  — Kalle API middleware swap (Section 0.1.1)
  * - AAP FR-11 — Single Sign-On audience chain (scope `odoo:basic` ensures
  *               the issued token's `aud` claim is augmented with `odoo-app`
  *               by the Keycloak Audience Mapper, enabling cross-app SSO).
- * - AAP Section 0.4.1.2 — Direct Modifications Required — Kalle Web (login replace)
+ * - AAP Section 0.4.1.2 — Direct Modifications Required — Kalle Web (login
+ *               replace + callback create + 401 interceptor + token
+ *               persistence)
+ * - QA Checkpoint F2 final report — F-CRITICAL-3 resolution
  *
  * Security & rule compliance:
- * - **Rule R7 — Token storage discipline:** This page does NOT touch access or
- *   refresh tokens. The only artifacts written here are the PKCE code verifier
- *   and the OAuth state parameter — single-use authorization-flow inputs that
- *   are NOT credentials and CANNOT impersonate the user without the
- *   corresponding authorization code. Per RFC 7636, the verifier MUST persist
- *   across the redirect; `sessionStorage` is the standard storage location:
- *   it is cleared when the tab closes, the values are short-lived (consumed
- *   within seconds at the callback), and they are bound to a single
- *   authorization code exchange. R7 explicitly governs token storage; PKCE
- *   verifier/state are exempt as they are not tokens.
- * - **Rule R12 — API stability:** The route URL `/login` is preserved
- *   (the `(auth)` route group contributes no URL segment). The component
+ * - **Rule R3 — Flag isolation:** With `AUTH_V2_ENABLED=false`, ZERO V2/PKCE
+ *   code executes. The PKCE verifier/state generation is gated entirely by
+ *   the `authV2Enabled === true` branch. The legacy form branch performs
+ *   no PKCE work, no Keycloak interaction, and no `@blitzy/auth` dynamic
+ *   import.
+ * - **Rule R4 — Mutual exclusion:** The page renders EXACTLY one of the
+ *   three states (loading | PKCE | legacy form). Branching is structural:
+ *   no `useEffect` body crosses modes mid-flight. Once the flag is known,
+ *   the page commits to one mode for the duration of the user's session
+ *   on this page.
+ * - **Rule R7 — Token storage discipline:** The PKCE branch does NOT touch
+ *   access or refresh tokens (only the verifier and state, which are
+ *   single-use auth-flow artifacts NOT credentials — RFC 7636 §4 mandates
+ *   the verifier persists across the redirect; sessionStorage is the
+ *   standard storage location). The legacy form branch persists tokens
+ *   ONLY through `useAuthStore.login(tokens, user)`, which routes them to
+ *   memory-only state per the partialize discipline established in
+ *   `kalle/apps/web/src/stores/authStore.ts:473-476`.
+ * - **Rule R12 — API stability:** The route URL `/login` is preserved (the
+ *   `(auth)` route group contributes no URL segment). The component
  *   continues to be a default export named `LoginPage`. The
  *   already-authenticated guard (`isAuthenticated` → redirect to `/chat`)
- *   is preserved verbatim so deep-linked authenticated users still land on
- *   the chat page without a Keycloak round-trip.
+ *   is preserved verbatim so deep-linked authenticated users still land
+ *   on the chat page without a Keycloak round-trip OR a form fill. The
+ *   legacy endpoint contract (POST `/api/v1/auth/login`) is unchanged —
+ *   this page consumes the existing `{ data: { user, tokens } }` shape.
  * - **Rule R23 — Log hygiene:** No `console.log/warn/error` call in this
- *   module includes the verifier, state, challenge, or any token-like value.
- *   Error logs reference only the failure condition (and the missing env-var
- *   *name*, never its value).
+ *   module includes the verifier, state, challenge, password, email, or
+ *   any token-like value. Error logs reference only the failure condition
+ *   (and the missing env-var *name*, never its value).
+ * - **Rule R29 — Correlation ID:** The flag-discovery fetch and the legacy
+ *   login fetch are both routed through the existing `apiClient.get/post`
+ *   helpers, which automatically attach `X-Correlation-ID` per
+ *   `kalle/apps/web/src/lib/api.ts`. No additional propagation code is
+ *   needed in this page.
+ * - **Rule RF3 — Flag fail-open (server-side):** The
+ *   `GET /api/v1/auth/feature-flags` endpoint never throws — it falls
+ *   back through cache → API → env-var → `false` internally. If the API
+ *   itself is unreachable (network error, server down), the catch block
+ *   below treats the error as "V2 disabled" and renders the legacy form.
+ *   This is the safest fallback because: (a) the legacy form is the
+ *   pre-V2 default behavior, (b) it does not require Keycloak to be
+ *   reachable, and (c) it preserves byte-identical behavior with the
+ *   pre-V2 1,814-test kalle suite.
  *
  * Accessibility (WCAG 2.1 AA):
  * - Loading state uses `aria-busy="true"`, `aria-live="polite"`, and an
- *   `aria-label` on the `<main>` landmark plus an `sr-only` span for screen
- *   reader announcement.
- * - Error state uses `role="alert"` with `aria-live="assertive"` so failures
- *   are announced immediately to assistive technology users.
+ *   `aria-label` on the `<main>` landmark plus an `sr-only` span for
+ *   screen-reader announcement.
+ * - Error state uses `role="alert"` with `aria-live="assertive"` so
+ *   failures are announced immediately to assistive-technology users.
  * - The animated spinner has `role="status"` and an `aria-label` describing
  *   the in-progress operation.
+ * - The legacy form uses semantic HTML (`<form>`, `<label>`, `<input>`,
+ *   `<button>`) with proper `htmlFor`/`id` association, `autoComplete`
+ *   hints, and visible focus indicators inherited from Tailwind defaults.
  *
  * Visual design tokens (from `kalle/apps/web/tailwind.config.ts`):
  * - `bg-surface`            → `#EFEFF4` (matches root `/` redirect page)
  * - `border-secondary`      → `#6D6D72`
  * - `border-t-blue-ios`     → `#0064D2`
+ * - `bg-blue-ios`           → `#0064D2`
  * Standard Tailwind grays (`text-gray-900`, `text-gray-600`) are used for
  * text — these are part of Tailwind's default palette and require no token
  * configuration.
  * ========================================================================== */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
+import { apiClient, ApiError } from '@/lib/api';
 import { useAuthStore } from '@/stores/authStore';
+import type { TokenPair, UserResponse } from '@kalle/shared';
 
 /* =============================================================================
  * SessionStorage Keys (PKCE artifacts)
@@ -197,49 +252,255 @@ function buildAuthUrl(opts: {
 }
 
 /* =============================================================================
+ * Type Definitions
+ * =============================================================================
+ * Local types for the page's mode discriminant and API response shapes. The
+ * `AuthMode` discriminated union models the three mutually exclusive states
+ * (Rule R4 enforcement at the type level — TypeScript will reject any code
+ * that attempts to render in two modes simultaneously).
+ * ========================================================================== */
+
+/**
+ * Discriminated union representing the three mutually exclusive states of
+ * this page. The mode is determined by the runtime AUTH_V2_ENABLED flag
+ * fetched from `GET /api/v1/auth/feature-flags` on mount.
+ */
+type AuthMode = 'loading' | 'pkce' | 'legacy';
+
+/**
+ * Response shape for `GET /api/v1/auth/feature-flags` (F-CRITICAL-3).
+ *
+ * **Wire payload:** The HTTP endpoint returns
+ * `{ "data": { "authV2Enabled": boolean } }` per the standardized kalle
+ * response envelope (Rule R22).
+ *
+ * **Caller-visible shape:** `apiClient.get<T>` (in
+ * `kalle/apps/web/src/lib/api.ts`) unwraps the outer `data` field at line
+ * `return json.data;` and returns `T` directly to the caller. Therefore
+ * the type parameter passed to `apiClient.get<...>(...)` MUST describe the
+ * INNER object — i.e., `{ authV2Enabled: boolean }` — not the outer
+ * envelope. Specifying the outer envelope would result in
+ * `response.data?.authV2Enabled` being `undefined` (because the outer
+ * `data` field has already been stripped), which silently falls back to
+ * the legacy form even when the flag is enabled. This bug was identified
+ * in QA Checkpoint F2 follow-up runtime verification of F-CRITICAL-3.
+ */
+interface FeatureFlagsResponse {
+  authV2Enabled: boolean;
+}
+
+/**
+ * Response shape for `POST /api/v1/auth/login` (legacy).
+ * The endpoint returns `{ data: { user, tokens } }` per `AuthResponse`
+ * defined in `@kalle/shared/types/auth`.
+ */
+interface LegacyLoginResponse {
+  data: {
+    user: UserResponse;
+    tokens: TokenPair;
+  };
+}
+
+/* =============================================================================
  * LoginPage Component
  * =============================================================================
  *
- * Initiates the PKCE redirect to Keycloak on mount. Renders one of two
- * mutually exclusive states:
- *   1. Loading — minimal spinner while the redirect is in flight (default).
- *   2. Error  — accessible alert message when configuration is missing or
- *               the Web Crypto API is unavailable.
+ * Renders ONE of three mutually exclusive states determined at runtime by
+ * the AUTH_V2_ENABLED flag:
+ *   1. Loading — minimal spinner while the flag is being fetched OR while
+ *      the PKCE redirect is in flight (default initial state).
+ *   2. PKCE   — V2 mode: initiates the Keycloak PKCE redirect on mount.
+ *               Renders a spinner with "Redirecting to sign-in…" caption
+ *               while `window.location.href` navigates to Keycloak.
+ *   3. Legacy — V2-disabled mode: renders the email + password form that
+ *               POSTs to the legacy `/api/v1/auth/login` endpoint.
  *
- * The component intentionally renders no form, no inputs, and no submit
- * button: it is a pure auth-bootstrap landing page.
+ * Mode transitions are one-way: the page commits to a mode after the flag
+ * resolves, and never switches modes mid-flight. This enforces Rule R4
+ * mutual exclusion at the UI level (matching the API-side enforcement in
+ * `apps/api/src/middleware/auth.ts`).
  * ========================================================================== */
 export default function LoginPage(): JSX.Element {
   /* ─── Local State ──────────────────────────────────────────────────── */
+  /**
+   * Auth mode discriminant. Initial value `'loading'` reflects the moment
+   * between mount and the first response of `GET /api/v1/auth/feature-flags`.
+   * Once the flag resolves, this transitions to either `'pkce'` (V2=true)
+   * or `'legacy'` (V2=false). The transition is one-way per Rule R4.
+   */
+  const [mode, setMode] = useState<AuthMode>('loading');
+
+  /**
+   * Top-level error message shown to the user when:
+   *   - The browser does not support Web Crypto API (V2 mode only)
+   *   - The Keycloak base URL env var is missing (V2 mode only)
+   *   - The PKCE redirect orchestration throws unexpectedly (V2 mode only)
+   *   - The legacy login submission returns a non-401 server error (e.g.,
+   *     500, network failure)
+   *
+   * 401 from the legacy login is handled separately via `formError` so the
+   * user sees an inline form error rather than a top-level page error.
+   */
   const [error, setError] = useState<string | null>(null);
+
+  /**
+   * Form-level error message shown ABOVE the legacy form's submit button.
+   * Reserved for credential-validation failures (HTTP 401 from
+   * `/api/v1/auth/login`). Distinct from the top-level `error` state above
+   * because the user can recover by entering correct credentials — no need
+   * to show a page-blocking error.
+   */
+  const [formError, setFormError] = useState<string | null>(null);
+
+  /**
+   * Form input states. These are intentionally local (not in any global
+   * store) and exist only for the lifetime of this page. They are
+   * controlled inputs per React best practice.
+   *
+   * R23 (log hygiene): These values are NEVER logged — see the `try/catch`
+   * in `handleLegacySubmit` which logs only the error type/code, never any
+   * field value.
+   */
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+
+  /**
+   * Submission-in-flight indicator for the legacy form. Disables the
+   * submit button to prevent double-submission and shows visual feedback.
+   */
+  const [submitting, setSubmitting] = useState(false);
 
   /* ─── Store & Router ───────────────────────────────────────────────── */
   const isAuthenticated = useAuthStore((state) => state.isAuthenticated);
   const isInitialized = useAuthStore((state) => state.isInitialized);
+  const loginToStore = useAuthStore((state) => state.login);
   const router = useRouter();
 
-  /* ─── PKCE Redirect Orchestration ──────────────────────────────────── */
+  /* ─── Step 1: Already-Authenticated Guard ──────────────────────────── */
+  /**
+   * Runs as soon as the auth store finishes hydrating. If the user already
+   * has an active session, redirect to `/chat` immediately — no flag fetch,
+   * no Keycloak round-trip, no form interaction. This preserves the legacy
+   * behavior of the pre-V2 login page (Rule R12 API stability).
+   */
   useEffect(() => {
-    /* SSR guard — no-op on the server; all PKCE machinery requires
-       browser-only globals (`crypto.subtle`, `sessionStorage`, `window`). */
+    /* SSR guard — no-op on the server. */
     if (typeof window === 'undefined') {
       return;
     }
-
-    /* Hydration guard — wait for the auth store to finish rehydrating from
-       sessionStorage. Without this, `isAuthenticated` is the default `false`
-       on first render and we would always initiate the PKCE redirect even
-       for users with a valid persisted session. Mirrors the pattern used by
-       `kalle/apps/web/src/app/page.tsx`. */
+    /* Hydration guard — wait for sessionStorage rehydration. */
     if (!isInitialized) {
       return;
     }
-
-    /* Already-authenticated guard — deep-linked users with an active session
-       skip the Keycloak round-trip entirely (Rule R12 — preserves the
-       behavior of the legacy login page). */
     if (isAuthenticated) {
       router.replace('/chat');
+    }
+  }, [isAuthenticated, isInitialized, router]);
+
+  /* ─── Step 2: Flag Discovery (F-CRITICAL-3) ────────────────────────── */
+  /**
+   * Fetches `GET /api/v1/auth/feature-flags` on mount to determine the
+   * runtime auth mode. Only fires AFTER the auth store has hydrated
+   * (avoids racing with the already-authenticated guard) AND the user is
+   * not already authenticated (no point fetching if we're about to
+   * redirect to /chat).
+   *
+   * **Failure handling (Rule RF3 fail-open):**
+   * If the fetch throws (network error, server unreachable, malformed
+   * response), the catch block sets `mode = 'legacy'`. Rationale:
+   *   - The legacy form is the pre-V2 default behavior.
+   *   - It does not require Keycloak to be reachable.
+   *   - It preserves byte-identical behavior with the pre-V2 1,814-test
+   *     kalle suite.
+   *   - Falling back to the form is strictly safer than locking users out
+   *     entirely.
+   *
+   * **Mode transition is one-way (Rule R4):**
+   * Once `setMode('pkce')` or `setMode('legacy')` is called, this effect
+   * does NOT re-fire (the dependency array is `[isAuthenticated,
+   * isInitialized]`, both of which are guards above). The `setMode` calls
+   * are protected by an early-return when `mode !== 'loading'` so
+   * subsequent renders don't re-trigger the effect body.
+   */
+  useEffect(() => {
+    /* SSR guard. */
+    if (typeof window === 'undefined') {
+      return;
+    }
+    /* Hydration guard. */
+    if (!isInitialized) {
+      return;
+    }
+    /* Already-authenticated guard — Step 1 above will redirect us. */
+    if (isAuthenticated) {
+      return;
+    }
+    /* One-way transition guard — flag has already been resolved. */
+    if (mode !== 'loading') {
+      return;
+    }
+
+    let cancelled = false;
+    const fetchFlag = async (): Promise<void> => {
+      try {
+        /* `apiClient.get<T>(...)` already strips the outer `{ data: ... }`
+           envelope and returns `T` (the inner object) directly. So the
+           `response` value here is `{ authV2Enabled: boolean }` — NOT
+           `{ data: { authV2Enabled: boolean } }`. We therefore read the
+           field directly off `response`. See the JSDoc on
+           `FeatureFlagsResponse` above for the full rationale. */
+        const response = await apiClient.get<FeatureFlagsResponse>(
+          '/api/v1/auth/feature-flags',
+        );
+        if (cancelled) {
+          return;
+        }
+        const enabled = response.authV2Enabled === true;
+        setMode(enabled ? 'pkce' : 'legacy');
+      } catch (err) {
+        /* RF3 fail-open: any failure → legacy form (the safer default).
+           R23-compliant: log only the error type, never the body or any
+           token-like value. The error type is sufficient for diagnosis. */
+        if (cancelled) {
+          return;
+        }
+        // eslint-disable-next-line no-console -- R23-compliant: error type only, no values
+        console.error(
+          '[login] feature-flag discovery failed; falling back to legacy mode',
+          err instanceof ApiError
+            ? { code: err.code, status: err.status }
+            : err instanceof Error
+              ? { name: err.name }
+              : { type: typeof err },
+        );
+        setMode('legacy');
+      }
+    };
+    void fetchFlag();
+    return () => {
+      cancelled = true;
+    };
+  }, [isAuthenticated, isInitialized, mode]);
+
+  /* ─── Step 3: PKCE Redirect Orchestration (V2 mode only) ───────────── */
+  /**
+   * Initiates the Keycloak PKCE redirect when `mode === 'pkce'`. This
+   * effect intentionally has `mode` in its dependency array so it fires
+   * exactly once when the mode transitions from `'loading'` to `'pkce'`.
+   *
+   * The body is identical to the pre-F-CRITICAL-3 implementation, just
+   * gated by the mode discriminant. All R7/R23 compliance notes from the
+   * original implementation continue to apply — verifier and state are
+   * generated and stored in sessionStorage; never logged; never persisted
+   * beyond the round-trip to /auth/callback.
+   */
+  useEffect(() => {
+    /* SSR guard. */
+    if (typeof window === 'undefined') {
+      return;
+    }
+    /* Mode guard — only run when V2 is active. */
+    if (mode !== 'pkce') {
       return;
     }
 
@@ -308,9 +569,79 @@ export default function LoginPage(): JSX.Element {
     };
 
     void runPkceRedirect();
-  }, [isAuthenticated, isInitialized, router]);
+  }, [mode]);
 
-  /* ─── Render: Error State ──────────────────────────────────────────── */
+  /* ─── Legacy Login Submit Handler (V2-disabled mode only) ──────────── */
+  /**
+   * Handles submission of the legacy email/password form. Performs:
+   *   1. Form-level validation (non-empty email, non-empty password). The
+   *      server also validates via Zod (`loginSchema`) and returns 400 on
+   *      malformed input; this client-side check is just for UX.
+   *   2. POST `/api/v1/auth/login` with `{ email, password }` body.
+   *   3. On 200: persist tokens + user to authStore via `login(tokens, user)`.
+   *      The store's `login` action sets `isAuthenticated: true`, which is
+   *      observed by the already-authenticated guard above, but we also
+   *      `router.replace('/chat')` directly for an immediate redirect.
+   *   4. On 401: show `formError` ("Invalid email or password") so the user
+   *      can correct credentials and retry. The form remains visible.
+   *   5. On any other error: show top-level `error` ("Login failed. Please
+   *      try again."). The user must reload to retry.
+   *
+   * **Rule R23 — log hygiene:** The catch block logs ONLY the error code
+   * and HTTP status. The email, password, response body, and any token
+   * value are NEVER logged.
+   *
+   * @param e - Form submission event (we call `preventDefault` to suppress
+   *            the browser's default form-POST behavior so we can submit
+   *            via fetch instead).
+   */
+  const handleLegacySubmit = async (e: FormEvent<HTMLFormElement>): Promise<void> => {
+    e.preventDefault();
+    setFormError(null);
+
+    /* UX validation — server also validates, this is just for fast feedback. */
+    if (email.trim().length === 0 || password.length === 0) {
+      setFormError('Please enter your email and password.');
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const response = await apiClient.post<LegacyLoginResponse>(
+        '/api/v1/auth/login',
+        { email: email.trim(), password },
+      );
+
+      /* Persist tokens + user to authStore (memory-only per R7 partialize). */
+      loginToStore(response.data.tokens, response.data.user);
+
+      /* Immediate redirect — the authStore.login() side effect is observed
+         by the already-authenticated guard, but we also navigate directly
+         so the redirect feels instant. */
+      router.replace('/chat');
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        setFormError('Invalid email or password.');
+      } else if (err instanceof ApiError && err.status === 429) {
+        setFormError('Too many attempts. Please wait a moment and try again.');
+      } else {
+        // eslint-disable-next-line no-console -- R23-compliant: error type/status only, no field values
+        console.error(
+          '[login] legacy submit failed',
+          err instanceof ApiError
+            ? { code: err.code, status: err.status }
+            : err instanceof Error
+              ? { name: err.name }
+              : { type: typeof err },
+        );
+        setError('Sign-in failed. Please try again.');
+      }
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  /* ─── Render: Top-Level Error State ────────────────────────────────── */
   if (error) {
     return (
       <main
@@ -328,22 +659,125 @@ export default function LoginPage(): JSX.Element {
     );
   }
 
-  /* ─── Render: Loading State (default — redirect in progress) ───────── */
+  /* ─── Render: Legacy Email/Password Form (V2 disabled) ─────────────── */
+  if (mode === 'legacy') {
+    return (
+      <main
+        className="flex min-h-screen items-center justify-center bg-surface px-4"
+        aria-label="Sign in to Kalle"
+      >
+        <div className="w-full max-w-md rounded-lg bg-white p-8 shadow-md">
+          <h1 className="mb-6 text-center text-2xl font-semibold text-gray-900">
+            Sign in to Kalle
+          </h1>
+          <form onSubmit={handleLegacySubmit} noValidate>
+            {/* Email field */}
+            <div className="mb-4">
+              <label
+                htmlFor="login-email"
+                className="mb-1 block text-sm font-medium text-gray-700"
+              >
+                Email
+              </label>
+              <input
+                id="login-email"
+                type="email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoComplete="email"
+                inputMode="email"
+                placeholder="you@example.com"
+                disabled={submitting}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-400 focus:border-blue-ios focus:outline-none focus:ring-1 focus:ring-blue-ios disabled:bg-gray-100 disabled:text-gray-500"
+              />
+            </div>
+
+            {/* Password field */}
+            <div className="mb-4">
+              <label
+                htmlFor="login-password"
+                className="mb-1 block text-sm font-medium text-gray-700"
+              >
+                Password
+              </label>
+              <input
+                id="login-password"
+                type="password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                autoComplete="current-password"
+                disabled={submitting}
+                className="w-full rounded-md border border-gray-300 px-3 py-2 text-gray-900 placeholder-gray-400 focus:border-blue-ios focus:outline-none focus:ring-1 focus:ring-blue-ios disabled:bg-gray-100 disabled:text-gray-500"
+              />
+            </div>
+
+            {/* Inline form error (recoverable — credential failure or rate limit) */}
+            {formError !== null && (
+              <div
+                role="alert"
+                aria-live="polite"
+                className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+              >
+                {formError}
+              </div>
+            )}
+
+            {/* Submit button */}
+            <button
+              type="submit"
+              disabled={submitting}
+              className="w-full rounded-md bg-blue-ios px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-ios focus:ring-offset-2 disabled:cursor-not-allowed disabled:bg-gray-400"
+              aria-busy={submitting}
+            >
+              {submitting ? 'Signing in…' : 'Sign in'}
+            </button>
+          </form>
+
+          {/* Register link */}
+          <p className="mt-4 text-center text-sm text-gray-600">
+            Don&apos;t have an account?{' '}
+            <a
+              href="/register"
+              className="font-medium text-blue-ios hover:underline"
+            >
+              Create one
+            </a>
+          </p>
+        </div>
+      </main>
+    );
+  }
+
+  /* ─── Render: Loading State (default — flag fetching OR PKCE redirect in progress) ── */
   return (
     <main
       className="flex min-h-screen items-center justify-center bg-surface px-4"
       aria-busy="true"
       aria-live="polite"
-      aria-label="Redirecting to sign-in"
+      aria-label={
+        mode === 'pkce' ? 'Redirecting to sign-in' : 'Loading sign-in page'
+      }
     >
       <div className="flex flex-col items-center gap-3">
         <div
           className="h-8 w-8 animate-spin rounded-full border-2 border-secondary border-t-blue-ios"
           role="status"
-          aria-label="Redirecting to authentication provider"
+          aria-label={
+            mode === 'pkce'
+              ? 'Redirecting to authentication provider'
+              : 'Loading sign-in page'
+          }
         />
-        <p className="text-sm text-gray-600">Redirecting to sign-in…</p>
-        <span className="sr-only">Redirecting to the authentication provider</span>
+        <p className="text-sm text-gray-600">
+          {mode === 'pkce' ? 'Redirecting to sign-in…' : 'Loading…'}
+        </p>
+        <span className="sr-only">
+          {mode === 'pkce'
+            ? 'Redirecting to the authentication provider'
+            : 'Loading the sign-in page'}
+        </span>
       </div>
     </main>
   );

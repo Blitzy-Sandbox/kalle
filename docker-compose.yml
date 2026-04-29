@@ -177,8 +177,17 @@ services:
   # ---------------------------------------------------------------------------
   api:
     build:
-      context: .
-      dockerfile: Dockerfile.api
+      # F-CRITICAL-1 fix (QA Checkpoint F2): Build context is the REPOSITORY
+      # ROOT (one level above kalle/) so that the kalle workspace AND the
+      # sibling packages/auth + packages/admin-ui workspace libraries are
+      # both visible to the Docker daemon's build context tarball. The
+      # Dockerfile copies @blitzy/auth and @blitzy/admin-ui into the image,
+      # which is required because kalle/apps/api/package.json references
+      # @blitzy/auth via the file:../../../packages/auth protocol.
+      # See kalle/Dockerfile.api header for full filesystem-root layout
+      # explanation.
+      context: ../
+      dockerfile: kalle/Dockerfile.api
       target: builder
     container_name: kalle-api
     restart: unless-stopped
@@ -237,8 +246,14 @@ services:
   # ---------------------------------------------------------------------------
   web:
     build:
-      context: .
-      dockerfile: Dockerfile.web
+      # F-CRITICAL-1 fix (QA Checkpoint F2): Build context is the REPOSITORY
+      # ROOT (one level above kalle/) — same rationale as the `api` service
+      # block above. kalle/apps/web/package.json also references @blitzy/auth
+      # via file:../../../packages/auth (for shared TypeScript types),
+      # requiring the sibling packages/* directory to be inside the build
+      # context. See kalle/Dockerfile.web header for filesystem-root layout.
+      context: ../
+      dockerfile: kalle/Dockerfile.web
       target: builder
     container_name: kalle-web
     restart: unless-stopped
@@ -249,8 +264,22 @@ services:
         condition: service_healthy
     environment:
       # Public vars accessed from the browser — use localhost, not Docker hostname
+      # because they are evaluated by the user's browser, NOT inside the Docker
+      # network. The browser's loopback `localhost` resolves to the host machine,
+      # which forwards to the appropriate published port (3001 for kalle-api,
+      # 8080 for keycloak).
       NEXT_PUBLIC_API_URL: http://localhost:${PORT:-3001}
       NEXT_PUBLIC_WS_URL: http://localhost:${PORT:-3001}
+      # F-CRITICAL-3 fix (QA Checkpoint F2 follow-up): The login page reads
+      # `process.env.NEXT_PUBLIC_KEYCLOAK_BASE_URL` to construct the OAuth
+      # 2.0 authorization-endpoint URL when the V2 flag is enabled. This
+      # value MUST be the BROWSER-PERSPECTIVE Keycloak URL (`localhost:8080`,
+      # NOT `keycloak:8080`) because it is the user's browser that is
+      # redirected to that URL. The realm and client ID align with the
+      # values exported by `packages/auth/keycloak/realm-export.json`.
+      NEXT_PUBLIC_KEYCLOAK_BASE_URL: http://localhost:8080
+      NEXT_PUBLIC_KEYCLOAK_REALM: blitzy
+      NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: kalle-app
       NODE_ENV: development
     volumes:
       # Dev hot reload mounts (R40)
@@ -276,8 +305,15 @@ services:
   # ---------------------------------------------------------------------------
   worker:
     build:
-      context: .
-      dockerfile: Dockerfile.worker
+      # F-CRITICAL-1 fix (QA Checkpoint F2): Build context is the REPOSITORY
+      # ROOT for consistency with the api/web blocks above. The worker
+      # itself does NOT import @blitzy/auth or @blitzy/admin-ui, but it
+      # shares kalle/package-lock.json with the api/web workspaces, and
+      # the lockfile contains file:../../../packages/auth references from
+      # sibling workspaces that must be reachable during npm ci.
+      # See kalle/Dockerfile.worker header for filesystem-root layout.
+      context: ../
+      dockerfile: kalle/Dockerfile.worker
       target: builder
     container_name: kalle-worker
     restart: unless-stopped
@@ -315,8 +351,12 @@ services:
   # ---------------------------------------------------------------------------
   backup:
     build:
-      context: .
-      dockerfile: Dockerfile.backup
+      # F-CRITICAL-1 fix (QA Checkpoint F2): Build context is the REPOSITORY
+      # ROOT for consistency with the api/web/worker blocks above. The
+      # backup container only needs `kalle/scripts/backup.sh`; the path is
+      # adjusted in kalle/Dockerfile.backup's COPY directive accordingly.
+      context: ../
+      dockerfile: kalle/Dockerfile.backup
     container_name: kalle-backup
     restart: unless-stopped
     depends_on:
@@ -461,6 +501,22 @@ services:
       AUTH_DB_URL: postgresql://${AUTH_DB_USER:-auth}:${AUTH_DB_PASSWORD:-auth_dev_password}@auth-db:5432/${AUTH_DB_NAME:-auth_db}?schema=public
       KEYCLOAK_BASE_URL: http://keycloak:8080
       KEYCLOAK_REALM: ${KEYCLOAK_REALM:-blitzy}
+      # QA F-CRITICAL-4 — Optional split-endpoint overrides for the JWKS
+      # endpoint and the expected `iss` claim. When the sidecar reaches
+      # Keycloak via the INTERNAL Docker hostname (http://keycloak:8080)
+      # but Keycloak mints tokens with the BROWSER-perspective public URL
+      # in the `iss` claim (e.g., http://localhost:8080/realms/blitzy),
+      # set BOTH variables in your local .env:
+      #
+      #   KEYCLOAK_JWKS_URI=http://keycloak:8080/realms/blitzy/protocol/openid-connect/certs
+      #   KEYCLOAK_ISSUER=http://localhost:8080/realms/blitzy
+      #
+      # When unset (single-network deployments), `initAuth()` derives both
+      # URIs from KEYCLOAK_BASE_URL + KEYCLOAK_REALM.
+      # See packages/auth/.env.example, kalle/.env.example, and
+      # packages/auth/src/auth/types.ts AuthConfig JSDoc for full context.
+      KEYCLOAK_JWKS_URI: ${KEYCLOAK_JWKS_URI:-}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-}
       KEYCLOAK_ADMIN_CLIENT_ID: ${KEYCLOAK_ADMIN_CLIENT_ID:-auth-admin}
       # R8 — Empty default ensures no literal secret is committed; operators
       # MUST set this in their .env file before bringing the sidecar up.
