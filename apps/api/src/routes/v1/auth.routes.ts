@@ -8,6 +8,7 @@
  * - `POST /refresh`     — PROTECTED: Exchange refresh token for new token pair
  * - `POST /revoke`      — PROTECTED: Revoke a single session
  * - `POST /revoke-all`  — PROTECTED: Revoke ALL active sessions for the user
+ * - `POST /logout`      — V2-ONLY: Clear refresh cookie and return 204 (FR-9)
  *
  * Public endpoints are protected by `authRateLimiter` (20 req/15-minute window
  * per IP) to mitigate brute-force and credential stuffing attacks.
@@ -30,11 +31,15 @@
  * - R28 (Structured Logging Only): ZERO console.log/warn/error calls.
  * - R7  (Zero Warnings Build): TypeScript strict mode with zero warnings.
  * - R23 (Log Hygiene): No tokens, passwords, or secrets in schemas or logic.
+ * - FR-9 (V2 Auth Integration): /logout route is gated by requireV2(flagsInstance);
+ *        returns 404 when AUTH_V2_ENABLED=false to preserve legacy parity.
  *
  * @see apps/api/src/controllers/AuthController.ts  — endpoint handler logic
  * @see apps/api/src/middleware/validation.ts        — Zod validation middleware
  * @see apps/api/src/middleware/rate-limiter.ts       — rate limiting middleware
  * @see apps/api/src/routes/v1/index.ts              — route aggregation
+ * @see apps/api/src/middleware/auth.ts             — V2-aware auth middleware factory
+ * @see apps/web/src/app/auth/callback/page.tsx     — sets the refresh cookie
  */
 
 import { Router } from 'express';
@@ -44,6 +49,28 @@ import { z } from 'zod';
 import { validateBody } from '../../middleware/validation.js';
 import { authRateLimiter } from '../../middleware/rate-limiter.js';
 import type { AuthController } from '../../controllers/AuthController.js';
+
+// ─── V2 Auth Integration (FR-9) ────────────────────────────────────────────
+// `checkFlag` is imported as a runtime value (NOT type-only) because the
+// `requireV2` guard helper invokes it at request time. The guard runs only on
+// the V2-only `/logout` route and is acceptable because:
+//   1. The flag value is cached in-process for FLAGS_CACHE_TTL_MS
+//      (default 5000 ms) per AAP FR-4 — first hit pays the round-trip,
+//      subsequent hits are served from in-process cache.
+//   2. Per Rule RF3 (flag fail-open), transient flag-API failures fall back
+//      to `process.env.AUTH_V2_ENABLED` inside `checkFlag`'s implementation,
+//      so the guard never throws an unhandled rejection on flag-system
+//      outage.
+// `FlagInstance` is type-only — the import is erased at compile time so it
+// adds zero runtime cost (Rule R7 zero-warnings build).
+//
+// IMPORTANT (Rule RF7 / RF1): This file imports ONLY from `@blitzy/admin-ui`.
+// `@blitzy/auth` is NEVER imported here — the auth library is consumed
+// exclusively by `middleware/auth.ts` (the dedicated V2-aware factory).
+// This isolates the route layer from the auth library's transitive Prisma
+// and JOSE dependencies on legacy code paths.
+import { checkFlag } from '@blitzy/admin-ui';
+import type { FlagInstance } from '@blitzy/admin-ui';
 
 // =============================================================================
 // Zod Validation Schemas (local to this route file — Rule R31)
@@ -107,6 +134,72 @@ const revokeSchema = z.object({
 });
 
 // =============================================================================
+// V2 Flag Guard Helper (FR-9, Rule R3)
+// =============================================================================
+
+/**
+ * Guard middleware that gates V2-only routes behind AUTH_V2_ENABLED.
+ *
+ * Per Rule R3 (V2 flag isolation), the flag check is the FIRST async operation
+ * in the request pipeline for any V2-only route. When the flag resolves to
+ * false (or when flagsInstance is undefined — legacy-only deployment), the
+ * guard returns HTTP 404, preserving legacy test parity (the existing kalle
+ * suite must pass byte-identically with AUTH_V2_ENABLED=false; any test that
+ * probes /logout under the legacy mode expects 404, not 405 or 500).
+ *
+ * Per Rule RF3 (flag fail-open), transient failures from `checkFlag` (e.g.,
+ * the flags-API briefly unreachable) result in the env-var fallback being
+ * resolved INTERNALLY by `checkFlag`'s own implementation. This guard does
+ * not need to wrap the call in try/catch — `checkFlag` never throws on
+ * flag-system outage, only on programmer errors (which should surface).
+ *
+ * Error-response shape matches the kalle convention from
+ * `middleware/error-handler.ts`:
+ *
+ *   { error: { code: string, message: string } }
+ *
+ * No `correlationId` is included because the request short-circuits before
+ * the downstream middleware that resolves correlation context for error
+ * responses.
+ *
+ * Mutual-exclusion invariant (Rule R4): When the guard returns 404, NO V2
+ * code path executes (no token validation, no Keycloak call, no Prisma
+ * query). When the guard calls `next()`, ONLY the V2 handler runs (no
+ * legacy `AuthService` invocation). The branch is therefore strictly
+ * exclusive on a per-request basis.
+ *
+ * @param flags - V2 FlagInstance from @blitzy/admin-ui, or undefined for
+ *                legacy-only mode (no flag wiring at the composition root).
+ * @returns Express middleware that calls `next()` when V2 is active,
+ *          otherwise sends HTTP 404 with the kalle error envelope.
+ */
+const requireV2 = (flags: FlagInstance | undefined): RequestHandler => {
+  return async (_req, res, next) => {
+    if (!flags) {
+      // Legacy-only deployment: route is not registered behaviorally — return
+      // 404 to mirror the absence-of-route response produced by Express when
+      // no matching handler exists. This preserves byte-identical legacy
+      // parity with the pre-V2 kalle test suite.
+      res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'Route not found' },
+      });
+      return;
+    }
+    const result = await checkFlag(flags, 'AUTH_V2_ENABLED');
+    if (!result.enabled) {
+      // V2 wired but flag is OFF — preserve legacy test parity with 404.
+      // This branch covers the runtime kill-switch scenario where an
+      // operator disables V2 in flags-db without redeploying kalle/api.
+      res.status(404).json({
+        error: { code: 'NOT_FOUND', message: 'Route not found' },
+      });
+      return;
+    }
+    next();
+  };
+};
+
+// =============================================================================
 // Route Factory Function
 // =============================================================================
 
@@ -126,14 +219,25 @@ const revokeSchema = z.object({
  * 3. `POST /refresh`:  authMiddleware → validateBody(refreshSchema) → authController.refresh
  * 4. `POST /revoke`:   authMiddleware → validateBody(revokeSchema) → authController.revoke
  * 5. `POST /revoke-all`: authMiddleware → authController.revokeAll
+ * 6. `POST /logout`:    requireV2(flagsInstance) → cookie clearance → 204
  *
  * @param authController - AuthController instance with bound handler methods
  * @param authMiddleware - JWT verification + Redis blacklist check middleware
+ * @param flagsInstance  - Optional V2 FlagInstance from `@blitzy/admin-ui`.
+ *                         When provided AND `AUTH_V2_ENABLED=true`, the new
+ *                         V2-only `POST /logout` route is reachable and clears
+ *                         the refresh cookie. When undefined (legacy-only
+ *                         mode) or when the flag is false, `/logout` returns
+ *                         HTTP 404 to preserve byte-identical legacy parity.
+ *                         The parameter is OPTIONAL (Rule R12 API stability)
+ *                         so legacy 2-arg call sites continue to type-check
+ *                         and execute without modification.
  * @returns Configured Express Router for mounting at `/auth`
  */
 export function createAuthRoutes(
   authController: AuthController,
   authMiddleware: RequestHandler,
+  flagsInstance?: FlagInstance,
 ): Router {
   const router = Router();
 
@@ -226,6 +330,80 @@ export function createAuthRoutes(
     '/revoke-all',
     authMiddleware,
     authController.revokeAll,
+  );
+
+  // ---------------------------------------------------------------------------
+  // V2-ONLY endpoint — gated by requireV2(flagsInstance) (FR-9, Rule R3)
+  // ---------------------------------------------------------------------------
+
+  /**
+   * POST /logout — V2 OAuth Logout (FR-9).
+   *
+   * Clears the httpOnly refresh-token cookie and returns HTTP 204. This
+   * route is V2-ONLY: under `AUTH_V2_ENABLED=false` (legacy mode), the
+   * existing `/revoke` and `/revoke-all` routes handle session revocation
+   * via the JWT/Redis blacklist mechanism. Under `AUTH_V2_ENABLED=true`,
+   * the access token is stored in JS memory only (Rule R7) so explicit
+   * revocation is unnecessary; this route's only responsibility is
+   * clearing the refresh-token cookie.
+   *
+   * The route is gated by `requireV2(flagsInstance)` — returns HTTP 404 when:
+   *   1. `flagsInstance` is undefined (legacy-only deployment or test
+   *      fixture)
+   *   2. `AUTH_V2_ENABLED` resolves to false
+   * Both conditions preserve byte-identical behavior with the pre-V2
+   * 1,814-test kalle suite.
+   *
+   * Cookie clearance follows Rule R7 (token storage):
+   * - Name:     `'refreshToken'` (must match the cookie name set by the V2
+   *             PKCE callback page at
+   *             `kalle/apps/web/src/app/auth/callback/page.tsx` per FR-8)
+   * - maxAge:   `0` — browser deletes the cookie immediately
+   * - httpOnly: `true` — refresh token never accessible to JavaScript
+   * - secure:   `process.env.NODE_ENV === 'production'` — HTTPS-only
+   *             outside dev environments (local dev uses HTTP, so the flag
+   *             must be conditional)
+   * - sameSite: `'strict'` — CSRF defense
+   * - path:     `'/'` — must match the path the cookie was originally set
+   *             with (the auth/callback page sets it at root, so clearance
+   *             is also at root)
+   *
+   * Why no JWT validation on this handler:
+   *   The route is gated only by `requireV2`. Authentication of the
+   *   requesting user is NOT required because:
+   *     1. Logout is an idempotent client-side operation — clearing a
+   *        cookie is harmless if no session exists.
+   *     2. Per Rule R7, the access token is in JS memory only and is
+   *        destroyed when the user navigates away.
+   *     3. The Keycloak end-session endpoint (separate from this route)
+   *        handles server-side token revocation via the backchannel-logout
+   *        endpoint in the auth-sidecar (FR-2).
+   *
+   * Why response body is empty:
+   *   HTTP 204 (No Content) per RFC 7231 §6.3.5 explicitly forbids a
+   *   response body. The `res.status(204).send()` form sends headers
+   *   (including the cleared cookie) without a body.
+   *
+   * Middleware: requireV2(flagsInstance) → cookie clearance → 204
+   * Response:   204 No Content (empty body)
+   * Errors:     404 (legacy mode or flag off)
+   *
+   * @route   POST /api/v1/auth/logout
+   * @access  V2-only (gated by requireV2)
+   */
+  router.post(
+    '/logout',
+    requireV2(flagsInstance),
+    (_req, res) => {
+      res.cookie('refreshToken', '', {
+        maxAge: 0,
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: 'strict',
+        path: '/',
+      });
+      res.status(204).send();
+    },
   );
 
   return router;
