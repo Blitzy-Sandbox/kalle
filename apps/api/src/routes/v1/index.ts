@@ -27,6 +27,16 @@
  * - R7  (Zero Warnings Build): Compiles under `tsc --noEmit --strict` with
  *       zero warnings.
  *
+ * V2 Auth Integration (FR-9):
+ * - Detects V2-aware auth wiring by checking deps.authInstance && deps.flagsInstance.
+ *   When both are present (V2 mode wired in server.ts), the auth-middleware factory
+ *   dispatches per-request based on AUTH_V2_ENABLED (Rule R3, R4).
+ * - When EITHER is absent (legacy-only mode or test fixture), the factory falls back
+ *   to the legacy 2-arg form (jwtSecret, cacheProvider). This preserves the existing
+ *   1,814-test kalle suite under AUTH_V2_ENABLED=false.
+ * - The new POST /api/v1/auth/logout route is V2-only and is gated by deps.flagsInstance
+ *   inside auth.routes.ts (returns 404 in legacy mode).
+ *
  * Route Mount Summary:
  * ```
  * /api/v1/auth/*            — Auth (register, login, refresh, revoke)
@@ -297,7 +307,26 @@ export function createV1Router(deps: V1RouterDependencies): Router {
   //
   // Created ONCE here and passed to all route factories that need it.
   // -------------------------------------------------------------------------
-  const authMiddleware = createAuthMiddleware(deps.jwtSecret, deps.cacheProvider);
+
+  // ─── V2-aware auth middleware (FR-9, R3, R4) ────────────────────────────
+  // When BOTH authInstance and flagsInstance are provided (V2 mode wired in
+  // server.ts), use the V2-aware overload of createAuthMiddleware that
+  // dispatches per-request based on AUTH_V2_ENABLED. Legacy handler is built
+  // FIRST and passed in so the V2-aware middleware can fall through to it
+  // when the flag is false.
+  //
+  // When EITHER instance is absent (legacy-only mode or test fixture), the
+  // legacy 2-arg overload is used directly — full byte-identical behavior
+  // with the pre-V2 implementation. This branch preserves the existing
+  // 1,814-test suite under AUTH_V2_ENABLED=false (DB or env var).
+  const legacyAuthHandler = createAuthMiddleware(deps.jwtSecret, deps.cacheProvider);
+  const authMiddleware = deps.authInstance && deps.flagsInstance
+    ? createAuthMiddleware({
+        authInstance: deps.authInstance,
+        flagsInstance: deps.flagsInstance,
+        legacyAuthHandler,
+      })
+    : legacyAuthHandler;
 
   // -------------------------------------------------------------------------
   // Step 2: Mount PUBLIC routes (no auth middleware — Rule R9)
@@ -316,8 +345,13 @@ export function createV1Router(deps: V1RouterDependencies): Router {
    * POST /refresh, POST /revoke, POST /revoke-all (protected).
    * The auth route factory selectively applies authMiddleware
    * to protected endpoints internally.
+   *
+   * Pass deps.flagsInstance as a third argument so auth.routes.ts can gate
+   * the new V2-only POST /logout route via requireV2(flagsInstance). When
+   * flagsInstance is undefined (legacy-only mode), POST /logout returns 404,
+   * preserving legacy test parity.
    */
-  router.use('/auth', createAuthRoutes(deps.authController, authMiddleware));
+  router.use('/auth', createAuthRoutes(deps.authController, authMiddleware, deps.flagsInstance));
 
   /**
    * Health check endpoint: GET /api/v1/health
