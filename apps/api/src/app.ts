@@ -12,7 +12,26 @@
  * the logger, metrics measured around routes, error handler is the final
  * catch-all, etc.).
  *
+ * **V2 Auth Awareness (FR-9):** This factory is V2-flag-agnostic. The V2-aware
+ * auth middleware swap (legacy JWT/blacklist ↔ @blitzy/auth's createExpressMiddleware)
+ * is handled INSIDE the v1Router constructed by routes/v1/index.ts. By the time
+ * v1Router reaches this factory in `deps.v1Router`, the per-request flag check
+ * (AUTH_V2_ENABLED) and mutual-exclusion branching have already been bound to
+ * each protected route. This factory simply mounts v1Router at `/api/v1` —
+ * the V2 flag is invisible at this layer (Rule R4 mutual exclusion is enforced
+ * at the middleware level, not the factory level).
+ *
+ * The `authInstance` and `flagsInstance` properties on `AppDependencies` are
+ * therefore documentary: they exist so `server.ts` can route the pre-built
+ * V2 dependency container through to `routes/v1/index.ts`'s factory. This
+ * file consumes neither at runtime — the only references are at the TypeScript
+ * type level via `import type` (which emits zero runtime code).
+ *
  * Architecture Rules Enforced:
+ * - R3  (V2 Flag Isolation): V2-aware mounting happens in v1Router; this factory
+ *       is V2-agnostic. With AUTH_V2_ENABLED=false, no @blitzy/auth code executes.
+ * - R4  (Mutual Exclusion): Enforced inside middleware/auth.ts; this factory only
+ *       mounts the pre-built v1Router which contains the resolved branch.
  * - R8  (Media Upload Validation): Body parser limit set to 26 MB (25 MB + overhead)
  * - R16 (OOD Layering): Pure factory — zero service/repository/provider instantiation
  * - R17 (Interface-Driven): Receives pre-wired dependencies, never imports concretes
@@ -34,6 +53,24 @@ import { correlationIdMiddleware } from './middleware/correlation-id';
 import { createMetricsMiddleware } from './middleware/metrics';
 import { errorHandler } from './middleware/error-handler';
 import type { MetricsService } from './services/MetricsService';
+
+// ─── V2 Library Type Imports (FR-1, FR-4) ──────────────────────────────────────
+// Type-only imports for the V2 auth and feature flag library instance types.
+// These are referenced by the optional `authInstance` and `flagsInstance` props
+// on AppDependencies. Although `app.ts` does NOT directly use these libraries
+// (the V2-aware auth middleware is bound INSIDE v1Router by routes/v1/index.ts),
+// the type definitions are surfaced here so that server.ts can pass the
+// instances through AppDependencies for forward-compatibility and to make the
+// V2 integration self-documenting at the type system level.
+//
+// The `import type` syntax guarantees these emit zero runtime code (Rule R7
+// zero-warnings build): the resulting JavaScript contains no `require`/`import`
+// statement for `@blitzy/auth` or `@blitzy/admin-ui` from this file. This
+// preserves Rule R3 (V2 flag isolation) — with AUTH_V2_ENABLED=false, no
+// V2 library code is loaded into the require.cache when this module is
+// evaluated, because TypeScript erases type-only imports at emit time.
+import type { AuthInstance } from '@blitzy/auth';
+import type { FlagInstance } from '@blitzy/admin-ui';
 
 // ---------------------------------------------------------------------------
 // AppDependencies Interface
@@ -103,6 +140,51 @@ export interface AppDependencies {
    * set to 'cross-origin' for cross-origin image loading from the frontend.
    */
   uploadDir: string;
+
+  /**
+   * V2 auth library instance constructed by `server.ts` via `initAuth(...)` from
+   * `@blitzy/auth`. Optional: only set when V2 OAuth integration is wired (FR-1, FR-9).
+   *
+   * **Note:** This factory does NOT use this property directly. It is surfaced on
+   * `AppDependencies` for forward-compatibility and documentation. The V2-aware
+   * auth middleware is bound INSIDE `v1Router` (constructed in `routes/v1/index.ts`
+   * by `server.ts` BEFORE being passed to this factory). The actual mount site is
+   * the `routes/v1/index.ts` factory, NOT this `app.ts` factory.
+   *
+   * In sidecar mode (kalle), this instance was constructed WITHOUT a `dbUrl` —
+   * token-to-user resolution is delegated via HTTP to ${AUTH_SERVICE_URL}/validate
+   * (Rule R2 — auth DB boundary).
+   *
+   * Set by `server.ts` and forwarded to `createV1Router` for use by the V2-aware
+   * `createAuthMiddleware` factory in `middleware/auth.ts`.
+   *
+   * @see ./middleware/auth.ts — V2-aware createAuthMiddleware factory
+   * @see ./routes/v1/index.ts — actual V2 auth-middleware mount site
+   * @see ../../../packages/auth/README.md — initAuth() public API contract
+   */
+  authInstance?: AuthInstance;
+
+  /**
+   * Feature flag instance constructed by `server.ts` via `initFlags(...)` from
+   * `@blitzy/admin-ui`. Optional: only set when V2 feature flag integration is
+   * wired (FR-4, FR-9).
+   *
+   * **Note:** This factory does NOT use this property directly. It is surfaced
+   * for forward-compatibility and documentation. The flag check (`AUTH_V2_ENABLED`)
+   * happens INSIDE the v1Router's per-route auth middleware (in `middleware/auth.ts`
+   * via the `createAuthMiddleware({ legacy, v2, flags })` factory).
+   *
+   * In HTTP-only mode (kalle), this instance was constructed with `apiUrl` and
+   * `apiSecret` (NOT `databaseUrl`) — flag values are read by HTTP to
+   * ${FLAGS_API_URL}/flags/:name (Rule RF2 — flags DB boundary).
+   *
+   * On flag-API failure, the instance falls back to `process.env.AUTH_V2_ENABLED`
+   * (Rule RF3 — flag fail-open).
+   *
+   * @see ./middleware/auth.ts — flag-first synchronous evaluation
+   * @see ../../../packages/admin-ui/README.md — initFlags() public API contract
+   */
+  flagsInstance?: FlagInstance;
 }
 
 // ---------------------------------------------------------------------------
@@ -268,6 +350,16 @@ export function createApp(deps: AppDependencies): Application {
   // limiter) are NOT applied globally — they are bound per-route inside
   // the v1Router to allow unauthenticated endpoints (e.g. /auth/register,
   // /auth/login, /health) and per-endpoint rate limit tuning.
+  //
+  // V2 OAuth Dispatch (FR-9, R3, R4): The auth middleware bound inside
+  // v1Router uses the V2-aware createAuthMiddleware({ authInstance,
+  // flagsInstance, legacyAuthHandler }) factory from middleware/auth.ts.
+  // Per-request, the factory reads AUTH_V2_ENABLED via flagsInstance
+  // (cache → flags-API → process.env fallback per Rule RF3) and dispatches
+  // to either the legacy JWT/blacklist handler (V1) or @blitzy/auth's
+  // createExpressMiddleware (V2). Rule R4 guarantees the two paths are
+  // mutually exclusive on a per-request basis. This factory mounts v1Router
+  // OPAQUELY — the flag is invisible at this layer.
   // -------------------------------------------------------------------------
   app.use('/api/v1', deps.v1Router);
 
