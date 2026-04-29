@@ -490,6 +490,30 @@ services:
     build:
       context: ../
       dockerfile: packages/auth/Dockerfile
+      # =====================================================================
+      # QA F3 Issue #1 — VITE_* Build-Time Argument Propagation
+      # =====================================================================
+      # The Auth Admin SPA (packages/auth/src/admin-ui/) is a Vite-built
+      # React 18 static bundle. Vite reads `import.meta.env.VITE_*` at BUILD
+      # time and inlines the literal string into the compiled JS. Values not
+      # available during `vite build` become `undefined`, breaking the PKCE
+      # redirect: when VITE_KEYCLOAK_BASE_URL is empty, the SPA constructs
+      # `${baseUrl}/realms/blitzy/...` as a host-RELATIVE URL, sending the
+      # browser to http://localhost:4000/realms/... (HTTP 404) instead of
+      # http://localhost:8080/realms/... (the Keycloak issuer).
+      #
+      # These `args:` flow as Docker build arguments to packages/auth/
+      # Dockerfile's `ARG VITE_*` declarations, which the Dockerfile then
+      # promotes to ENV so Vite can read them via `process.env.VITE_*`.
+      #
+      # Public OAuth client identifiers (base URL, realm, client ID) are
+      # intentionally exposed in the bundle — they are NOT secrets. Rule R8
+      # only forbids embedding CLIENT_SECRETs.
+      # =====================================================================
+      args:
+        VITE_KEYCLOAK_BASE_URL: ${KEYCLOAK_PUBLIC_BASE_URL:-http://localhost:8080}
+        VITE_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-blitzy}
+        VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-kalle-app}
     container_name: kalle-auth-sidecar
     restart: unless-stopped
     environment:
@@ -620,12 +644,49 @@ services:
     build:
       context: ../
       dockerfile: packages/admin-ui/Dockerfile
+      # =====================================================================
+      # QA F3 Issue #5 — VITE_* Build-Time Argument Propagation
+      # =====================================================================
+      # The Flags Admin SPA (packages/admin-ui/src/admin-ui/) is a Vite-built
+      # React 18 static bundle. Vite reads `import.meta.env.VITE_*` at BUILD
+      # time and inlines the literal string into the compiled JS. Values not
+      # available during `vite build` become `undefined`, breaking the PKCE
+      # redirect: when VITE_KEYCLOAK_BASE_URL is empty, the SPA constructs
+      # `${baseUrl}/realms/blitzy/...` as a host-RELATIVE URL, sending the
+      # browser to http://localhost:4002/realms/... (HTTP 404) instead of
+      # http://localhost:8080/realms/... (the Keycloak issuer).
+      #
+      # Mirror precedent at the auth-sidecar service block above. Per Rule
+      # RF7 the Flags Admin SPA does NOT consume @blitzy/auth — it has its
+      # own copy of the Keycloak client config because each SPA must build
+      # in isolation (Rule RF1: zero cross-package imports).
+      # =====================================================================
+      args:
+        VITE_KEYCLOAK_BASE_URL: ${KEYCLOAK_PUBLIC_BASE_URL:-http://localhost:8080}
+        VITE_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-blitzy}
+        VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-kalle-app}
     container_name: kalle-admin-ui
     restart: unless-stopped
     environment:
       NODE_ENV: ${NODE_ENV:-development}
       ADMIN_UI_PORT: "4002"
       FLAGS_API_PORT: "4003"
+      # QA F3 Issue #5 — SPA Static Asset Serving
+      # ----------------------------------------------------------------------
+      # The Flags Admin SPA (Vite-built React 18 bundle) lives at
+      # /app/packages/admin-ui/dist/admin-ui inside the runner image (per
+      # packages/admin-ui/Dockerfile's `COPY --from=builder` of dist/).
+      # Setting ADMIN_UI_STATIC_DIR enables the optional SPA static-serving
+      # branch in packages/admin-ui/src/api/server.ts (see lines 886-901)
+      # which mounts the Vite assets at GET /, GET /assets/*, etc.
+      #
+      # Without this var the admin app starts in "API-only" mode and every
+      # SPA route returns 404 (NOT_FOUND). The static-dir feature was
+      # intentionally optional so a deployment can split the SPA onto a
+      # separate static host (CDN, nginx, etc.) and the API onto port 4002,
+      # but for the local Docker Compose stack the SPA and API co-locate.
+      # ----------------------------------------------------------------------
+      ADMIN_UI_STATIC_DIR: /app/packages/admin-ui/dist/admin-ui
       # NOTE: `flags-db` is the Docker-network DNS name; container port 5432
       # (host port is 5435 for direct psql access during debugging).
       FLAGS_DB_URL: postgresql://${FLAGS_DB_USER:-flags}:${FLAGS_DB_PASSWORD:-flags_dev_password}@flags-db:5432/${FLAGS_DB_NAME:-flags_db}?schema=public

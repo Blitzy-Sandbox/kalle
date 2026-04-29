@@ -231,8 +231,34 @@ export default function MainLayout({
   // ---------------------------------------------------------------------------
   return (
     <div className="flex flex-col h-screen bg-surface overflow-hidden">
-      {/* ARIA landmark: main content area */}
+      {/* QA F3 Issue #14 fix — Document-level h1 landmark.
+       *
+       * WCAG 2.1 SC 1.3.1 (Info and Relationships, Level A) and SC 2.4.6
+       * (Headings and Labels, Level AA) recommend a single h1 per page
+       * representing the document's primary topic. Prior to this fix,
+       * authenticated pages relied on `NavigationBar` to provide the h1
+       * (e.g. h1 "Chats" on /chat) but in the desktop dual-panel layout
+       * the chat-list sidebar's `<h2>Chats</h2>` (in
+       * apps/web/src/app/(main)/chat/layout.tsx) appears earlier in DOM
+       * order than the NavigationBar h1. DOM-order heading audits then
+       * report the page as "starting at h2".
+       *
+       * This sr-only h1 is the FIRST heading in DOM for every
+       * authenticated route, removing that ambiguity. The visually-hidden
+       * pattern (Tailwind `sr-only`) keeps the visual layout pixel-
+       * identical to the prior behavior while exposing the document
+       * landmark to screen readers and a11y auditors. */}
+      <h1 className="sr-only">Kalle Messenger</h1>
+      {/* ARIA landmark: main content area
+       *
+       * QA F3 Issue #16 fix — `id="main-content"` ties this landmark to
+       * the `<a href="#main-content">Skip to main content</a>` link in
+       * apps/web/src/app/layout.tsx. WCAG 2.1 SC 2.4.1 (Bypass Blocks,
+       * Level A) compliance: pressing Enter on the focused skip-link
+       * scrolls focus directly into this <main> region, bypassing the
+       * sticky bottom TabBar. */}
       <main
+        id="main-content"
         className="flex-1 overflow-hidden relative"
         role="main"
         aria-label="Main content"

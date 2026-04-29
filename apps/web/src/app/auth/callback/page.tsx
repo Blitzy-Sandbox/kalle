@@ -208,9 +208,14 @@ function decodeIdToken(idToken: string): IdTokenPayload | null {
  *   2. **Atomic sessionStorage clear before validation**: The verifier and
  *      state are removed BEFORE state validation — this defends against
  *      replay attacks even if the legitimate flow is interrupted.
- *   3. **Cancellation checks**: After every async checkpoint, `cancelled`
- *      is checked before mutating component state or navigating, to avoid
- *      "set state on unmounted component" warnings.
+ *   3. **One-shot ref guard**: `hasInitiatedRef.current` is the SOLE
+ *      single-execution gate. Per QA F3 Issue #12, the previous
+ *      `cancelled` closure-flag pattern caused the post-exchange state
+ *      writes and `router.replace('/chat')` to be skipped under React 18
+ *      StrictMode (cleanup set `cancelled = true` immediately after the
+ *      first mount, before the token exchange resolved). The async
+ *      `run()` is now allowed to complete normally because the auth
+ *      store mutations are idempotent and the navigation is safe.
  *   4. **`router.replace` not `push`**: Removes the callback URL from
  *      browser history so back-button navigation does not re-attempt the
  *      now-consumed authorization-code exchange.
@@ -224,23 +229,47 @@ function AuthCallbackContent(): JSX.Element {
   const [hasFailed, setHasFailed] = useState<boolean>(false);
 
   /**
-   * Single-execution gate. React 18 StrictMode (Next.js dev default per
-   * `next.config.js: reactStrictMode: true`) double-invokes effects to
-   * verify cleanup correctness. Without this gate, the second invocation
-   * would observe sessionStorage already cleared by the first invocation
-   * and incorrectly redirect to `/login?error=missing_verifier`.
+   * Single-execution gate (one-shot ref guard). React 18 StrictMode
+   * (Next.js dev default per `next.config.js: reactStrictMode: true`)
+   * double-invokes effects to verify cleanup correctness. Without this
+   * gate, the second invocation would re-issue the Keycloak token POST
+   * with a code that has already been consumed (Keycloak responds 400
+   * `invalid_grant` because authorization codes are one-time-use per
+   * RFC 6749 §10.5).
    *
    * `useRef.current` persists across StrictMode's mount/unmount/remount
    * sequence per React 18 documentation, so this gate ensures the
-   * exchange logic runs exactly once per page mount.
+   * exchange logic runs exactly ONCE per page mount.
+   *
+   * QA F3 Issue #12 fix: this gate is the SOLE single-execution guard.
+   * The previous implementation also carried a `let cancelled = false`
+   * closure-local flag that the effect's cleanup function set to `true`.
+   * Under StrictMode the cleanup ran immediately after the first mount
+   * (setting `cancelled = true`) BEFORE the async `run()` had finished
+   * the token exchange. Each `if (cancelled) return;` checkpoint inside
+   * `run()` then skipped the post-exchange state writes
+   * (setAccessToken, setUser) and the `router.replace('/chat')`
+   * navigation, leaving the user stranded on /auth/callback forever
+   * even though the token exchange had completed successfully (cookie
+   * was set; in-memory access token was discarded).
+   *
+   * Why dropping the cancellation flag is correct:
+   *   - The token exchange already consumed the one-shot authorization
+   *     code; aborting after the POST resolves only loses state — it
+   *     does not save any wasted network work.
+   *   - The auth store mutations are idempotent and synchronous; the
+   *     `hasInitiatedRef` gate ensures they happen at most once.
+   *   - `router.replace('/chat')` is idempotent — multiple invocations
+   *     converge to the same destination, but the gate makes that moot.
+   *
+   * No teardown side effects need cancellation here, so the effect's
+   * return value is omitted (cleanup is the implicit no-op).
    */
   const hasInitiatedRef = useRef<boolean>(false);
 
   useEffect(() => {
     if (hasInitiatedRef.current) return;
     hasInitiatedRef.current = true;
-
-    let cancelled = false;
 
     /**
      * Records a failure, clears in-memory auth state, and schedules a
@@ -253,14 +282,12 @@ function AuthCallbackContent(): JSX.Element {
      * R23: error code only — never log token, code, or verifier values.
      */
     const failAndRedirect = (errorCode: string): void => {
-      if (cancelled) return;
       useAuthStore.getState().clear();
       setHasFailed(true);
       setStatusMessage('Sign-in failed. Redirecting to login…');
       // eslint-disable-next-line no-console
       console.error(`[auth/callback] Sign-in failed: ${errorCode}`);
       window.setTimeout(() => {
-        if (cancelled) return;
         router.replace(`/login?error=${encodeURIComponent(errorCode)}`);
       }, ERROR_REDIRECT_DELAY_MS);
     };
@@ -382,8 +409,6 @@ function AuthCallbackContent(): JSX.Element {
           return;
         }
 
-        if (cancelled) return;
-
         /* ── Step 11: Persist access token in memory (Rule R7) ─────────
          * The Zustand store's `setAccessToken` action writes the token
          * into the in-memory state slice; the store's `partialize`
@@ -453,13 +478,22 @@ function AuthCallbackContent(): JSX.Element {
           return;
         }
 
-        if (cancelled) return;
-
         /* ── Step 14: Success — navigate to main app ────────────────────
          * `router.replace('/chat')` rather than `router.push('/chat')`:
          * `replace` removes /auth/callback from browser history so the
          * back button does not re-attempt the now-consumed code+verifier
-         * exchange. */
+         * exchange.
+         *
+         * QA F3 Issue #12 fix: this navigation MUST execute synchronously
+         * after the cookie write succeeds. We previously gated this on a
+         * `cancelled` closure flag set by the useEffect cleanup, which under
+         * React 18 StrictMode (Next.js dev default) double-mounts effects
+         * and runs the first cleanup BEFORE the async `run()` resolves,
+         * thereby skipping `router.replace('/chat')` and stranding the user
+         * on /auth/callback indefinitely. The `hasInitiatedRef` gate above
+         * is sufficient: it ensures `run()` executes at most once across
+         * the entire component lifetime, so this `router.replace('/chat')`
+         * line is reached at most once even under StrictMode double-mount. */
         router.replace('/chat');
       } catch {
         /* Network error, JSON parse error, or any unexpected exception.
@@ -471,9 +505,17 @@ function AuthCallbackContent(): JSX.Element {
 
     void run();
 
-    return (): void => {
-      cancelled = true;
-    };
+    /* QA F3 Issue #12 fix: deliberately NO cleanup function returned.
+     * The previous implementation returned `() => { cancelled = true; }`
+     * which under React 18 StrictMode (Next.js dev default) is invoked
+     * BETWEEN the two StrictMode-induced double mounts — i.e. before the
+     * first mount's async `run()` has resolved. Setting `cancelled = true`
+     * before resolution caused all post-await checkpoints (state writes
+     * and `router.replace('/chat')`) to be silently skipped, stranding
+     * the user on /auth/callback. With the `hasInitiatedRef` gate above
+     * the second mount's `run()` is a no-op, so no cleanup is needed —
+     * the async work from the first mount completes naturally and
+     * navigates to /chat regardless of intermediate unmount. */
   }, [router, searchParams]);
 
   /* ─── Render ─────────────────────────────────────────────────────────

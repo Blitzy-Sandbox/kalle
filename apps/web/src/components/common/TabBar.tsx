@@ -209,8 +209,19 @@ export const TabBar: React.FC<TabBarProps> = ({
         .filter(Boolean)
         .join(' ')}
     >
-      {/* Tab row — 5 equal-width tabs, 49px tall per Figma layout_MQCI5J */}
-      <div className="flex h-[49px]" role="tablist">
+      {/* Tab row — 5 equal-width tabs, 49px tall per Figma layout_MQCI5J
+       *
+       * QA F3 Issue #13 fix: dropped `role="tablist"` / `role="tab"` /
+       * `aria-selected` from this navigation. Per WAI-ARIA Authoring
+       * Practices, the Tabs Pattern (role=tablist + role=tab) requires
+       * each tab to control a corresponding tabpanel via `aria-controls`
+       * AND requires roving tabindex semantics (arrow keys move focus
+       * between tabs; only the active tab is in the tab order). This
+       * component is actually a *navigation* between routes, not a
+       * tab/panel switcher within a single page. Using `<nav>` with
+       * `aria-label="Main navigation"` + `aria-current="page"` is the
+       * correct semantic for route-level navigation per WAI-ARIA AP. */}
+      <div className="flex h-[49px]">
         {TAB_CONFIG.map((tab) => {
           const isActive = activeTab === tab.id;
           const colorClass = isActive
@@ -221,8 +232,6 @@ export const TabBar: React.FC<TabBarProps> = ({
             <button
               key={tab.id}
               type="button"
-              role="tab"
-              aria-selected={isActive}
               aria-current={isActive ? 'page' : undefined}
               aria-label={tab.label}
               onClick={() => onTabPress(tab.id)}
