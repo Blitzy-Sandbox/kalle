@@ -106,6 +106,17 @@ import type { HealthController } from '../../controllers/HealthController.js';
 import type { AuthService } from '../../services/AuthService.js';
 
 // =============================================================================
+// V2 type-only imports — interface-level forward-declarations for the V2
+// auth/flags instances injected by `server.ts` (composition root). These
+// imports are TYPE-ONLY and tree-shake to nothing at runtime — they exist
+// solely so the V1RouterDependencies interface can declare the optional
+// `authInstance?` and `flagsInstance?` slots that `server.ts` populates
+// (FR-1, FR-4, FR-9, R3, R4 — V2 wiring at composition root).
+// =============================================================================
+import type { AuthInstance } from '@blitzy/auth';
+import type { FlagInstance } from '@blitzy/admin-ui';
+
+// =============================================================================
 // V1RouterDependencies Interface
 // =============================================================================
 
@@ -178,6 +189,50 @@ export interface V1RouterDependencies {
    * Passed to `createAuthMiddleware` for token signature verification.
    */
   jwtSecret: string;
+
+  /**
+   * V2 auth instance constructed by `server.ts` via `initAuth(...)` from
+   * `@blitzy/auth`. Optional — only populated when V2 env vars are set
+   * (KEYCLOAK_BASE_URL, AUTH_SERVICE_URL, AUTH_SIDECAR_SECRET). When
+   * `undefined`, the middleware factory uses the legacy JWT path
+   * exclusively (Rule R3 — zero V2 code executes when AUTH_V2_ENABLED=false
+   * AND in legacy-only deployments where V2 env vars are absent).
+   *
+   * In sidecar mode (kalle), this instance was constructed WITHOUT a
+   * `dbUrl` — token-to-user resolution is delegated via HTTP to
+   * ${AUTH_SERVICE_URL}/validate (Rule R2 — auth DB boundary).
+   *
+   * Used by the V2-aware `createAuthMiddleware` factory in
+   * `middleware/auth.ts` to dispatch to @blitzy/auth's
+   * `createExpressMiddleware` when AUTH_V2_ENABLED=true.
+   *
+   * @see ../../middleware/auth.ts — V2-aware createAuthMiddleware factory
+   * @see ../../../../packages/auth/README.md — initAuth() public API contract
+   */
+  authInstance?: AuthInstance;
+
+  /**
+   * V2 flags instance slot. Optional — declared on this interface for
+   * forward-compatibility with `@blitzy/admin-ui`'s planned HTTP-only mode
+   * (apiUrl + apiSecret). For kalle, this is currently `undefined` because
+   * the actual runtime flag-reading mechanism is `createFeatureFlagClient`
+   * from `@blitzy/auth/clients/feature-flag-client` (HTTP-only, fail-open
+   * per Rule RF3), constructed inside `middleware/auth.ts`. The slot is
+   * preserved here so that:
+   *   1) `server.ts` can forward the instance once HTTP-only mode lands
+   *      in `@blitzy/admin-ui`, and
+   *   2) The interface contract documented in `app.ts` AppDependencies is
+   *      consistent across the kalle composition graph.
+   *
+   * Rule RF2 (flags DB boundary): kalle MUST NEVER reference FLAGS_DB_URL,
+   * so this instance is NEVER constructed via the current DB-only
+   * `initFlags(dbUrl)` path in kalle. Verified by:
+   *   grep "FLAGS_DB_URL" kalle/apps/api/src/  → zero matches
+   *
+   * @see ../../middleware/auth.ts — HTTP-only flag client construction site
+   * @see ../../../../packages/auth/src/clients/feature-flag-client.ts — actual flag client
+   */
+  flagsInstance?: FlagInstance;
 }
 
 // =============================================================================

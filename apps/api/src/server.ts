@@ -55,6 +55,29 @@ import { getCorsOptions } from './config/cors';
 // ─── App Factory Import ────────────────────────────────────────────────────────
 import { createApp } from './app';
 
+// ─── V2 Auth/Flags Library Imports (FR-1, FR-4, R3, R4) ────────────────────────
+// `@blitzy/auth` provides the V2 OAuth/OIDC authentication middleware (sidecar
+// mode for kalle: no `dbUrl`, with `sidecarUrl`+`sidecarSecret` per Rule R2).
+// `@blitzy/admin-ui` exports `initFlags` whose return type defines the shape
+// passed through to consumers; kalle does NOT actually invoke `initFlags`
+// because that function only supports DB mode (`dbUrl`) and kalle's
+// `flagsInstance` MUST stay HTTP-only per Rule RF2 (no `FLAGS_DB_URL` in
+// kalle). The HTTP-only feature-flag client used by `middleware/auth.ts` is
+// `createFeatureFlagClient` from `@blitzy/auth/clients/feature-flag-client`
+// (constructed inside the middleware factory), not this `initFlags`. The
+// import is kept here purely for the `Awaited<ReturnType<typeof initFlags>>`
+// type used to declare the optional `flagsInstance` slot — see Step 6c.
+//
+// Per Rule R3, the V2 library is wired up at boot but the per-request branch
+// between legacy AuthService and V2 createExpressMiddleware happens INSIDE
+// middleware/auth.ts based on the AUTH_V2_ENABLED flag value (R4 mutual
+// exclusion). When V2 env vars are absent (test parity, Rule R12), V2
+// instances are NOT constructed — `initAuth` actively probes the Keycloak
+// JWKS URL with a 10-attempt exponential backoff that would otherwise crash
+// boot in environments where Keycloak is not running.
+import { initAuth } from '@blitzy/auth';
+import { initFlags } from '@blitzy/admin-ui';
+
 // ─── Middleware Imports ────────────────────────────────────────────────────────
 import { configureRedisStore } from './middleware/rate-limiter';
 
@@ -219,6 +242,103 @@ async function bootstrap(): Promise<void> {
     env,
   );
 
+  // ─── Step 6c: V2 Auth + Flags Instance Construction (FR-1, FR-4, FR-9, R2, R4, RF2) ──
+  // Construct shared V2 library instances ONCE at boot. These instances are
+  // passed to createV1Router (Step 8) where the V2-aware auth middleware
+  // factory in middleware/auth.ts uses them to dispatch to @blitzy/auth's
+  // createExpressMiddleware when AUTH_V2_ENABLED=true (resolved per-request
+  // via flagsInstance / the HTTP-only flag client). The legacy AuthService
+  // instantiation above is preserved verbatim — Rule R4 requires per-request
+  // mutual exclusion between V1 and V2 paths, which is enforced inside
+  // middleware/auth.ts (NOT here).
+  //
+  // CRITICAL (Rule R2 — Auth DB Boundary):
+  //   kalle is in SIDECAR MODE for `@blitzy/auth`. initAuth() is called WITHOUT
+  //   `dbUrl`. Token-to-user resolution is delegated via HTTP to
+  //   ${AUTH_SERVICE_URL}/validate (the auth-sidecar service running on port
+  //   4001). The kalle process MUST NEVER open a connection to AUTH_DB_URL —
+  //   that env var is consumed only by @blitzy/auth in own-mode (the sidecar
+  //   service itself). Verified by:
+  //     grep "AUTH_DB_URL" kalle/apps/api/src/  → zero matches
+  //
+  // CRITICAL (Rule RF2 — Flags DB Boundary):
+  //   kalle is in HTTP-ONLY MODE for feature flags. The runtime flag-reading
+  //   mechanism is `createFeatureFlagClient` from
+  //   `@blitzy/auth/clients/feature-flag-client`, constructed inside
+  //   middleware/auth.ts and used by `getFlagSync` as the FIRST synchronous
+  //   step of every request (per AAP Section 0.4.1.7 mutual exclusion
+  //   sequence). The `flagsInstance` slot below is declared as `undefined`
+  //   for kalle because the current `@blitzy/admin-ui` `initFlags()` only
+  //   accepts `dbUrl` (DB mode) — kalle MUST NOT reference FLAGS_DB_URL.
+  //   When @blitzy/admin-ui adds HTTP-only mode (apiUrl/apiSecret) in the
+  //   future, the construction below can be enabled. Verified by:
+  //     grep "FLAGS_DB_URL" kalle/apps/api/src/  → zero matches
+  //
+  // CRITICAL (Rule RF3 — Flag Fail-Open):
+  //   When the flags API is unreachable, the HTTP-only flag client (used in
+  //   middleware/auth.ts) falls back to `process.env.AUTH_V2_ENABLED`. Read
+  //   order: in-process cache (5s TTL) → GET ${FLAGS_API_URL}/flags/:name →
+  //   process.env fallback. This is INTENTIONALLY the OPPOSITE of auth
+  //   fail-mode (Rule R13: auth fails CLOSED with HTTP 503).
+  //
+  // CRITICAL (IR-G — Backchannel Logout Key Compatibility):
+  //   The V2 sidecar's POST /backchannel-logout writes to Redis using the
+  //   SAME key prefix (`blacklist:`) that this kalle middleware reads via
+  //   `BLACKLIST_PREFIX` in middleware/auth.ts. A single Redis blacklist
+  //   serves both V1 and V2 modes — no migration of revocation state is
+  //   needed when the flag flips.
+  //
+  // CRITICAL (Rule R12 — Test Parity / Conditional Construction):
+  //   `await initAuth()` actively probes the Keycloak JWKS endpoint via a
+  //   10-attempt exponential backoff (initial 2s, cap 30s, ~270s total).
+  //   In test environments where AUTH_V2_ENABLED=false and Keycloak is not
+  //   running, this would hang and ultimately crash boot. To preserve byte-
+  //   identical behavior with the pre-V2 server (1,814 existing tests),
+  //   construction is gated on the V2 env vars being present. When the env
+  //   vars are absent (legacy-only deployments), `authInstance` is left
+  //   `undefined` and `middleware/auth.ts` runs the legacy JWT path
+  //   exclusively — Rule R3 (zero V2 code executes when AUTH_V2_ENABLED=false)
+  //   is preserved by both branches.
+  let authInstance: Awaited<ReturnType<typeof initAuth>> | undefined;
+  if (
+    env.KEYCLOAK_BASE_URL !== undefined &&
+    env.AUTH_SERVICE_URL !== undefined &&
+    env.AUTH_SIDECAR_SECRET !== undefined &&
+    env.AUTH_SIDECAR_SECRET.length > 0
+  ) {
+    authInstance = await initAuth({
+      keycloakBaseUrl: env.KEYCLOAK_BASE_URL,
+      realm: env.KEYCLOAK_REALM,
+      clientId: env.KEYCLOAK_CLIENT_ID,
+      // INTENTIONALLY OMITTED: dbUrl. Kalle is in sidecar mode (Rule R2).
+      sidecarUrl: env.AUTH_SERVICE_URL,
+      sidecarSecret: env.AUTH_SIDECAR_SECRET,
+    });
+    logger.info('V2 auth instance initialized (sidecar mode)');
+  } else {
+    logger.info(
+      'V2 auth instance not initialized (V2 env vars absent — legacy-only mode)',
+    );
+  }
+
+  // `flagsInstance` is intentionally declared with the type derived from
+  // `initFlags` but left `undefined` for kalle. The actual HTTP-only flag
+  // reading happens inside middleware/auth.ts via
+  // `createFeatureFlagClient({ flagsApiUrl, flagsApiSecret, cacheTtlMs })`
+  // from `@blitzy/auth/clients/feature-flag-client`. This satisfies:
+  //   - Rule RF2 (no FLAGS_DB_URL referenced in kalle/)
+  //   - Rule RF3 (cache → API → process.env fallback in the HTTP client)
+  //   - The contract documented in app.ts AppDependencies for forward
+  //     compatibility (`flagsInstance?: FlagInstance`).
+  // The `initFlags` import above is consumed by this `Awaited<ReturnType<...>>`
+  // type expression so noUnusedLocals is satisfied without invoking the
+  // DB-mode constructor.
+  const flagsInstance: Awaited<ReturnType<typeof initFlags>> | undefined =
+    undefined;
+  logger.info(
+    'V2 flags instance slot declared (kalle uses HTTP-only flag client in middleware/auth.ts)',
+  );
+
   const userService = new UserService(
     userRepository,
     cacheProvider,
@@ -285,8 +405,15 @@ async function bootstrap(): Promise<void> {
 
   // ─── Step 8: v1 Router Construction (Rule R30) ───────────────────────────
   // Aggregates all v1 route modules under the /api/v1/ prefix. The factory
-  // creates the JWT auth middleware internally from jwtSecret and cacheProvider,
-  // then mounts each controller's routes on the appropriate sub-paths.
+  // creates the auth middleware internally — under the V2 flag
+  // (AUTH_V2_ENABLED=true) it dispatches to @blitzy/auth's
+  // createExpressMiddleware via authInstance; under the legacy flag value, it
+  // uses the existing JWT/blacklist factory built from jwtSecret and
+  // cacheProvider. Per Rule R4, the two paths are mutually exclusive on a
+  // per-request basis. The flag is resolved inside middleware/auth.ts via the
+  // HTTP-only flag client (createFeatureFlagClient) — flagsInstance is
+  // forwarded for forward-compatibility with @blitzy/admin-ui's planned
+  // HTTP-only mode (currently undefined for kalle per Rule RF2).
   const v1Router = createV1Router({
     authController,
     userController,
@@ -299,6 +426,8 @@ async function bootstrap(): Promise<void> {
     authService,
     cacheProvider,
     jwtSecret: env.JWT_SECRET,
+    authInstance,   // V2 auth instance (sidecar mode, Rule R2) — undefined when V2 env vars absent
+    flagsInstance,  // V2 flags instance slot — undefined for kalle (HTTP-only flag client used in middleware/auth.ts per Rule RF2)
   });
 
   // ─── Step 9: Pino HTTP Middleware (Rules R28, R23) ───────────────────────
