@@ -55,28 +55,32 @@ import { getCorsOptions } from './config/cors';
 // ─── App Factory Import ────────────────────────────────────────────────────────
 import { createApp } from './app';
 
-// ─── V2 Auth/Flags Library Imports (FR-1, FR-4, R3, R4) ────────────────────────
-// `@blitzy/auth` provides the V2 OAuth/OIDC authentication middleware (sidecar
-// mode for kalle: no `dbUrl`, with `sidecarUrl`+`sidecarSecret` per Rule R2).
-// `@blitzy/admin-ui` exports `initFlags` whose return type defines the shape
-// passed through to consumers; kalle does NOT actually invoke `initFlags`
-// because that function only supports DB mode (`dbUrl`) and kalle's
-// `flagsInstance` MUST stay HTTP-only per Rule RF2 (no `FLAGS_DB_URL` in
-// kalle). The HTTP-only feature-flag client used by `middleware/auth.ts` is
-// `createFeatureFlagClient` from `@blitzy/auth/clients/feature-flag-client`
-// (constructed inside the middleware factory), not this `initFlags`. The
-// import is kept here purely for the `Awaited<ReturnType<typeof initFlags>>`
-// type used to declare the optional `flagsInstance` slot — see Step 6c.
+// ─── V2 Auth/Flags Library Imports (FR-1, FR-4, FR-9, R2, R3, R4, RF2, RF3) ────
+// `@blitzy/auth` provides:
+//   - `initAuth(...)` — bootstraps the V2 OAuth/OIDC authentication instance
+//     (sidecar mode for kalle: no `dbUrl`, with `sidecarUrl`+`sidecarSecret`
+//     per Rule R2). Used by createV1Router to dispatch protected requests
+//     to `createExpressMiddleware` when AUTH_V2_ENABLED=true.
+//   - `createFeatureFlagClient(...)` (from the `clients/feature-flag-client`
+//     subpath) — bootstraps the HTTP-only `FeatureFlagClient` that reads
+//     `AUTH_V2_ENABLED` (and other flags) per request. Read order:
+//     in-process cache (5s TTL) → GET ${FLAGS_API_URL}/flags/:name →
+//     `process.env.AUTH_V2_ENABLED` fallback. Per Rule RF2, kalle MUST
+//     consume this HTTP-only client — NEVER the DB-backed `FlagInstance`
+//     from `@blitzy/admin-ui` (which would require FLAGS_DB_URL access).
 //
-// Per Rule R3, the V2 library is wired up at boot but the per-request branch
-// between legacy AuthService and V2 createExpressMiddleware happens INSIDE
-// middleware/auth.ts based on the AUTH_V2_ENABLED flag value (R4 mutual
-// exclusion). When V2 env vars are absent (test parity, Rule R12), V2
-// instances are NOT constructed — `initAuth` actively probes the Keycloak
-// JWKS URL with a 10-attempt exponential backoff that would otherwise crash
-// boot in environments where Keycloak is not running.
+// Per Rule R3 (semantic spirit), the V2 library is wired up at boot but the
+// per-request branch between legacy AuthService and V2 createExpressMiddleware
+// happens INSIDE middleware/auth.ts based on the AUTH_V2_ENABLED flag value
+// (R4 mutual exclusion). When V2 env vars are absent (test parity, Rule
+// R12), V2 instances are NOT constructed — `initAuth` actively probes the
+// Keycloak JWKS URL with a 10-attempt exponential backoff that would
+// otherwise crash boot in environments where Keycloak is not running.
 import { initAuth } from '@blitzy/auth';
-import { initFlags } from '@blitzy/admin-ui';
+import {
+  createFeatureFlagClient,
+  type FeatureFlagClient,
+} from '@blitzy/auth/clients/feature-flag-client';
 
 // ─── Middleware Imports ────────────────────────────────────────────────────────
 import { configureRedisStore } from './middleware/rate-limiter';
@@ -242,15 +246,15 @@ async function bootstrap(): Promise<void> {
     env,
   );
 
-  // ─── Step 6c: V2 Auth + Flags Instance Construction (FR-1, FR-4, FR-9, R2, R4, RF2) ──
+  // ─── Step 6c: V2 Auth + Flags Client Construction (FR-1, FR-4, FR-9, R2, R4, RF2, RF3) ──
   // Construct shared V2 library instances ONCE at boot. These instances are
   // passed to createV1Router (Step 8) where the V2-aware auth middleware
   // factory in middleware/auth.ts uses them to dispatch to @blitzy/auth's
   // createExpressMiddleware when AUTH_V2_ENABLED=true (resolved per-request
-  // via flagsInstance / the HTTP-only flag client). The legacy AuthService
-  // instantiation above is preserved verbatim — Rule R4 requires per-request
-  // mutual exclusion between V1 and V2 paths, which is enforced inside
-  // middleware/auth.ts (NOT here).
+  // via the HTTP-only flag client `FeatureFlagClient.isEnabled`). The legacy
+  // AuthService instantiation above is preserved verbatim — Rule R4 requires
+  // per-request mutual exclusion between V1 and V2 paths, which is enforced
+  // inside middleware/auth.ts (NOT here).
   //
   // CRITICAL (Rule R2 — Auth DB Boundary):
   //   kalle is in SIDECAR MODE for `@blitzy/auth`. initAuth() is called WITHOUT
@@ -263,23 +267,22 @@ async function bootstrap(): Promise<void> {
   //
   // CRITICAL (Rule RF2 — Flags DB Boundary):
   //   kalle is in HTTP-ONLY MODE for feature flags. The runtime flag-reading
-  //   mechanism is `createFeatureFlagClient` from
-  //   `@blitzy/auth/clients/feature-flag-client`, constructed inside
-  //   middleware/auth.ts and used by `getFlagSync` as the FIRST synchronous
-  //   step of every request (per AAP Section 0.4.1.7 mutual exclusion
-  //   sequence). The `flagsInstance` slot below is declared as `undefined`
-  //   for kalle because the current `@blitzy/admin-ui` `initFlags()` only
-  //   accepts `dbUrl` (DB mode) — kalle MUST NOT reference FLAGS_DB_URL.
-  //   When @blitzy/admin-ui adds HTTP-only mode (apiUrl/apiSecret) in the
-  //   future, the construction below can be enabled. Verified by:
+  //   mechanism is `FeatureFlagClient` from
+  //   `@blitzy/auth/clients/feature-flag-client`, constructed HERE at boot
+  //   and forwarded to the V2-aware auth middleware factory via
+  //   createV1Router → createAuthMiddleware. The DB-backed `FlagInstance`
+  //   from `@blitzy/admin-ui` is NEVER imported into kalle because that
+  //   library only supports DB mode (`dbUrl`) — kalle MUST NOT reference
+  //   FLAGS_DB_URL. Verified by:
   //     grep "FLAGS_DB_URL" kalle/apps/api/src/  → zero matches
   //
   // CRITICAL (Rule RF3 — Flag Fail-Open):
-  //   When the flags API is unreachable, the HTTP-only flag client (used in
-  //   middleware/auth.ts) falls back to `process.env.AUTH_V2_ENABLED`. Read
-  //   order: in-process cache (5s TTL) → GET ${FLAGS_API_URL}/flags/:name →
-  //   process.env fallback. This is INTENTIONALLY the OPPOSITE of auth
-  //   fail-mode (Rule R13: auth fails CLOSED with HTTP 503).
+  //   When the flags API is unreachable, the HTTP-only flag client falls
+  //   back to `process.env.AUTH_V2_ENABLED`. Read order: in-process cache
+  //   (5s TTL) → GET ${FLAGS_API_URL}/flags/:name → process.env fallback.
+  //   This is INTENTIONALLY the OPPOSITE of auth fail-mode (Rule R13: auth
+  //   fails CLOSED with HTTP 503). The `FeatureFlagClient.isEnabled()`
+  //   method is documented as never-throwing — it owns RF3 internally.
   //
   // CRITICAL (IR-G — Backchannel Logout Key Compatibility):
   //   The V2 sidecar's POST /backchannel-logout writes to Redis using the
@@ -295,10 +298,10 @@ async function bootstrap(): Promise<void> {
   //   running, this would hang and ultimately crash boot. To preserve byte-
   //   identical behavior with the pre-V2 server (1,814 existing tests),
   //   construction is gated on the V2 env vars being present. When the env
-  //   vars are absent (legacy-only deployments), `authInstance` is left
-  //   `undefined` and `middleware/auth.ts` runs the legacy JWT path
-  //   exclusively — Rule R3 (zero V2 code executes when AUTH_V2_ENABLED=false)
-  //   is preserved by both branches.
+  //   vars are absent (legacy-only deployments), `authInstance` and
+  //   `flagsClient` are both left `undefined` and `middleware/auth.ts` runs
+  //   the legacy JWT path exclusively — Rule R3 (zero V2 code executes when
+  //   AUTH_V2_ENABLED=false) is preserved by both branches.
   let authInstance: Awaited<ReturnType<typeof initAuth>> | undefined;
   if (
     env.KEYCLOAK_BASE_URL !== undefined &&
@@ -321,23 +324,34 @@ async function bootstrap(): Promise<void> {
     );
   }
 
-  // `flagsInstance` is intentionally declared with the type derived from
-  // `initFlags` but left `undefined` for kalle. The actual HTTP-only flag
-  // reading happens inside middleware/auth.ts via
-  // `createFeatureFlagClient({ flagsApiUrl, flagsApiSecret, cacheTtlMs })`
-  // from `@blitzy/auth/clients/feature-flag-client`. This satisfies:
-  //   - Rule RF2 (no FLAGS_DB_URL referenced in kalle/)
-  //   - Rule RF3 (cache → API → process.env fallback in the HTTP client)
-  //   - The contract documented in app.ts AppDependencies for forward
-  //     compatibility (`flagsInstance?: FlagInstance`).
-  // The `initFlags` import above is consumed by this `Awaited<ReturnType<...>>`
-  // type expression so noUnusedLocals is satisfied without invoking the
-  // DB-mode constructor.
-  const flagsInstance: Awaited<ReturnType<typeof initFlags>> | undefined =
-    undefined;
-  logger.info(
-    'V2 flags instance slot declared (kalle uses HTTP-only flag client in middleware/auth.ts)',
-  );
+  // `flagsClient` is the HTTP-only `FeatureFlagClient` used by the V2-aware
+  // auth middleware factory to read `AUTH_V2_ENABLED` per request. It is
+  // constructed ONCE at boot and forwarded via createV1Router. When the V2
+  // flag-API env vars are absent (legacy-only deployments), `flagsClient`
+  // is left `undefined` and the V2-aware overload of createAuthMiddleware
+  // is bypassed in favor of the legacy 2-arg overload (Rule R12 test parity).
+  //
+  // The client owns its own lifecycle — `flagsClient.close()` is invoked in
+  // the graceful shutdown handler below to cancel any in-flight requests
+  // and release the Node.js HTTP agent.
+  let flagsClient: FeatureFlagClient | undefined;
+  if (
+    env.FLAGS_API_URL !== undefined &&
+    env.FLAGS_API_SECRET !== undefined &&
+    env.FLAGS_API_SECRET.length > 0
+  ) {
+    flagsClient = createFeatureFlagClient({
+      flagsApiUrl: env.FLAGS_API_URL,
+      flagsApiSecret: env.FLAGS_API_SECRET,
+      // cacheTtlMs defaults to 5000 inside the client (FR-4); pass through
+      // env override if/when added to validateEnv.
+    });
+    logger.info('V2 flags client initialized (HTTP-only, Rule RF2)');
+  } else {
+    logger.info(
+      'V2 flags client not initialized (FLAGS_API_URL/FLAGS_API_SECRET absent — legacy-only mode)',
+    );
+  }
 
   const userService = new UserService(
     userRepository,
@@ -410,10 +424,9 @@ async function bootstrap(): Promise<void> {
   // createExpressMiddleware via authInstance; under the legacy flag value, it
   // uses the existing JWT/blacklist factory built from jwtSecret and
   // cacheProvider. Per Rule R4, the two paths are mutually exclusive on a
-  // per-request basis. The flag is resolved inside middleware/auth.ts via the
-  // HTTP-only flag client (createFeatureFlagClient) — flagsInstance is
-  // forwarded for forward-compatibility with @blitzy/admin-ui's planned
-  // HTTP-only mode (currently undefined for kalle per Rule RF2).
+  // per-request basis. The flag is resolved inside middleware/auth.ts via
+  // the HTTP-only flag client `FeatureFlagClient.isEnabled()` (Rule RF2 +
+  // RF3) — `flagsClient` is forwarded as the canonical wiring for kalle.
   const v1Router = createV1Router({
     authController,
     userController,
@@ -427,7 +440,7 @@ async function bootstrap(): Promise<void> {
     cacheProvider,
     jwtSecret: env.JWT_SECRET,
     authInstance,   // V2 auth instance (sidecar mode, Rule R2) — undefined when V2 env vars absent
-    flagsInstance,  // V2 flags instance slot — undefined for kalle (HTTP-only flag client used in middleware/auth.ts per Rule RF2)
+    flagsClient,    // V2 HTTP-only FeatureFlagClient (Rule RF2) — undefined when FLAGS_API_URL/FLAGS_API_SECRET absent
   });
 
   // ─── Step 9: Pino HTTP Middleware (Rules R28, R23) ───────────────────────
@@ -592,8 +605,10 @@ async function bootstrap(): Promise<void> {
   // ─── Step 13: Graceful Shutdown ──────────────────────────────────────────
   // SIGTERM (container orchestrator) and SIGINT (Ctrl+C) trigger a clean
   // teardown sequence: stop accepting connections → close WebSocket →
-  // drain job queues → disconnect Redis → disconnect PostgreSQL.
-  // This prevents data corruption, in-flight request loss, and resource leaks.
+  // drain job queues → close V2 flag client → disconnect Redis → disconnect
+  // PostgreSQL. This prevents data corruption, in-flight request loss, and
+  // resource leaks (including in-flight HTTP requests from the V2 flag
+  // client to the flags-API).
   const shutdown = async (signal: string): Promise<void> => {
     logger.info({ signal }, 'Received shutdown signal, closing gracefully...');
 
@@ -608,10 +623,18 @@ async function bootstrap(): Promise<void> {
     // Step 3: Close BullMQ producer queues (no more job enqueuing).
     await queueProvider.close();
 
-    // Step 4: Disconnect the Redis client (cache, presence, JWT blacklist).
+    // Step 4: Close the V2 HTTP-only flag client (cancel any in-flight
+    // requests to the flags API and release the Node.js HTTP agent).
+    // Only invoked when V2 env vars were present at boot; otherwise the
+    // client is `undefined` and this step is a no-op (Rule R12 test parity).
+    if (flagsClient) {
+      await flagsClient.close();
+    }
+
+    // Step 5: Disconnect the Redis client (cache, presence, JWT blacklist).
     await redis.quit();
 
-    // Step 5: Disconnect Prisma ORM / PostgreSQL connection pool.
+    // Step 6: Disconnect Prisma ORM / PostgreSQL connection pool.
     await prisma.$disconnect();
 
     logger.info('All connections closed. Exiting.');

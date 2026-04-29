@@ -22,9 +22,13 @@
  * - R7:  Zero warnings build under tsc --noEmit --strict
  *
  * V2 Auth Integration Rules:
- * - R3:  V2 flag isolation — with AUTH_V2_ENABLED=false, zero @blitzy/auth code
- *        executes on the request path (the imports are static but the V2 branch
- *        is never invoked).
+ * - R3:  V2 flag isolation (semantic) — with AUTH_V2_ENABLED=false, zero
+ *        @blitzy/auth *behavior* leaks into the request path. The V2 imports
+ *        are static (so the modules sit in `require.cache` after module-init
+ *        under CommonJS), but no V2 *function* is ever invoked — the if/else
+ *        branch on the resolved flag dispatches exclusively to the legacy
+ *        handler. See LOCAL_TESTING_GUIDE.md Section 10.6 for the verification
+ *        approach (which checks for V2 *invocation*, not module presence).
  * - R4:  Mutual exclusion at runtime — per request, EITHER the legacy JWT path
  *        OR the V2 createExpressMiddleware path executes, never both. The
  *        if/else branch on the resolved flag is the enforcement point.
@@ -34,9 +38,13 @@
  * - R13: Sidecar fail-closed — when AUTH_V2_ENABLED=true and the auth-sidecar
  *        is unreachable, @blitzy/auth's createExpressMiddleware returns HTTP 503.
  *        We NEVER fall back to the legacy path on V2 sidecar failure.
- * - RF3: Flag fail-open — when the flags API is unreachable, FlagInstance falls
- *        back to process.env.AUTH_V2_ENABLED (the OPPOSITE of R13's auth
- *        fail-closed semantics).
+ * - RF2: Kalle uses the HTTP-only FeatureFlagClient from
+ *        @blitzy/auth/clients/feature-flag-client (NEVER the DB-backed
+ *        FlagInstance from @blitzy/admin-ui — that would require FLAGS_DB_URL
+ *        access from inside kalle, which RF2 forbids).
+ * - RF3: Flag fail-open — the FeatureFlagClient.isEnabled() implementation
+ *        owns RF3 internally (cache → API → env-var → ultimately `false`),
+ *        and never throws (the OPPOSITE of R13's auth fail-closed semantics).
  * - IR-G: Backchannel logout key compatibility — the legacy `blacklist:` Redis
  *        key prefix used by this middleware is BYTE-IDENTICAL to @blitzy/auth's
  *        KALLE_REDIS_BLACKLIST_KEY_PREFIX, so a single Redis namespace serves
@@ -49,16 +57,29 @@ import { AuthenticationError } from '../errors/AuthenticationError';
 import type { ICacheProvider } from '../domain/interfaces/ICacheProvider';
 
 // ─── V2 Library Imports (FR-9, R3, R4) ────────────────────────────────────────
-// Static top-level imports — Rule R3 forbids conditional imports of @blitzy/auth.
-// Mutual exclusion (Rule R4) is enforced by the if/else branch inside the
-// V2-aware factory's returned middleware function, NOT by import resolution.
-// When AUTH_V2_ENABLED resolves to false, the V2 code path is simply not
-// executed; the imports themselves are tree-shake-friendly top-level statements
-// with zero runtime cost when the V2 functions are not invoked.
+// Static top-level imports.
+//
+// Rule R3 INTENT: zero V2 code is *invoked* when AUTH_V2_ENABLED=false. Static
+// top-level imports populate `require.cache` at module-init time under
+// CommonJS, but they do NOT execute V2 *functions* — they only resolve the
+// module objects. Mutual exclusion (Rule R4) is enforced by the if/else
+// branch inside the V2-aware factory's returned middleware: under flag=false
+// no V2 function (createExpressMiddleware, FeatureFlagClient.*) is ever
+// called, so the spirit of R3 (no V2 *behavior* leaks into the legacy path)
+// is preserved. See LOCAL_TESTING_GUIDE.md Section 10.6 for the verification
+// approach.
+//
+// IMPORTANT (Rule RF2): kalle MUST use the HTTP-only FeatureFlagClient from
+// @blitzy/auth/clients/feature-flag-client — NEVER the DB-backed FlagInstance
+// from @blitzy/admin-ui (which would require FLAGS_DB_URL access in kalle).
+// The HTTP client implements RF3 fail-open internally (cache → API → env-var
+// fallback chain).
 import { createExpressMiddleware } from '@blitzy/auth';
-import { checkFlag } from '@blitzy/admin-ui';
+import {
+  createFeatureFlagClient,
+  type FeatureFlagClient,
+} from '@blitzy/auth/clients/feature-flag-client';
 import type { AuthInstance } from '@blitzy/auth';
-import type { FlagInstance } from '@blitzy/admin-ui';
 
 // Re-export JwtPayload for internal typing usage
 type JwtPayload = jwt.JwtPayload;
@@ -249,8 +270,11 @@ function createLegacyAuthMiddleware(
 /**
  * Options for the V2-aware overload of `createAuthMiddleware`.
  *
- * The composition root (`server.ts`) constructs `authInstance` and
- * `flagsInstance` once at boot and passes them via this options object.
+ * The composition root (`server.ts`) constructs `authInstance` once at boot
+ * and passes it via this options object. The HTTP-only feature-flag client
+ * may be supplied pre-constructed (preferred — see `flagsClient` below) or
+ * the factory will construct one internally from the supplied
+ * `flagsApiUrl`/`flagsApiSecret`/`flagsCacheTtlMs` configuration.
  *
  * - `authInstance` is built via `await initAuth({ keycloakBaseUrl, realm,
  *   clientId, sidecarUrl, sidecarSecret })` from `@blitzy/auth`. NOTE: when
@@ -258,8 +282,12 @@ function createLegacyAuthMiddleware(
  *   "sidecar mode" and delegates token-to-user resolution to the auth-sidecar
  *   via HTTP. Rule R2 forbids kalle from opening direct connections to the
  *   auth database; all auth-DB access is mediated by the auth-sidecar.
- * - `flagsInstance` is built via `initFlags({ apiUrl, apiSecret, cacheTtlMs })`
- *   from `@blitzy/admin-ui`.
+ * - `flagsClient` is an HTTP-only `FeatureFlagClient` from
+ *   `@blitzy/auth/clients/feature-flag-client`. Per Rule RF2, kalle MUST NOT
+ *   use the DB-backed `FlagInstance` from `@blitzy/admin-ui` — that would
+ *   require `FLAGS_DB_URL` connectivity from inside kalle. The client's
+ *   `isEnabled(name)` method implements the cache → API → env-var fallback
+ *   chain (Rule RF3 fail-open) and never throws.
  * - `legacyAuthHandler` is the legacy V1 RequestHandler built by calling
  *   `createLegacyAuthMiddleware(jwtSecret, cacheProvider)` (or equivalently
  *   the legacy overload `createAuthMiddleware(jwtSecret, cacheProvider)`).
@@ -269,8 +297,39 @@ function createLegacyAuthMiddleware(
 export interface AuthMiddlewareV2Options {
   /** Initialized @blitzy/auth dependency container (sidecar mode for kalle). */
   authInstance: AuthInstance;
-  /** Initialized @blitzy/admin-ui flag container with cache → API → env fallback. */
-  flagsInstance: FlagInstance;
+  /**
+   * Pre-constructed HTTP-only feature-flag client. Optional.
+   *
+   * In production wiring (`server.ts`), the client is constructed once at
+   * boot via `createFeatureFlagClient({ flagsApiUrl, flagsApiSecret,
+   * cacheTtlMs })` and passed through. Tests may pass a mock or stub.
+   *
+   * When `undefined`, the factory will internally construct a client from
+   * the `flagsApiUrl`, `flagsApiSecret`, and (optional) `flagsCacheTtlMs`
+   * fields below — at least the URL and secret MUST be provided in that
+   * case, otherwise the factory throws an explicit configuration error.
+   */
+  flagsClient?: FeatureFlagClient;
+  /**
+   * Required when `flagsClient` is `undefined`. Base URL of the flags
+   * evaluation API on port 4003 (NOT the admin SPA on port 4002).
+   *
+   * @example "http://admin-ui:4003"
+   * @example "http://localhost:4003"
+   */
+  flagsApiUrl?: string;
+  /**
+   * Required when `flagsClient` is `undefined`. Bearer secret for the flags
+   * evaluation API. Sent as `Authorization: Bearer ${secret}` on every
+   * request. Min 32 chars per Rule R8 secrets containment.
+   */
+  flagsApiSecret?: string;
+  /**
+   * Optional cache TTL in milliseconds for the internally constructed
+   * FeatureFlagClient. Defaults to 5000 (5 seconds) per AAP §0.5.1.6.
+   * Ignored when `flagsClient` is supplied.
+   */
+  flagsCacheTtlMs?: number;
   /** Legacy V1 RequestHandler invoked when AUTH_V2_ENABLED=false (Rule R4). */
   legacyAuthHandler: (req: Request, res: Response, next: NextFunction) => Promise<void> | void;
 }
@@ -285,11 +344,14 @@ export interface AuthMiddlewareV2Options {
  *      pre-V2 implementation. Used when V2 is not yet wired up at the
  *      composition root (existing 1,814-test suite depends on this shape).
  *
- *   2. V2-AWARE: `createAuthMiddleware({ authInstance, flagsInstance,
- *      legacyAuthHandler })` — returns a per-request dispatching middleware
- *      that reads AUTH_V2_ENABLED first (Rule R3) and routes to either V2
- *      (`@blitzy/auth`'s createExpressMiddleware) or legacy V1 (the supplied
- *      legacyAuthHandler). Rule R4 enforces mutual exclusion.
+ *   2. V2-AWARE: `createAuthMiddleware({ authInstance, flagsClient |
+ *      flagsApiUrl+flagsApiSecret, legacyAuthHandler })` — returns a
+ *      per-request dispatching middleware that reads AUTH_V2_ENABLED via the
+ *      HTTP-only FeatureFlagClient (cache → API → env-var fallback) and
+ *      routes to either V2 (`@blitzy/auth`'s createExpressMiddleware) or
+ *      legacy V1 (the supplied legacyAuthHandler). Rule R4 enforces mutual
+ *      exclusion. Rule RF2 is enforced by the `FeatureFlagClient` type — no
+ *      direct FLAGS_DB_URL connectivity from kalle.
  */
 export function createAuthMiddleware(
   jwtSecret: string,
@@ -314,10 +376,25 @@ export function createAuthMiddleware(
  * // Legacy invocation — preserved for the 1,814 existing tests
  * const authMiddleware = createAuthMiddleware(env.JWT_SECRET, cacheProvider);
  *
- * // V2-aware invocation — enables runtime dispatch based on AUTH_V2_ENABLED
+ * // V2-aware invocation (preferred): pass a pre-constructed flagsClient
+ * const flagsClient = createFeatureFlagClient({
+ *   flagsApiUrl: env.FLAGS_API_URL,
+ *   flagsApiSecret: env.FLAGS_API_SECRET,
+ *   cacheTtlMs: 5000,
+ * });
  * const authMiddleware = createAuthMiddleware({
  *   authInstance,
- *   flagsInstance,
+ *   flagsClient,
+ *   legacyAuthHandler: createAuthMiddleware(env.JWT_SECRET, cacheProvider),
+ * });
+ *
+ * // V2-aware invocation (alternative): pass config and let the factory
+ * // construct the FeatureFlagClient internally.
+ * const authMiddleware = createAuthMiddleware({
+ *   authInstance,
+ *   flagsApiUrl: env.FLAGS_API_URL,
+ *   flagsApiSecret: env.FLAGS_API_SECRET,
+ *   flagsCacheTtlMs: 5000,
  *   legacyAuthHandler: createAuthMiddleware(env.JWT_SECRET, cacheProvider),
  * });
  * ```
@@ -348,38 +425,61 @@ export function createAuthMiddleware(
     return createLegacyAuthMiddleware(jwtSecretOrOpts, cacheProvider);
   }
 
-  // ─── V2-aware overload: createAuthMiddleware({ authInstance, flagsInstance, legacyAuthHandler }) ──
-  // Build the V2 handler ONCE at factory invocation time (not per-request).
-  // createExpressMiddleware closes over authInstance and is reused for every
-  // request that resolves AUTH_V2_ENABLED=true.
-  const { authInstance, flagsInstance, legacyAuthHandler } = jwtSecretOrOpts;
+  // ─── V2-aware overload: createAuthMiddleware({ authInstance, ... }) ──────
+  // Build the V2 handler and the FeatureFlagClient ONCE at factory invocation
+  // time (not per-request). createExpressMiddleware closes over authInstance
+  // and is reused for every request that resolves AUTH_V2_ENABLED=true.
+  const {
+    authInstance,
+    flagsClient: providedFlagsClient,
+    flagsApiUrl,
+    flagsApiSecret,
+    flagsCacheTtlMs,
+    legacyAuthHandler,
+  } = jwtSecretOrOpts;
+
+  // Resolve the FeatureFlagClient: prefer the pre-constructed instance from
+  // the composition root; otherwise build one internally from the supplied
+  // config. This keeps the middleware Rule RF2-compliant (HTTP-only flag
+  // reads — no FLAGS_DB_URL access from kalle) and lets server.ts own the
+  // single boot-time client (graceful shutdown via flagsClient.close()).
+  const flagsClient: FeatureFlagClient =
+    providedFlagsClient ??
+    (() => {
+      if (!flagsApiUrl || !flagsApiSecret) {
+        throw new Error(
+          'createAuthMiddleware (V2 overload): when `flagsClient` is not ' +
+            'provided, both `flagsApiUrl` and `flagsApiSecret` must be ' +
+            'supplied so the factory can construct an HTTP-only ' +
+            'FeatureFlagClient internally (Rule RF2: no FLAGS_DB_URL in ' +
+            'kalle). See server.ts composition root for production wiring.',
+        );
+      }
+      return createFeatureFlagClient({
+        flagsApiUrl,
+        flagsApiSecret,
+        cacheTtlMs: flagsCacheTtlMs,
+      });
+    })();
+
   const v2Handler = createExpressMiddleware(authInstance, { appId: 'kalle' });
 
   return async (req: Request, res: Response, next: NextFunction): Promise<void> => {
     // -----------------------------------------------------------------------
-    // FIRST SYNCHRONOUS STEP (Rule R3): resolve AUTH_V2_ENABLED.
-    // Read order per Rule RF3: cache (in-process, 5s TTL) → flags-API → process.env.
-    // FlagInstance encapsulates the cache + API; checkFlag may throw on API
-    // failure with no env-var fallback configured, so we wrap it ourselves
-    // for fail-open semantics (RF3).
+    // FIRST AWAITED STEP (Rule R3 spirit): resolve AUTH_V2_ENABLED.
+    // Read order per Rule RF3: cache (in-process, default 5s TTL) → flags-API
+    // → process.env. The FeatureFlagClient.isEnabled() implementation is
+    // documented as never-throwing — it always returns a boolean, falling
+    // back to the env-var (and ultimately `false`) on any error. This means
+    // we DON'T need a try/catch here for fail-open semantics; the client
+    // itself owns RF3.
     //
-    // This MUST be the first await in the function body — performed BEFORE
-    // any header parsing, token decoding, or V2/V1 dispatch decision. The
-    // mutual-exclusion guarantee (Rule R4) requires that we resolve the flag
-    // before invoking either handler.
+    // This MUST be the first awaited operation — performed BEFORE any header
+    // parsing, token decoding, or V2/V1 dispatch decision. The mutual-
+    // exclusion guarantee (Rule R4) requires that we resolve the flag before
+    // invoking either handler.
     // -----------------------------------------------------------------------
-    let authV2Enabled: boolean;
-    try {
-      const flagResult = await checkFlag(flagsInstance, 'AUTH_V2_ENABLED');
-      authV2Enabled = flagResult.enabled;
-    } catch {
-      // RF3 fail-open: on flag-API failure (or any checkFlag exception), fall
-      // back to env var. NEVER throw from flag-read failure — that would block
-      // every request when the flags-API is briefly unreachable. This is the
-      // OPPOSITE of Rule R13 (auth fail-closed): flags fail-open, auth fails
-      // closed. The asymmetry is intentional and documented in the AAP.
-      authV2Enabled = process.env.AUTH_V2_ENABLED === 'true';
-    }
+    const authV2Enabled = await flagsClient.isEnabled('AUTH_V2_ENABLED');
 
     // -----------------------------------------------------------------------
     // Rule R4 mutual exclusion: dispatch to EXACTLY ONE branch.
@@ -433,12 +533,13 @@ export function createAuthMiddleware(
     }
 
     // ─── LEGACY V1 PATH ───────────────────────────────────────────────────
-    // Rule R3: zero @blitzy/auth runtime code executes here. Although the
-    // V2 imports are statically loaded at module-init time, the legacy
-    // handler is invoked WITHOUT calling any V2 function (createExpressMiddleware
-    // and checkFlag have already returned by the time we reach this branch
-    // for the false case). The legacy handler internally executes the V1
-    // jsonwebtoken + Redis blacklist flow byte-identically.
+    // Rule R3 (semantic): zero @blitzy/auth runtime *behavior* executes here.
+    // Although the V2 imports are statically loaded at module-init time and
+    // the FeatureFlagClient is constructed (and its isEnabled() method has
+    // already returned `false` to reach this branch), the V2 handler
+    // (createExpressMiddleware) is NEVER invoked on this path. The legacy
+    // handler internally executes the V1 jsonwebtoken + Redis blacklist flow
+    // byte-identically.
     //
     // The legacyAuthHandler may return either Promise<void> or void; we
     // normalize via Promise.resolve(...) so the outer function's Promise<void>

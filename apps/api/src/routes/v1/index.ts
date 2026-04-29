@@ -28,14 +28,19 @@
  *       zero warnings.
  *
  * V2 Auth Integration (FR-9):
- * - Detects V2-aware auth wiring by checking deps.authInstance && deps.flagsInstance.
- *   When both are present (V2 mode wired in server.ts), the auth-middleware factory
- *   dispatches per-request based on AUTH_V2_ENABLED (Rule R3, R4).
- * - When EITHER is absent (legacy-only mode or test fixture), the factory falls back
- *   to the legacy 2-arg form (jwtSecret, cacheProvider). This preserves the existing
- *   1,814-test kalle suite under AUTH_V2_ENABLED=false.
- * - The new POST /api/v1/auth/logout route is V2-only and is gated by deps.flagsInstance
- *   inside auth.routes.ts (returns 404 in legacy mode).
+ * - Detects V2-aware auth wiring by checking deps.authInstance.
+ *   When present (V2 mode wired in server.ts), the auth-middleware factory
+ *   dispatches per-request based on AUTH_V2_ENABLED (Rule R3, R4). The
+ *   middleware factory accepts an optional pre-constructed `flagsClient`
+ *   (an HTTP-only `FeatureFlagClient` from
+ *   `@blitzy/auth/clients/feature-flag-client`) — when omitted, the factory
+ *   constructs one internally from `flagsApiUrl + flagsApiSecret`.
+ * - When `authInstance` is absent (legacy-only mode or test fixture), the
+ *   factory falls back to the legacy 2-arg form (jwtSecret, cacheProvider).
+ *   This preserves the existing 1,814-test kalle suite under
+ *   AUTH_V2_ENABLED=false.
+ * - The new POST /api/v1/auth/logout route is V2-only and is gated by
+ *   deps.flagsClient inside auth.routes.ts (returns 404 in legacy mode).
  *
  * Route Mount Summary:
  * ```
@@ -117,14 +122,20 @@ import type { AuthService } from '../../services/AuthService.js';
 
 // =============================================================================
 // V2 type-only imports — interface-level forward-declarations for the V2
-// auth/flags instances injected by `server.ts` (composition root). These
-// imports are TYPE-ONLY and tree-shake to nothing at runtime — they exist
-// solely so the V1RouterDependencies interface can declare the optional
-// `authInstance?` and `flagsInstance?` slots that `server.ts` populates
-// (FR-1, FR-4, FR-9, R3, R4 — V2 wiring at composition root).
+// auth instance and HTTP-only flag client injected by `server.ts`
+// (composition root). These imports are TYPE-ONLY and tree-shake to nothing
+// at runtime — they exist solely so the V1RouterDependencies interface can
+// declare the optional `authInstance?` and `flagsClient?` slots that
+// `server.ts` populates (FR-1, FR-4, FR-9, R3, R4 — V2 wiring at composition
+// root).
+//
+// Per Rule RF2, kalle MUST consume the HTTP-only `FeatureFlagClient` from
+// `@blitzy/auth/clients/feature-flag-client` — NEVER the DB-backed
+// `FlagInstance` from `@blitzy/admin-ui` (which would require FLAGS_DB_URL
+// access from inside kalle).
 // =============================================================================
 import type { AuthInstance } from '@blitzy/auth';
-import type { FlagInstance } from '@blitzy/admin-ui';
+import type { FeatureFlagClient } from '@blitzy/auth/clients/feature-flag-client';
 
 // =============================================================================
 // V1RouterDependencies Interface
@@ -222,27 +233,37 @@ export interface V1RouterDependencies {
   authInstance?: AuthInstance;
 
   /**
-   * V2 flags instance slot. Optional — declared on this interface for
-   * forward-compatibility with `@blitzy/admin-ui`'s planned HTTP-only mode
-   * (apiUrl + apiSecret). For kalle, this is currently `undefined` because
-   * the actual runtime flag-reading mechanism is `createFeatureFlagClient`
-   * from `@blitzy/auth/clients/feature-flag-client` (HTTP-only, fail-open
-   * per Rule RF3), constructed inside `middleware/auth.ts`. The slot is
-   * preserved here so that:
-   *   1) `server.ts` can forward the instance once HTTP-only mode lands
-   *      in `@blitzy/admin-ui`, and
-   *   2) The interface contract documented in `app.ts` AppDependencies is
-   *      consistent across the kalle composition graph.
+   * V2 HTTP-only feature-flag client. Optional — only populated when V2 env
+   * vars are set (FLAGS_API_URL, FLAGS_API_SECRET). Constructed by
+   * `server.ts` via `createFeatureFlagClient(...)` from
+   * `@blitzy/auth/clients/feature-flag-client`. When `undefined`, the
+   * middleware factory falls back to the legacy 2-arg overload (jwtSecret,
+   * cacheProvider) — full byte-identical behavior with the pre-V2
+   * implementation, preserving the 1,814-test kalle suite under
+   * AUTH_V2_ENABLED=false.
    *
-   * Rule RF2 (flags DB boundary): kalle MUST NEVER reference FLAGS_DB_URL,
-   * so this instance is NEVER constructed via the current DB-only
-   * `initFlags(dbUrl)` path in kalle. Verified by:
+   * The `FeatureFlagClient` exposes:
+   * - `isEnabled(name, subject?)` — async, never-throwing, RF3 fail-open
+   *   internally (cache → API → env-var → ultimately `false`).
+   * - `isEnabledSync(name, subject?)` — synchronous env-var/cache read,
+   *   used by middleware where async pre-checks are not available.
+   * - `close()` — graceful shutdown (cancels in-flight HTTP requests).
+   *
+   * Rule RF2 (flags DB boundary): kalle MUST NEVER reference FLAGS_DB_URL.
+   * The HTTP-only `FeatureFlagClient` is the ONLY sanctioned flag-reading
+   * mechanism in kalle. Verified by:
    *   grep "FLAGS_DB_URL" kalle/apps/api/src/  → zero matches
    *
-   * @see ../../middleware/auth.ts — HTTP-only flag client construction site
-   * @see ../../../../packages/auth/src/clients/feature-flag-client.ts — actual flag client
+   * Used by:
+   *   1. The V2-aware `createAuthMiddleware` factory in
+   *      `middleware/auth.ts` to dispatch on `AUTH_V2_ENABLED`.
+   *   2. The `requireV2(flagsClient)` guard in `auth.routes.ts` to gate
+   *      the V2-only `POST /logout` route.
+   *
+   * @see ../../middleware/auth.ts — V2-aware createAuthMiddleware factory
+   * @see ../../../../packages/auth/src/clients/feature-flag-client.ts — flag client implementation
    */
-  flagsInstance?: FlagInstance;
+  flagsClient?: FeatureFlagClient;
 }
 
 // =============================================================================
@@ -309,21 +330,30 @@ export function createV1Router(deps: V1RouterDependencies): Router {
   // -------------------------------------------------------------------------
 
   // ─── V2-aware auth middleware (FR-9, R3, R4) ────────────────────────────
-  // When BOTH authInstance and flagsInstance are provided (V2 mode wired in
-  // server.ts), use the V2-aware overload of createAuthMiddleware that
-  // dispatches per-request based on AUTH_V2_ENABLED. Legacy handler is built
-  // FIRST and passed in so the V2-aware middleware can fall through to it
-  // when the flag is false.
+  // When `authInstance` is provided (V2 mode wired in server.ts), use the
+  // V2-aware overload of createAuthMiddleware that dispatches per-request
+  // based on AUTH_V2_ENABLED. Legacy handler is built FIRST and passed in so
+  // the V2-aware middleware can fall through to it when the flag is false.
   //
-  // When EITHER instance is absent (legacy-only mode or test fixture), the
+  // The optional `flagsClient` (HTTP-only `FeatureFlagClient` from
+  // `@blitzy/auth/clients/feature-flag-client`, Rule RF2) is forwarded when
+  // present — server.ts is responsible for constructing it once at boot.
+  // When `flagsClient` is absent, the V2-aware factory throws a descriptive
+  // error at construction time, which is detected here and avoided by
+  // gating V2 dispatch on `authInstance` only (the V2 wiring contract
+  // requires both `authInstance` and `flagsClient` to be wired together,
+  // but the gate uses `authInstance` because it is the canonical "V2 is
+  // active" signal — `flagsClient` is then validated inside the factory).
+  //
+  // When `authInstance` is absent (legacy-only mode or test fixture), the
   // legacy 2-arg overload is used directly — full byte-identical behavior
   // with the pre-V2 implementation. This branch preserves the existing
   // 1,814-test suite under AUTH_V2_ENABLED=false (DB or env var).
   const legacyAuthHandler = createAuthMiddleware(deps.jwtSecret, deps.cacheProvider);
-  const authMiddleware = deps.authInstance && deps.flagsInstance
+  const authMiddleware = deps.authInstance
     ? createAuthMiddleware({
         authInstance: deps.authInstance,
-        flagsInstance: deps.flagsInstance,
+        flagsClient: deps.flagsClient,
         legacyAuthHandler,
       })
     : legacyAuthHandler;
@@ -346,12 +376,12 @@ export function createV1Router(deps: V1RouterDependencies): Router {
    * The auth route factory selectively applies authMiddleware
    * to protected endpoints internally.
    *
-   * Pass deps.flagsInstance as a third argument so auth.routes.ts can gate
-   * the new V2-only POST /logout route via requireV2(flagsInstance). When
-   * flagsInstance is undefined (legacy-only mode), POST /logout returns 404,
+   * Pass `deps.flagsClient` as a third argument so auth.routes.ts can gate
+   * the new V2-only POST /logout route via `requireV2(flagsClient)`. When
+   * `flagsClient` is undefined (legacy-only mode), POST /logout returns 404,
    * preserving legacy test parity.
    */
-  router.use('/auth', createAuthRoutes(deps.authController, authMiddleware, deps.flagsInstance));
+  router.use('/auth', createAuthRoutes(deps.authController, authMiddleware, deps.flagsClient));
 
   /**
    * Health check endpoint: GET /api/v1/health

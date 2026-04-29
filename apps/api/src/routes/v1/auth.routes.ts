@@ -31,7 +31,7 @@
  * - R28 (Structured Logging Only): ZERO console.log/warn/error calls.
  * - R7  (Zero Warnings Build): TypeScript strict mode with zero warnings.
  * - R23 (Log Hygiene): No tokens, passwords, or secrets in schemas or logic.
- * - FR-9 (V2 Auth Integration): /logout route is gated by requireV2(flagsInstance);
+ * - FR-9 (V2 Auth Integration): /logout route is gated by requireV2(flagsClient);
  *        returns 404 when AUTH_V2_ENABLED=false to preserve legacy parity.
  *
  * @see apps/api/src/controllers/AuthController.ts  — endpoint handler logic
@@ -51,26 +51,27 @@ import { authRateLimiter } from '../../middleware/rate-limiter.js';
 import type { AuthController } from '../../controllers/AuthController.js';
 
 // ─── V2 Auth Integration (FR-9) ────────────────────────────────────────────
-// `checkFlag` is imported as a runtime value (NOT type-only) because the
-// `requireV2` guard helper invokes it at request time. The guard runs only on
-// the V2-only `/logout` route and is acceptable because:
-//   1. The flag value is cached in-process for FLAGS_CACHE_TTL_MS
-//      (default 5000 ms) per AAP FR-4 — first hit pays the round-trip,
-//      subsequent hits are served from in-process cache.
-//   2. Per Rule RF3 (flag fail-open), transient flag-API failures fall back
-//      to `process.env.AUTH_V2_ENABLED` inside `checkFlag`'s implementation,
-//      so the guard never throws an unhandled rejection on flag-system
-//      outage.
-// `FlagInstance` is type-only — the import is erased at compile time so it
-// adds zero runtime cost (Rule R7 zero-warnings build).
+// Per Rule RF2, kalle MUST consume the HTTP-only `FeatureFlagClient` from
+// `@blitzy/auth/clients/feature-flag-client` — NEVER the DB-backed
+// `FlagInstance` from `@blitzy/admin-ui` (which would require FLAGS_DB_URL
+// access from inside kalle).
 //
-// IMPORTANT (Rule RF7 / RF1): This file imports ONLY from `@blitzy/admin-ui`.
-// `@blitzy/auth` is NEVER imported here — the auth library is consumed
-// exclusively by `middleware/auth.ts` (the dedicated V2-aware factory).
-// This isolates the route layer from the auth library's transitive Prisma
-// and JOSE dependencies on legacy code paths.
-import { checkFlag } from '@blitzy/admin-ui';
-import type { FlagInstance } from '@blitzy/admin-ui';
+// `FeatureFlagClient` is imported type-only — the import is erased at compile
+// time so it adds zero runtime cost (Rule R7 zero-warnings build). The
+// `requireV2` guard helper at the bottom of this file dispatches via the
+// supplied `client.isEnabled('AUTH_V2_ENABLED')` call when the V2 client is
+// wired by the composition root.
+//
+// The `isEnabled()` method is documented as never-throwing — it implements
+// RF3 fail-open internally (cache → API → env-var → ultimately `false`) — so
+// the guard does NOT need a try/catch wrapper.
+//
+// IMPORTANT (Rule R3 spirit): This file no longer imports any *runtime* value
+// from `@blitzy/admin-ui`. Removing the prior `import { checkFlag } from
+// '@blitzy/admin-ui'` runtime import improves R3 compliance because the
+// admin-ui module is no longer placed in `require.cache` at module-init time
+// from this file's resolution graph.
+import type { FeatureFlagClient } from '@blitzy/auth/clients/feature-flag-client';
 
 // =============================================================================
 // Zod Validation Schemas (local to this route file — Rule R31)
@@ -140,18 +141,20 @@ const revokeSchema = z.object({
 /**
  * Guard middleware that gates V2-only routes behind AUTH_V2_ENABLED.
  *
- * Per Rule R3 (V2 flag isolation), the flag check is the FIRST async operation
- * in the request pipeline for any V2-only route. When the flag resolves to
- * false (or when flagsInstance is undefined — legacy-only deployment), the
- * guard returns HTTP 404, preserving legacy test parity (the existing kalle
- * suite must pass byte-identically with AUTH_V2_ENABLED=false; any test that
- * probes /logout under the legacy mode expects 404, not 405 or 500).
+ * Per Rule R3 (V2 flag isolation, semantic spirit), the flag check is the
+ * FIRST async operation in the request pipeline for any V2-only route. When
+ * the flag resolves to false (or when `flagsClient` is undefined —
+ * legacy-only deployment), the guard returns HTTP 404, preserving legacy
+ * test parity (the existing kalle suite must pass byte-identically with
+ * AUTH_V2_ENABLED=false; any test that probes /logout under the legacy mode
+ * expects 404, not 405 or 500).
  *
- * Per Rule RF3 (flag fail-open), transient failures from `checkFlag` (e.g.,
- * the flags-API briefly unreachable) result in the env-var fallback being
- * resolved INTERNALLY by `checkFlag`'s own implementation. This guard does
- * not need to wrap the call in try/catch — `checkFlag` never throws on
- * flag-system outage, only on programmer errors (which should surface).
+ * Per Rule RF3 (flag fail-open), transient failures from
+ * `flagsClient.isEnabled()` (e.g., the flags-API briefly unreachable) result
+ * in the env-var fallback being resolved INTERNALLY by the
+ * `FeatureFlagClient` implementation. This guard does NOT need to wrap the
+ * call in try/catch — `isEnabled()` is documented as never-throwing
+ * (`packages/auth/src/clients/feature-flag-client.ts`).
  *
  * Error-response shape matches the kalle convention from
  * `middleware/error-handler.ts`:
@@ -168,14 +171,18 @@ const revokeSchema = z.object({
  * legacy `AuthService` invocation). The branch is therefore strictly
  * exclusive on a per-request basis.
  *
- * @param flags - V2 FlagInstance from @blitzy/admin-ui, or undefined for
- *                legacy-only mode (no flag wiring at the composition root).
+ * @param flagsClient - V2 HTTP-only `FeatureFlagClient` from
+ *                       `@blitzy/auth/clients/feature-flag-client`, or
+ *                       undefined for legacy-only mode (no flag wiring at
+ *                       the composition root).
  * @returns Express middleware that calls `next()` when V2 is active,
  *          otherwise sends HTTP 404 with the kalle error envelope.
  */
-const requireV2 = (flags: FlagInstance | undefined): RequestHandler => {
+const requireV2 = (
+  flagsClient: FeatureFlagClient | undefined,
+): RequestHandler => {
   return async (_req, res, next) => {
-    if (!flags) {
+    if (!flagsClient) {
       // Legacy-only deployment: route is not registered behaviorally — return
       // 404 to mirror the absence-of-route response produced by Express when
       // no matching handler exists. This preserves byte-identical legacy
@@ -185,8 +192,10 @@ const requireV2 = (flags: FlagInstance | undefined): RequestHandler => {
       });
       return;
     }
-    const result = await checkFlag(flags, 'AUTH_V2_ENABLED');
-    if (!result.enabled) {
+    // `isEnabled()` is documented as never-throwing — it implements RF3
+    // fail-open internally (cache → API → env-var → ultimately `false`).
+    const enabled = await flagsClient.isEnabled('AUTH_V2_ENABLED');
+    if (!enabled) {
       // V2 wired but flag is OFF — preserve legacy test parity with 404.
       // This branch covers the runtime kill-switch scenario where an
       // operator disables V2 in flags-db without redeploying kalle/api.
@@ -219,11 +228,14 @@ const requireV2 = (flags: FlagInstance | undefined): RequestHandler => {
  * 3. `POST /refresh`:  authMiddleware → validateBody(refreshSchema) → authController.refresh
  * 4. `POST /revoke`:   authMiddleware → validateBody(revokeSchema) → authController.revoke
  * 5. `POST /revoke-all`: authMiddleware → authController.revokeAll
- * 6. `POST /logout`:    requireV2(flagsInstance) → cookie clearance → 204
+ * 6. `POST /logout`:    requireV2(flagsClient) → cookie clearance → 204
  *
  * @param authController - AuthController instance with bound handler methods
  * @param authMiddleware - JWT verification + Redis blacklist check middleware
- * @param flagsInstance  - Optional V2 FlagInstance from `@blitzy/admin-ui`.
+ * @param flagsClient    - Optional V2 HTTP-only `FeatureFlagClient` from
+ *                         `@blitzy/auth/clients/feature-flag-client` (Rule
+ *                         RF2 — kalle MUST NOT consume the DB-backed
+ *                         `FlagInstance` from `@blitzy/admin-ui`).
  *                         When provided AND `AUTH_V2_ENABLED=true`, the new
  *                         V2-only `POST /logout` route is reachable and clears
  *                         the refresh cookie. When undefined (legacy-only
@@ -237,7 +249,7 @@ const requireV2 = (flags: FlagInstance | undefined): RequestHandler => {
 export function createAuthRoutes(
   authController: AuthController,
   authMiddleware: RequestHandler,
-  flagsInstance?: FlagInstance,
+  flagsClient?: FeatureFlagClient,
 ): Router {
   const router = Router();
 
@@ -333,7 +345,7 @@ export function createAuthRoutes(
   );
 
   // ---------------------------------------------------------------------------
-  // V2-ONLY endpoint — gated by requireV2(flagsInstance) (FR-9, Rule R3)
+  // V2-ONLY endpoint — gated by requireV2(flagsClient) (FR-9, Rule R3)
   // ---------------------------------------------------------------------------
 
   /**
@@ -347,8 +359,8 @@ export function createAuthRoutes(
    * revocation is unnecessary; this route's only responsibility is
    * clearing the refresh-token cookie.
    *
-   * The route is gated by `requireV2(flagsInstance)` — returns HTTP 404 when:
-   *   1. `flagsInstance` is undefined (legacy-only deployment or test
+   * The route is gated by `requireV2(flagsClient)` — returns HTTP 404 when:
+   *   1. `flagsClient` is undefined (legacy-only deployment or test
    *      fixture)
    *   2. `AUTH_V2_ENABLED` resolves to false
    * Both conditions preserve byte-identical behavior with the pre-V2
@@ -384,7 +396,7 @@ export function createAuthRoutes(
    *   response body. The `res.status(204).send()` form sends headers
    *   (including the cleared cookie) without a body.
    *
-   * Middleware: requireV2(flagsInstance) → cookie clearance → 204
+   * Middleware: requireV2(flagsClient) → cookie clearance → 204
    * Response:   204 No Content (empty body)
    * Errors:     404 (legacy mode or flag off)
    *
@@ -393,7 +405,7 @@ export function createAuthRoutes(
    */
   router.post(
     '/logout',
-    requireV2(flagsInstance),
+    requireV2(flagsClient),
     (_req, res) => {
       res.cookie('refreshToken', '', {
         maxAge: 0,
