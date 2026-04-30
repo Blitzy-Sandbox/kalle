@@ -478,8 +478,22 @@ export function createAuthMiddleware(
     // parsing, token decoding, or V2/V1 dispatch decision. The mutual-
     // exclusion guarantee (Rule R4) requires that we resolve the flag before
     // invoking either handler.
+    //
+    // Rule R29 — Distributed-tracing correlation ID propagation across the
+    // kalle-api → admin-ui (flags evaluation) service boundary. We pass
+    // `req.correlationId` (set by the upstream `correlation-id` middleware)
+    // so that any cache-miss + outbound `GET /flags/AUTH_V2_ENABLED` carries
+    // an `X-Correlation-Id` header — preserving the single-thread distributed-
+    // trace invariant required by the User-Specified Observability Rule.
+    // When the cache is hit (the common case at steady state, given the 5s
+    // TTL), no outbound request is issued, so there is no log line on the
+    // admin-ui side to correlate.
     // -----------------------------------------------------------------------
-    const authV2Enabled = await flagsClient.isEnabled('AUTH_V2_ENABLED');
+    const authV2Enabled = await flagsClient.isEnabled(
+      'AUTH_V2_ENABLED',
+      undefined,
+      req.correlationId,
+    );
 
     // -----------------------------------------------------------------------
     // Rule R4 mutual exclusion: dispatch to EXACTLY ONE branch.
