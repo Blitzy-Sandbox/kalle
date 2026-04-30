@@ -166,6 +166,26 @@ services:
       timeout: 5s
       retries: 10
       start_period: 60s
+    # ----------------------------------------------------------------------
+    # extra_hosts: enables `host.docker.internal` resolution from inside the
+    # Keycloak container to reach services running on the Docker host.
+    # Required by `packages/auth/integration/backchannel-logout.e2e.spec.ts`
+    # Group 4/6 closed-loop tests where Keycloak's RP-initiated logout
+    # endpoint posts a backchannel logout token to the test's ephemeral
+    # sidecar listening on 127.0.0.1:<random_port>.  Without this entry,
+    # `127.0.0.1` from inside the container resolves to the container's own
+    # loopback (where nothing listens), producing
+    # `org.apache.http.conn.HttpHostConnectException: Connect to
+    # 127.0.0.1:<port> [/127.0.0.1] failed: Connection refused` and the
+    # test polling loop times out at 15s.
+    #
+    # Docker Desktop (macOS / Windows) wires `host.docker.internal`
+    # automatically. Linux Docker requires the explicit `host-gateway`
+    # alias. Setting the alias here makes the integration test portable
+    # across all three platforms.
+    # ----------------------------------------------------------------------
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
   # ---------------------------------------------------------------------------
   # Express API + Socket.IO Backend (port 3001)
