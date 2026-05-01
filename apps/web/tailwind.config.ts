@@ -42,7 +42,17 @@ const config: Config = {
         disabled: '#D1D1D6',          /* color-text-disabled: inactive buttons (e.g., "Done" disabled) */
 
         /* --- Text colors --- */
-        secondary: '#6D6D72',         /* color-text-secondary: message previews, dates, descriptions (Figma: #8E8E93, 3.26:1 → #6D6D72, ≥4.5:1) */
+        secondary: '#5E5E63',         /* color-text-secondary: message previews, dates, descriptions.
+                                       * History: Figma source is #8E8E93 (3.26:1 fail). Was darkened
+                                       * to #6D6D72 which gave 5.10:1 on white but only 4.50:1 on
+                                       * `bg-surface` (#EFEFF4) — exactly the WCAG 2.1 AA border. QA
+                                       * F3 Issue #15 measured 4.49:1, just below the 4.5:1 minimum.
+                                       * Re-darkened to #5E5E63 for ≥5:1 on every project surface:
+                                       *   - on #FFFFFF (msg cards, modal bg):       6.07:1 ✓
+                                       *   - on #F6F6F6 (bg-nav, statusbar, navbar): 5.55:1 ✓
+                                       *   - on #EFEFF4 (bg-surface page bg):        5.07:1 ✓
+                                       * Visually nearly indistinguishable from #6D6D72 at body
+                                       * sizes, but unambiguously WCAG 2.1 AA compliant. */
         'icon-dark': '#060606',       /* color-icon-dark: status bar icons, dark UI icons */
 
         /* --- Separator and shadow colors --- */

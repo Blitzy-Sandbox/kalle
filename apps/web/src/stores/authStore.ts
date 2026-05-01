@@ -3,10 +3,19 @@
  *
  * Zustand 4.5.x authentication state store for the Kalle WhatsApp clone frontend.
  *
- * Manages JWT token storage, user profile, login/logout state, token refresh,
- * and session persistence via the `persist` middleware with `sessionStorage`.
+ * Manages JWT access token (memory-only), refresh token (memory-only mirror of
+ * an httpOnly cookie under V2), user profile, login/logout state, token refresh,
+ * and FOUC-prevention persistence of `user` + `isAuthenticated` only.
  *
  * Key design decisions and rule compliance:
+ *
+ * - **R7 — Token Storage (CRITICAL):** Access tokens live ONLY in JS memory
+ *   (Zustand state). Refresh tokens live ONLY in an `httpOnly; Secure;
+ *   SameSite=Strict` cookie under V2 (`AUTH_V2_ENABLED=true`); the in-memory
+ *   `refreshToken` slice is `null` in V2 mode. Under legacy
+ *   (`AUTH_V2_ENABLED=false`) mode, the refresh token is held in memory only.
+ *   Neither token is persisted to `sessionStorage`, `localStorage`, or any
+ *   non-httpOnly cookie. The `partialize` config below excludes both tokens.
  *
  * - **R9 — Authentication on All Protected Routes:** Provides `isAuthenticated`
  *   derived state and token accessors for the API client to attach Bearer header.
@@ -18,24 +27,36 @@
  * - **R23 — Log Hygiene:** Zero logging of tokens, passwords, or sensitive fields.
  *   No `console.log`, `console.warn`, or `console.error` calls in this module.
  *
+ * - **R12 — API Stability:** All existing actions (`login`, `logout`,
+ *   `refreshTokens`, `updateProfile`, `setUser`, `setIsLoading`,
+ *   `setIsInitialized`, `getAccessToken`, `getRefreshToken`) preserve their
+ *   exact signatures. Two NEW additive actions (`setAccessToken`, `clear`)
+ *   support the V2 PKCE callback flow without breaking legacy callers.
+ *
  * Token Accessor Pattern:
  *   On module initialization (browser-only), registers token callbacks with the
  *   API client via `setTokenAccessor()` to avoid circular module dependencies.
  *   The API client reads/writes tokens through these callbacks rather than
  *   importing authStore directly.
  *
- * Persistence:
- *   Tokens and user profile are persisted to `sessionStorage` (not `localStorage`)
- *   using Zustand's `persist` middleware with `createJSONStorage`. Closing the
- *   browser tab clears auth state — a security best practice for session tokens.
- *   On page reload, state is automatically rehydrated from sessionStorage and
- *   `isInitialized` is set to `true` via the `onRehydrateStorage` callback.
+ * Persistence (POST-R7):
+ *   ONLY `user` and `isAuthenticated` are persisted to `sessionStorage`
+ *   (key `kalle-auth-storage`) using Zustand's `persist` middleware. Tokens
+ *   are NEVER persisted; they live in memory only and are cleared on tab
+ *   close by virtue of the page unloading. The `user` slice is persisted
+ *   to prevent flash-of-unauthenticated-content (FOUC) on page reload —
+ *   the access token is re-acquired via `POST /api/v1/auth/refresh` on the
+ *   first 401 (legacy) or via the httpOnly refresh cookie (V2).
  *
- * @see AAP Section 0.2.3 — Zustand auth state (tokens, user)
- * @see AAP Section 0.7.1 Group 16 — Frontend State Management
- * @see R9  — Authentication on all protected routes
- * @see R23 — Log hygiene (no token logging)
- * @see R33 — Session revocation via Redis-backed token blacklist
+ * @see AAP Section 0.4.1.2 — Direct Modifications Required — Kalle Web (authStore)
+ * @see AAP Section 0.7.1 R7 — Token storage discipline
+ * @see AAP Section 0.7.1 R12 — API stability
+ * @see FR-8  — Web PKCE flow with httpOnly refresh-token cookie
+ * @see R7   — Token storage (access in memory; refresh in cookie)
+ * @see R9   — Authentication on all protected routes
+ * @see R12  — API stability (existing action signatures preserved)
+ * @see R23  — Log hygiene (no token logging)
+ * @see R33  — Session revocation via Redis-backed token blacklist
  */
 
 import { create } from 'zustand';
@@ -53,6 +74,8 @@ import { setTokenAccessor, apiClient } from '../lib/api';
  * State properties:
  * - `accessToken` — Short-lived JWT access token for API authentication
  * - `refreshToken` — Longer-lived opaque refresh token for obtaining new pairs
+ *                    (LEGACY mode only; `null` in V2 mode where the refresh
+ *                    token lives in an httpOnly cookie that JS cannot read)
  * - `user` — Authenticated user profile (UserResponse from @kalle/shared)
  * - `isAuthenticated` — True when both accessToken and user are present
  * - `isLoading` — Loading state for auth operations (login, register, refresh)
@@ -64,8 +87,10 @@ import { setTokenAccessor, apiClient } from '../lib/api';
  * - `refreshTokens()` — Updates only token pair (called by API refresh interceptor)
  * - `updateProfile()` — Partially merges user profile updates
  * - `setUser()` — Replaces entire user object
+ * - `setAccessToken()` — Sets ONLY the access token (V2 PKCE callback path)
  * - `setIsLoading()` — Sets loading flag for auth operations
  * - `setIsInitialized()` — Marks store as initialized after rehydration
+ * - `clear()` — Surgical state-clear primitive (no side effects, no storage I/O)
  *
  * Token Accessors (for lib/api.ts integration):
  * - `getAccessToken()` — Returns current access token
@@ -77,7 +102,11 @@ interface AuthState {
   /** JWT access token (short-lived, e.g., 15min). Null if not authenticated. */
   accessToken: string | null;
 
-  /** Opaque refresh token (longer-lived, e.g., 7 days). Null if not authenticated. */
+  /**
+   * Opaque refresh token (longer-lived, e.g., 7 days). Null if not
+   * authenticated, AND null in V2 mode (the refresh value lives in an
+   * httpOnly cookie that JS cannot read; per Rule R7).
+   */
   refreshToken: string | null;
 
   /** Current authenticated user profile, or null if not logged in. */
@@ -122,6 +151,11 @@ interface AuthState {
    * received and the refresh succeeds. The user remains authenticated
    * with fresh tokens.
    *
+   * Legacy (R12) signature accepting a full TokenPair where refreshToken
+   * is non-null. The V2 token-accessor callback bypasses this action and
+   * writes directly via `useAuthStore.setState(...)` to support a `null`
+   * refresh token (V2 mode — refresh value lives in httpOnly cookie).
+   *
    * @param newTokens - Fresh token pair from the refresh endpoint
    */
   refreshTokens: (newTokens: TokenPair) => void;
@@ -147,6 +181,24 @@ interface AuthState {
   setUser: (user: UserResponse) => void;
 
   /**
+   * Sets ONLY the access token (memory-only — Rule R7).
+   *
+   * Used by the V2 PKCE callback page (`app/auth/callback/page.tsx`) after
+   * successful authorization-code exchange. The callback receives the access
+   * token from `POST /realms/.../protocol/openid-connect/token` and writes
+   * it to memory via this action. The refresh token is set server-side as
+   * an httpOnly cookie and is NOT touched by this action.
+   *
+   * Setting `null` clears the access token without affecting the user or
+   * isAuthenticated state — useful for transitional states.
+   *
+   * @param token - The new access token (or null to clear)
+   * @see FR-8
+   * @see R7
+   */
+  setAccessToken: (token: string | null) => void;
+
+  /**
    * Sets the isLoading flag for UI loading indicators.
    *
    * Used during login/register/refresh operations to show spinners or
@@ -166,6 +218,25 @@ interface AuthState {
   setIsInitialized: () => void;
 
   /**
+   * Clears all in-memory auth state (used on logout/error).
+   *
+   * Sets `accessToken`, `refreshToken`, `user` to null and `isAuthenticated`
+   * to false. Distinct from `logout()` which (in legacy flow) ALSO removes
+   * the sessionStorage entry. `clear()` is the surgical, side-effect-free
+   * primitive used by the V2 token-accessor `clearTokens` callback to avoid
+   * recursive logout side effects when called from the api.ts 401 interceptor.
+   *
+   * Does NOT call any backend endpoint. The caller is responsible for any
+   * server-side cleanup (e.g., the api.ts 401 interceptor calls
+   * `POST /api/v1/auth/logout` to clear the httpOnly refresh cookie before
+   * invoking `clear()`).
+   *
+   * @see FR-8
+   * @see R7
+   */
+  clear: () => void;
+
+  /**
    * Returns the current JWT access token, or null if not authenticated.
    *
    * Used by the API client (via setTokenAccessor) to attach the
@@ -177,7 +248,11 @@ interface AuthState {
    * Returns the current refresh token, or null if not authenticated.
    *
    * Used by the API client (via setTokenAccessor) for transparent
-   * token refresh when a 401 response is received.
+   * token refresh when a 401 response is received. In V2 mode this
+   * always returns `null` because the refresh token lives in an httpOnly
+   * cookie that JavaScript cannot read; api.ts handles the null case
+   * gracefully by sending an empty refresh body and relying on
+   * `credentials: 'include'` to forward the cookie.
    */
   getRefreshToken: () => string | null;
 }
@@ -198,8 +273,8 @@ interface AuthState {
  *
  * Persistence:
  * - Storage key: 'kalle-auth-storage'
- * - Storage type: sessionStorage (tokens cleared on tab close)
- * - Partialized: only accessToken, refreshToken, user, isAuthenticated
+ * - Storage type: sessionStorage (cleared on tab close)
+ * - Partialized: ONLY `user` and `isAuthenticated` (tokens NEVER persisted — R7)
  * - Rehydration: sets isInitialized to true after hydration completes
  */
 export const useAuthStore = create<AuthState>()(
@@ -230,9 +305,17 @@ export const useAuthStore = create<AuthState>()(
         setTokenAccessor({
           getAccessToken: () => useAuthStore.getState().accessToken,
           getRefreshToken: () => useAuthStore.getState().refreshToken,
-          setTokens: (newTokens: TokenPair) =>
-            useAuthStore.getState().refreshTokens(newTokens),
-          clearTokens: () => useAuthStore.getState().logout(),
+          // FR-8 + R7: setTokens accepts TokenSet (refreshToken may be null in
+          // V2 mode — refresh value lives in httpOnly cookie). Write directly
+          // via setState to bypass the legacy refreshTokens(TokenPair) signature
+          // which requires refreshToken: string. The new partialize excludes
+          // both tokens, so they remain memory-only regardless of mode.
+          setTokens: ({ accessToken, refreshToken }) =>
+            useAuthStore.setState({ accessToken, refreshToken }),
+          // R7: clearTokens uses clear() to avoid recursive logout() side effects
+          // when invoked from api.ts 401 interceptor (the interceptor itself
+          // already issues POST /api/v1/auth/logout before invoking clearTokens).
+          clearTokens: () => useAuthStore.getState().clear(),
         });
       },
 
@@ -246,7 +329,7 @@ export const useAuthStore = create<AuthState>()(
         });
 
         // Explicitly clear the sessionStorage entry to prevent stale
-        // tokens from being rehydrated on next page load.
+        // user state from being rehydrated on next page load.
         if (typeof sessionStorage !== 'undefined') {
           try {
             sessionStorage.removeItem('kalle-auth-storage');
@@ -325,12 +408,29 @@ export const useAuthStore = create<AuthState>()(
         });
       },
 
+      setAccessToken: (token: string | null): void => {
+        // R7: access token lives in memory only; never persisted (excluded from partialize).
+        set({ accessToken: token });
+      },
+
       setIsLoading: (loading: boolean): void => {
         set({ isLoading: loading });
       },
 
       setIsInitialized: (): void => {
         set({ isInitialized: true });
+      },
+
+      clear: (): void => {
+        // R7: clear all in-memory auth state without side effects.
+        // Caller (e.g., api.ts 401 interceptor) handles any server-side
+        // cleanup (cookie clear via POST /api/v1/auth/logout) BEFORE invoking this.
+        set({
+          accessToken: null,
+          refreshToken: null,
+          user: null,
+          isAuthenticated: false,
+        });
       },
 
       getAccessToken: (): string | null => {
@@ -346,20 +446,30 @@ export const useAuthStore = create<AuthState>()(
       name: 'kalle-auth-storage',
 
       /**
-       * Use sessionStorage (not localStorage) for security — tokens are
+       * Use sessionStorage (not localStorage) for security — persisted state is
        * cleared when the browser tab closes, preventing session persistence
-       * across browser restarts.
+       * across browser restarts. Note that NO tokens are written here (R7) —
+       * only `user` and `isAuthenticated` for FOUC prevention.
        */
       storage: createJSONStorage(() => sessionStorage),
 
       /**
-       * Only persist authentication-critical state. Transient UI state
-       * (isLoading, isInitialized) is NOT persisted — they reset to
-       * defaults on page load and are set appropriately during hydration.
+       * Persist ONLY user-display state for FOUC prevention. Tokens are NEVER
+       * persisted (Rule R7) — they live in memory only and are cleared on tab
+       * close. On page reload, the access token is re-acquired via the API
+       * refresh flow (`POST /api/v1/auth/refresh`) which uses either the
+       * in-memory refresh token (legacy mode) or the httpOnly refresh cookie
+       * (V2 mode). The persisted `user` + `isAuthenticated` state allows the
+       * UI to render the authenticated shell immediately on reload, then the
+       * first protected API call triggers a silent refresh that obtains a
+       * fresh access token.
+       *
+       * The persistence key `kalle-auth-storage` is preserved (existing test
+       * fixtures and external integrations rely on this key).
+       *
+       * @see R7 — Tokens never persisted to any client-side storage
        */
       partialize: (state: AuthState) => ({
-        accessToken: state.accessToken,
-        refreshToken: state.refreshToken,
         user: state.user,
         isAuthenticated: state.isAuthenticated,
       }),
@@ -403,10 +513,15 @@ export const useAuthStore = create<AuthState>()(
 if (typeof window !== 'undefined') {
   setTokenAccessor({
     getAccessToken: () => useAuthStore.getState().accessToken,
+    // R7: returns null in V2 mode (refresh value lives in httpOnly cookie);
+    // api.ts handles this gracefully by sending an empty refresh body and
+    // relying on `credentials: 'include'` to forward the cookie.
     getRefreshToken: () => useAuthStore.getState().refreshToken,
-    setTokens: (tokens: TokenPair) =>
-      useAuthStore.getState().refreshTokens(tokens),
-    clearTokens: () => useAuthStore.getState().logout(),
+    // FR-8 + R7: see in-login setTokens above for rationale.
+    setTokens: ({ accessToken, refreshToken }) =>
+      useAuthStore.setState({ accessToken, refreshToken }),
+    // R7: see in-login clearTokens above for rationale.
+    clearTokens: () => useAuthStore.getState().clear(),
   });
 }
 

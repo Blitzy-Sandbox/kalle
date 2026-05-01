@@ -22,9 +22,12 @@
  * @see R29  — Correlation ID propagation
  * @see R30  — API versioning (/api/v1/)
  * @see R38  — Zero external dependencies (localhost default)
+ * @see R7   — Refresh tokens in httpOnly cookies (V2); access tokens in memory
+ * @see FR-8 — Web PKCE flow with httpOnly refresh-token cookie (cascade scope)
+ * @see FR-9 — POST /api/v1/auth/logout clears refresh cookie on session loss
  */
 
-import type { ApiErrorResponse, TokenPair } from '@kalle/shared';
+import type { ApiErrorResponse } from '@kalle/shared';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -90,6 +93,47 @@ export class ApiError extends Error {
 // ---------------------------------------------------------------------------
 
 /**
+ * Token set passed to `TokenAccessor.setTokens`.
+ *
+ * In **V2 mode** (per AAP FR-8 + Rule R7) the refresh token lives in an
+ * `httpOnly; Secure; SameSite=Strict` cookie that is invisible to JavaScript,
+ * so the JS state holds `refreshToken: null` while the access token still
+ * lives in memory. In **legacy mode** (`AUTH_V2_ENABLED=false`) the refresh
+ * token is the in-memory string returned alongside the access token by
+ * `POST /api/v1/auth/login` and `POST /api/v1/auth/refresh`.
+ *
+ * This local type widens `TokenPair.refreshToken: string` to `string | null`
+ * so the same `setTokens` callback can be used in both modes. It does NOT
+ * change the exported `setTokenAccessor` registration function; it only
+ * relaxes the parameter type of the (internal, non-exported) `TokenAccessor`
+ * interface so api.ts can honor the V2 flow.
+ *
+ * Because `string` is assignable to `string | null`, callers passing the
+ * existing `TokenPair` shape (with non-null `refreshToken: string`) remain
+ * fully compatible — no cascading changes are required at the call sites.
+ *
+ * @see R7   — Token storage policy
+ * @see FR-8 — Web PKCE flow
+ */
+interface TokenSet {
+  /** Short-lived JWT access token; ALWAYS present after a successful refresh. */
+  accessToken: string;
+
+  /**
+   * Opaque refresh token — string in legacy mode, null in V2 mode (cookie-only).
+   * When null, the in-memory store MUST NOT persist any refresh-token value
+   * (R7); the cookie alone authorizes the next refresh.
+   */
+  refreshToken: string | null;
+
+  /** Access token TTL in seconds; 0 if absent from response (V2 may omit). */
+  expiresIn: number;
+
+  /** Refresh token TTL in seconds; 0 if absent from response (V2 omits). */
+  refreshExpiresIn: number;
+}
+
+/**
  * Interface for token management callbacks registered by authStore.
  *
  * This indirection avoids circular imports between api.ts and authStore.ts.
@@ -99,10 +143,16 @@ export class ApiError extends Error {
 interface TokenAccessor {
   /** Returns the current JWT access token, or null if not authenticated */
   getAccessToken: () => string | null;
-  /** Returns the current refresh token, or null if not authenticated */
+  /** Returns the current refresh token, or null if not authenticated (V2 mode) */
   getRefreshToken: () => string | null;
-  /** Persists a new token pair after successful refresh */
-  setTokens: (tokens: TokenPair) => void;
+  /**
+   * Persists a new token set after successful refresh.
+   *
+   * In V2 mode `tokens.refreshToken` is `null` (the value lives in an
+   * httpOnly cookie that JS cannot read). In legacy mode it is the
+   * opaque refresh token string returned by the API.
+   */
+  setTokens: (tokens: TokenSet) => void;
   /** Clears all stored tokens (forces logout) */
   clearTokens: () => void;
 }
@@ -164,53 +214,76 @@ let isRefreshing = false;
  * Shared promise for the in-flight refresh request.
  * Multiple callers awaiting refresh receive the same resolved value.
  */
-let refreshPromise: Promise<TokenPair> | null = null;
+let refreshPromise: Promise<TokenSet> | null = null;
 
 /**
- * Refreshes the JWT access token using the stored refresh token.
+ * Refreshes the JWT access token using the stored refresh token (legacy)
+ * or the httpOnly refresh-token cookie (V2 — Rule R7 + FR-8).
  *
  * Uses raw fetch (NOT the `request()` function) to avoid infinite loops.
  * Implements single-flight deduplication: if a refresh is already in progress,
  * returns the existing promise instead of issuing a duplicate request.
  *
- * On success, persists the new token pair via the token accessor.
- * On failure, clears all tokens to force re-authentication.
+ * **Cookie compatibility (FR-8 + R7):**
+ * - The fetch sends `credentials: 'include'` so the browser attaches the
+ *   `httpOnly` refresh cookie set by the V2 callback flow.
+ * - The body is `{ refreshToken }` when an in-memory refresh token exists
+ *   (legacy mode) or `{}` when none exists (V2 mode — server reads the
+ *   cookie). The kalle API V2 implementation reads the cookie first and
+ *   falls back to the body for legacy compatibility.
+ * - The response is tolerated in three shapes:
+ *     1. Legacy:           `{ data: { tokens: TokenPair } }`     (current API)
+ *     2. V2 with envelope: `{ data: { accessToken, expiresIn? } }`
+ *     3. V2 flat:          `{ accessToken, expiresIn? }`
  *
- * @returns The new TokenPair containing fresh access and refresh tokens
- * @throws {ApiError} If refresh fails or no refresh token is available
+ * On success, persists the new token set via the token accessor — `null`
+ * for `refreshToken` in V2 mode (the value stays in the cookie, not in JS).
+ * On failure, clears all tokens to force re-authentication; the surrounding
+ * `request()` 401 handler also issues a best-effort `POST /api/v1/auth/logout`
+ * to clear the cookie.
+ *
+ * @returns The new TokenSet
+ * @throws {ApiError} On HTTP errors, network failures, or invalid responses
  */
-async function refreshAccessToken(): Promise<TokenPair> {
+async function refreshAccessToken(): Promise<TokenSet> {
   if (isRefreshing && refreshPromise) {
     return refreshPromise;
   }
 
   isRefreshing = true;
 
-  refreshPromise = (async (): Promise<TokenPair> => {
+  refreshPromise = (async (): Promise<TokenSet> => {
     try {
-      const currentRefreshToken = tokenAccessor?.getRefreshToken();
-      if (!currentRefreshToken) {
-        tokenAccessor?.clearTokens();
-        throw new ApiError(
-          'AUTHENTICATION_ERROR',
-          'No refresh token available',
-          401,
-        );
-      }
+      // V2 mode: refresh token lives in httpOnly cookie; currentRefreshToken
+      // may be null. Legacy mode: currentRefreshToken is the in-memory value.
+      // Either way, we proceed with the fetch — the API endpoint reads the
+      // cookie first then falls back to the body. If both are absent, the API
+      // returns 401 and the catch block below clears credentials.
+      const currentRefreshToken: string | null =
+        tokenAccessor?.getRefreshToken() ?? null;
 
       const response = await fetch(`${API_BASE_URL}/api/v1/auth/refresh`, {
         method: 'POST',
+        // FR-8 + R7: send the httpOnly refresh cookie when present (V2 mode).
+        credentials: 'include',
         headers: {
           'Content-Type': 'application/json',
           'X-Correlation-ID': generateCorrelationId(),
         },
-        body: JSON.stringify({ refreshToken: currentRefreshToken }),
+        // Legacy mode: ship the in-memory refresh token in the body.
+        // V2 mode (currentRefreshToken === null): empty body — server reads
+        // the cookie.
+        body: JSON.stringify(
+          currentRefreshToken !== null
+            ? { refreshToken: currentRefreshToken }
+            : {},
+        ),
       });
 
       if (!response.ok) {
-        const errorBody: ApiErrorResponse | null = await response
+        const errorBody: ApiErrorResponse | null = (await response
           .json()
-          .catch(() => null) as ApiErrorResponse | null;
+          .catch(() => null)) as ApiErrorResponse | null;
         tokenAccessor?.clearTokens();
         throw new ApiError(
           errorBody?.error?.code ?? 'AUTHENTICATION_ERROR',
@@ -220,21 +293,45 @@ async function refreshAccessToken(): Promise<TokenPair> {
         );
       }
 
-      // Response follows ApiResponse shape: { data: { tokens: TokenPair } }
-      const json = (await response.json()) as {
-        data: { tokens: TokenPair };
-      };
-      const newTokens: TokenPair = json.data.tokens;
+      // Parse response with tolerance for multiple envelope shapes:
+      //  - Legacy:           { data: { tokens: TokenPair } }      (current kalle API)
+      //  - V2 with envelope: { data: { accessToken, expiresIn? } } (cascade requirement)
+      //  - V2 flat:          { accessToken, expiresIn? }           (cascade requirement)
+      const body = (await response.json()) as Record<string, unknown>;
+      const dataLayer = (body['data'] ?? body) as Record<string, unknown>;
+      const tokens = (dataLayer['tokens'] ?? dataLayer) as Partial<TokenSet>;
 
-      // Verify essential fields are present before persisting
-      if (!newTokens.accessToken || !newTokens.refreshToken) {
+      // Validate the essential field — accessToken — must be a non-empty string.
+      // R7: never log token values; the message references the response shape only.
+      if (
+        !tokens ||
+        typeof tokens.accessToken !== 'string' ||
+        tokens.accessToken.length === 0
+      ) {
         tokenAccessor?.clearTokens();
         throw new ApiError(
-          'INTERNAL_ERROR',
-          'Invalid token pair received from refresh endpoint',
+          'AUTHENTICATION_ERROR',
+          'Invalid refresh response: missing accessToken',
           500,
         );
       }
+
+      // Build the TokenSet. In V2 mode `tokens.refreshToken` is undefined →
+      // refreshToken is `null` (cookie-only). In legacy mode `tokens.refreshToken`
+      // is the string from the API response.
+      const newTokens: TokenSet = {
+        accessToken: tokens.accessToken,
+        refreshToken:
+          typeof tokens.refreshToken === 'string'
+            ? tokens.refreshToken
+            : null,
+        expiresIn:
+          typeof tokens.expiresIn === 'number' ? tokens.expiresIn : 0,
+        refreshExpiresIn:
+          typeof tokens.refreshExpiresIn === 'number'
+            ? tokens.refreshExpiresIn
+            : 0,
+      };
 
       tokenAccessor?.setTokens(newTokens);
       return newTokens;
@@ -350,23 +447,50 @@ async function request<T>(
     return json.data;
   }
 
-  // Handle 401 Unauthorized — attempt token refresh (once only)
-  if (response.status === 401 && !isRetry && tokenAccessor) {
-    try {
-      await refreshAccessToken();
-      return request<T>(endpoint, options, true);
-    } catch (_refreshError: unknown) {
-      // Refresh failed — clear auth state and redirect to login
-      tokenAccessor?.clearTokens();
-      if (typeof window !== 'undefined') {
-        window.location.href = '/login';
+  // Handle 401 Unauthorized when a token accessor is registered.
+  // (When no accessor is registered, fall through to standard error handling.)
+  if (response.status === 401 && tokenAccessor) {
+    // First 401 (not yet retried): try a single silent refresh-and-retry (FR-8).
+    if (!isRetry) {
+      try {
+        await refreshAccessToken();
+        return request<T>(endpoint, options, true);
+      } catch (_refreshError: unknown) {
+        // Refresh itself failed — fall through to logout/redirect path below.
+        // (We do NOT recurse into another refresh attempt; the single-flight
+        // mechanism plus this fall-through enforces "one silent refresh-then-retry".)
       }
-      throw new ApiError(
-        'AUTHENTICATION_ERROR',
-        'Session expired. Please log in again.',
-        401,
-      );
     }
+
+    // Reached when:
+    //   (a) The retry (`isRetry === true`) also returned 401, OR
+    //   (b) `refreshAccessToken()` threw (refresh failed).
+    // In either case: clear the V2 httpOnly refresh cookie via best-effort
+    // POST /api/v1/auth/logout (FR-9), then clear in-memory state and redirect.
+    try {
+      await fetch(`${API_BASE_URL}/api/v1/auth/logout`, {
+        method: 'POST',
+        // FR-9 + R7: server clears the refresh cookie via Max-Age=0; HTTP 204.
+        credentials: 'include',
+        headers: {
+          'X-Correlation-ID': generateCorrelationId(),
+        },
+      });
+    } catch {
+      // Best-effort cookie clear — proceed with in-memory clear regardless of
+      // network failure (e.g., offline, server down). The user-facing flow is
+      // unchanged: clear everything client-side and redirect to /login.
+    }
+
+    tokenAccessor.clearTokens();
+    if (typeof window !== 'undefined') {
+      window.location.href = '/login';
+    }
+    throw new ApiError(
+      'AUTHENTICATION_ERROR',
+      'Session expired. Please log in again.',
+      401,
+    );
   }
 
   // Parse error body matching standardized ApiErrorResponse shape (R22)

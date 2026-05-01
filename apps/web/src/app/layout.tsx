@@ -98,6 +98,26 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning>
       <body className="font-sans antialiased bg-surface text-black min-h-screen overscroll-none">
+        {/* QA F3 Issue #16 fix — Skip-Nav link for keyboard users.
+         *
+         * WCAG 2.1 SC 2.4.1 (Bypass Blocks, Level A) requires a mechanism
+         * to skip blocks of content that are repeated across pages (e.g.,
+         * the bottom TabBar navigation). This link is the FIRST focusable
+         * element on every page; pressing Tab from a fresh page focuses
+         * it, and pressing Enter scrolls focus to the `<main id="main-content">`
+         * landmark in the (main) layout. The link is `sr-only` (visually
+         * hidden) until focused, at which point `focus:not-sr-only` reveals
+         * it as a fixed banner near the top-left of the viewport.
+         *
+         * The Tailwind `focus:` utilities ensure the visible-on-focus styling
+         * matches the rest of the kalle design system (blue-ios = #007AFF,
+         * white text, ring-2 for focus indicator per globals.css). */}
+        <a
+          href="#main-content"
+          className="sr-only focus:not-sr-only focus:fixed focus:top-2 focus:left-2 focus:z-50 focus:bg-blue-ios focus:text-white focus:px-4 focus:py-2 focus:rounded focus:outline-none focus:ring-2 focus:ring-blue-ios focus:ring-offset-2"
+        >
+          Skip to main content
+        </a>
         {children}
       </body>
     </html>

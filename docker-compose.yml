@@ -88,6 +88,106 @@ services:
       start_period: 10s
 
   # ---------------------------------------------------------------------------
+  # Keycloak 24 — OAuth 2.0 / OIDC Identity Provider for V2 Auth (FR-1, FR-11)
+  # ---------------------------------------------------------------------------
+  # Acts as the OAuth Authorization Server backing the V2 auth path. Bootstraps
+  # the `blitzy` realm via --import-realm using the realm export bind-mounted
+  # from packages/auth/keycloak/realm-export.json (one directory above kalle/).
+  #
+  # Per AAP Section 0.5.1.4 (Group 4) and Section 0.4.1.6 (sequence diagram),
+  # this service is required for:
+  #   * Kalle PKCE login redirect (FR-8)
+  #   * Cross-app SSO audience chain (FR-11) — issues tokens carrying both
+  #     "kalle-app" AND "odoo-app" in the aud claim when odoo:basic/odoo:admin
+  #     scopes are requested.
+  #   * Backchannel logout token push to the auth sidecar.
+  #
+  # Operational hardening (resolves QA C1 findings):
+  #   * --health-enabled=true exposes /health/{live,ready,started} on :8080
+  #     for the docker-compose healthcheck below (Issue 5).
+  #   * --log-console-output=json emits structured JSON log lines to satisfy
+  #     the Observability rule (Issue 6).
+  #   * Healthcheck uses bash's built-in /dev/tcp instead of curl/wget because
+  #     the keycloak:24.0 image (UBI 9 minimal) does NOT ship curl or wget.
+  #     Bash 5.1 is available at /bin/sh -> bash, supporting /dev/tcp natively.
+  # ---------------------------------------------------------------------------
+  keycloak:
+    image: quay.io/keycloak/keycloak:24.0
+    container_name: kalle-keycloak
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # Master-realm admin credentials for bootstrapping the blitzy realm and
+      # for seed-admin.ts to call the Admin REST API. Defaults are for local
+      # dev only; production deployments MUST override via .env (R8 spirit —
+      # though placeholders here are sourced from environment, never committed).
+      KEYCLOAK_ADMIN: ${KEYCLOAK_ADMIN:-admin}
+      KEYCLOAK_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin}
+      # Enables the Quarkus health extension so /health/ready returns 200/503
+      # instead of 404. Required for the healthcheck below to function.
+      KC_HEALTH_ENABLED: "true"
+      # Switches Quarkus log handler from human-readable text to structured JSON
+      # output. Satisfies User-Specified Observability rule.
+      KC_LOG_CONSOLE_OUTPUT: "json"
+    command:
+      - start-dev
+      - --import-realm
+      - --health-enabled=true
+      - --log-console-output=json
+    volumes:
+      # Bind-mount ONLY the realm-export.json file into Keycloak's import
+      # directory (NOT the entire packages/auth/keycloak/ directory). Keycloak's
+      # --import-realm flag scans /opt/keycloak/data/import for ALL *.json
+      # files; the sibling google-broker-flow.json is a standalone documentation
+      # artifact (per its own $schema-comment) and is NOT a valid
+      # RealmRepresentation, so mounting it would cause Keycloak to fail
+      # startup with an UnrecognizedPropertyException. The single-file mount
+      # keeps the documentation file in the source tree while ensuring only
+      # the realm export reaches Keycloak's importer.
+      - ../packages/auth/keycloak/realm-export.json:/opt/keycloak/data/import/realm-export.json:ro
+      # Persistent named volume for Keycloak's dev-file H2 store (admin-console
+      # changes — additional users, role grants, client tweaks made via the
+      # Keycloak UI — survive container restarts and recreates). On first boot
+      # Keycloak imports the realm from the bind-mount above; on subsequent
+      # boots the named volume holds the realm state plus any admin overrides.
+      # The bind-mount of realm-export.json is more specific (file vs. parent
+      # dir) and therefore takes precedence in the kernel mount stack.
+      - keycloak_data:/opt/keycloak/data
+    healthcheck:
+      # Uses bash /dev/tcp because curl and wget are NOT installed in the
+      # quay.io/keycloak/keycloak:24.0 image (verified 2026-04-27). Sends a
+      # raw HTTP GET to /health/ready and asserts that the first response
+      # line contains "200" (HTTP/1.0 200 OK).
+      test:
+        - CMD-SHELL
+        - "exec 3<>/dev/tcp/localhost/8080 && printf 'GET /health/ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q '200' || exit 1"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    # ----------------------------------------------------------------------
+    # extra_hosts: enables `host.docker.internal` resolution from inside the
+    # Keycloak container to reach services running on the Docker host.
+    # Required by `packages/auth/integration/backchannel-logout.e2e.spec.ts`
+    # Group 4/6 closed-loop tests where Keycloak's RP-initiated logout
+    # endpoint posts a backchannel logout token to the test's ephemeral
+    # sidecar listening on 127.0.0.1:<random_port>.  Without this entry,
+    # `127.0.0.1` from inside the container resolves to the container's own
+    # loopback (where nothing listens), producing
+    # `org.apache.http.conn.HttpHostConnectException: Connect to
+    # 127.0.0.1:<port> [/127.0.0.1] failed: Connection refused` and the
+    # test polling loop times out at 15s.
+    #
+    # Docker Desktop (macOS / Windows) wires `host.docker.internal`
+    # automatically. Linux Docker requires the explicit `host-gateway`
+    # alias. Setting the alias here makes the integration test portable
+    # across all three platforms.
+    # ----------------------------------------------------------------------
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  # ---------------------------------------------------------------------------
   # Express API + Socket.IO Backend (port 3001)
   # ---------------------------------------------------------------------------
   # Composition root wiring all domain services, repositories, and providers.
@@ -97,8 +197,17 @@ services:
   # ---------------------------------------------------------------------------
   api:
     build:
-      context: .
-      dockerfile: Dockerfile.api
+      # F-CRITICAL-1 fix (QA Checkpoint F2): Build context is the REPOSITORY
+      # ROOT (one level above kalle/) so that the kalle workspace AND the
+      # sibling packages/auth + packages/admin-ui workspace libraries are
+      # both visible to the Docker daemon's build context tarball. The
+      # Dockerfile copies @blitzy/auth and @blitzy/admin-ui into the image,
+      # which is required because kalle/apps/api/package.json references
+      # @blitzy/auth via the file:../../../packages/auth protocol.
+      # See kalle/Dockerfile.api header for full filesystem-root layout
+      # explanation.
+      context: ../
+      dockerfile: kalle/Dockerfile.api
       target: builder
     container_name: kalle-api
     restart: unless-stopped
@@ -157,8 +266,14 @@ services:
   # ---------------------------------------------------------------------------
   web:
     build:
-      context: .
-      dockerfile: Dockerfile.web
+      # F-CRITICAL-1 fix (QA Checkpoint F2): Build context is the REPOSITORY
+      # ROOT (one level above kalle/) — same rationale as the `api` service
+      # block above. kalle/apps/web/package.json also references @blitzy/auth
+      # via file:../../../packages/auth (for shared TypeScript types),
+      # requiring the sibling packages/* directory to be inside the build
+      # context. See kalle/Dockerfile.web header for filesystem-root layout.
+      context: ../
+      dockerfile: kalle/Dockerfile.web
       target: builder
     container_name: kalle-web
     restart: unless-stopped
@@ -169,8 +284,22 @@ services:
         condition: service_healthy
     environment:
       # Public vars accessed from the browser — use localhost, not Docker hostname
+      # because they are evaluated by the user's browser, NOT inside the Docker
+      # network. The browser's loopback `localhost` resolves to the host machine,
+      # which forwards to the appropriate published port (3001 for kalle-api,
+      # 8080 for keycloak).
       NEXT_PUBLIC_API_URL: http://localhost:${PORT:-3001}
       NEXT_PUBLIC_WS_URL: http://localhost:${PORT:-3001}
+      # F-CRITICAL-3 fix (QA Checkpoint F2 follow-up): The login page reads
+      # `process.env.NEXT_PUBLIC_KEYCLOAK_BASE_URL` to construct the OAuth
+      # 2.0 authorization-endpoint URL when the V2 flag is enabled. This
+      # value MUST be the BROWSER-PERSPECTIVE Keycloak URL (`localhost:8080`,
+      # NOT `keycloak:8080`) because it is the user's browser that is
+      # redirected to that URL. The realm and client ID align with the
+      # values exported by `packages/auth/keycloak/realm-export.json`.
+      NEXT_PUBLIC_KEYCLOAK_BASE_URL: http://localhost:8080
+      NEXT_PUBLIC_KEYCLOAK_REALM: blitzy
+      NEXT_PUBLIC_KEYCLOAK_CLIENT_ID: kalle-app
       NODE_ENV: development
     volumes:
       # Dev hot reload mounts (R40)
@@ -196,8 +325,15 @@ services:
   # ---------------------------------------------------------------------------
   worker:
     build:
-      context: .
-      dockerfile: Dockerfile.worker
+      # F-CRITICAL-1 fix (QA Checkpoint F2): Build context is the REPOSITORY
+      # ROOT for consistency with the api/web blocks above. The worker
+      # itself does NOT import @blitzy/auth or @blitzy/admin-ui, but it
+      # shares kalle/package-lock.json with the api/web workspaces, and
+      # the lockfile contains file:../../../packages/auth references from
+      # sibling workspaces that must be reachable during npm ci.
+      # See kalle/Dockerfile.worker header for filesystem-root layout.
+      context: ../
+      dockerfile: kalle/Dockerfile.worker
       target: builder
     container_name: kalle-worker
     restart: unless-stopped
@@ -235,8 +371,12 @@ services:
   # ---------------------------------------------------------------------------
   backup:
     build:
-      context: .
-      dockerfile: Dockerfile.backup
+      # F-CRITICAL-1 fix (QA Checkpoint F2): Build context is the REPOSITORY
+      # ROOT for consistency with the api/web/worker blocks above. The
+      # backup container only needs `kalle/scripts/backup.sh`; the path is
+      # adjusted in kalle/Dockerfile.backup's COPY directive accordingly.
+      context: ../
+      dockerfile: kalle/Dockerfile.backup
     container_name: kalle-backup
     restart: unless-stopped
     depends_on:
@@ -294,6 +434,315 @@ services:
       retries: 3
       start_period: 15s
 
+  # ---------------------------------------------------------------------------
+  # Auth Database (PostgreSQL 16 — @blitzy/auth)
+  # ---------------------------------------------------------------------------
+  # Standalone Postgres 16 instance backing @blitzy/auth's `users`, `apps`,
+  # and `user_app_permissions` tables. Per AAP Rule R2, this database is
+  # accessed ONLY by packages/auth/src/. Kalle MUST NOT reference AUTH_DB_URL
+  # in apps/api, apps/web, or workers/queue — the api/worker containers
+  # connect to the legacy `postgres` service exclusively, and reach auth
+  # state only via HTTP through the `auth-sidecar` service below.
+  #
+  # Verification: `grep -r "AUTH_DB_URL" kalle/` returns no matches outside
+  # this docker-compose.yml's auth-sidecar block.
+  #
+  # Host port 5434 is intentional — separate from kalle's 5432 and from
+  # flags-db's 5435 to permit running all three Postgres instances locally
+  # without port collision while still letting `psql -p 5434` reach this
+  # specific instance from the host shell during debugging.
+  # ---------------------------------------------------------------------------
+  auth-db:
+    image: postgres:16-alpine
+    container_name: kalle-auth-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${AUTH_DB_USER:-auth}
+      POSTGRES_PASSWORD: ${AUTH_DB_PASSWORD:-auth_dev_password}
+      POSTGRES_DB: ${AUTH_DB_NAME:-auth_db}
+    ports:
+      - "5434:5432"   # Host 5434 (separate from kalle 5432 / flags-db 5435)
+    volumes:
+      - auth_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${AUTH_DB_USER:-auth} -d ${AUTH_DB_NAME:-auth_db}
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Auth Sidecar — @blitzy/auth (FR-2, FR-3)
+  # ---------------------------------------------------------------------------
+  # Two Express servers bound by a single startAdminServer call:
+  #   * port 4000 — Auth Admin SPA (user permission management, Vite-built
+  #                 React 18 static assets served by Express)
+  #   * port 4001 — Validation / backchannel sidecar:
+  #       - POST /validate          (JWT signature → blacklist → audience →
+  #                                  permission; 4-step chain per FR-2)
+  #       - POST /backchannel-logout (Keycloak logout token → Redis SETEX
+  #                                   on KALLE_REDIS_BLACKLIST_KEY_PREFIX)
+  #
+  # Build context strategy: kalle/docker-compose.yml lives inside the kalle
+  # submodule, but packages/auth/Dockerfile lives at the COMPOSITE
+  # repository root (sibling of kalle/, NOT inside it). The directive
+  # `context: ../` therefore points the Docker build context at the
+  # composite root, allowing `dockerfile: packages/auth/Dockerfile` and
+  # all `COPY packages/auth/...` / `COPY pnpm-workspace.yaml` lines in
+  # the Dockerfile to resolve correctly. Using `context: .` (i.e. kalle/)
+  # would cause the build to fail because packages/auth would be invisible
+  # to the Docker daemon's context tarball.
+  #
+  # Per Rule R1, packages/auth has zero `from kalle/...` or
+  # `from blitzy-odoo/...` imports — verified by grep at delivery time.
+  #
+  # Reads (Docker-network internal hostnames; no external services):
+  #   AUTH_DB_URL       → auth-db        (port 5432 inside Docker network)
+  #   KALLE_REDIS_URL   → redis          (port 6379) — IR-G mandates the
+  #                                       SAME Redis instance as kalle's
+  #                                       legacy middleware so blacklist
+  #                                       writes are visible to both modes
+  #   KEYCLOAK_BASE_URL → keycloak       (port 8080) for JWKS fetch
+  # ---------------------------------------------------------------------------
+  auth-sidecar:
+    build:
+      context: ../
+      dockerfile: packages/auth/Dockerfile
+      # =====================================================================
+      # QA F3 Issue #1 — VITE_* Build-Time Argument Propagation
+      # =====================================================================
+      # The Auth Admin SPA (packages/auth/src/admin-ui/) is a Vite-built
+      # React 18 static bundle. Vite reads `import.meta.env.VITE_*` at BUILD
+      # time and inlines the literal string into the compiled JS. Values not
+      # available during `vite build` become `undefined`, breaking the PKCE
+      # redirect: when VITE_KEYCLOAK_BASE_URL is empty, the SPA constructs
+      # `${baseUrl}/realms/blitzy/...` as a host-RELATIVE URL, sending the
+      # browser to http://localhost:4000/realms/... (HTTP 404) instead of
+      # http://localhost:8080/realms/... (the Keycloak issuer).
+      #
+      # These `args:` flow as Docker build arguments to packages/auth/
+      # Dockerfile's `ARG VITE_*` declarations, which the Dockerfile then
+      # promotes to ENV so Vite can read them via `process.env.VITE_*`.
+      #
+      # Public OAuth client identifiers (base URL, realm, client ID) are
+      # intentionally exposed in the bundle — they are NOT secrets. Rule R8
+      # only forbids embedding CLIENT_SECRETs.
+      # =====================================================================
+      args:
+        VITE_KEYCLOAK_BASE_URL: ${KEYCLOAK_PUBLIC_BASE_URL:-http://localhost:8080}
+        VITE_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-blitzy}
+        VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-kalle-app}
+    container_name: kalle-auth-sidecar
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      ADMIN_UI_PORT: "4000"
+      AUTH_SIDECAR_PORT: "4001"
+      # NOTE: `auth-db` is the Docker-network DNS name of the service block
+      # above; port 5432 is the CONTAINER-internal port (host port is 5434).
+      AUTH_DB_URL: postgresql://${AUTH_DB_USER:-auth}:${AUTH_DB_PASSWORD:-auth_dev_password}@auth-db:5432/${AUTH_DB_NAME:-auth_db}?schema=public
+      KEYCLOAK_BASE_URL: http://keycloak:8080
+      KEYCLOAK_REALM: ${KEYCLOAK_REALM:-blitzy}
+      # QA F-CRITICAL-4 — Optional split-endpoint overrides for the JWKS
+      # endpoint and the expected `iss` claim. When the sidecar reaches
+      # Keycloak via the INTERNAL Docker hostname (http://keycloak:8080)
+      # but Keycloak mints tokens with the BROWSER-perspective public URL
+      # in the `iss` claim (e.g., http://localhost:8080/realms/blitzy),
+      # set BOTH variables in your local .env:
+      #
+      #   KEYCLOAK_JWKS_URI=http://keycloak:8080/realms/blitzy/protocol/openid-connect/certs
+      #   KEYCLOAK_ISSUER=http://localhost:8080/realms/blitzy
+      #
+      # When unset (single-network deployments), `initAuth()` derives both
+      # URIs from KEYCLOAK_BASE_URL + KEYCLOAK_REALM.
+      # See packages/auth/.env.example, kalle/.env.example, and
+      # packages/auth/src/auth/types.ts AuthConfig JSDoc for full context.
+      KEYCLOAK_JWKS_URI: ${KEYCLOAK_JWKS_URI:-}
+      KEYCLOAK_ISSUER: ${KEYCLOAK_ISSUER:-}
+      KEYCLOAK_ADMIN_CLIENT_ID: ${KEYCLOAK_ADMIN_CLIENT_ID:-auth-admin}
+      # R8 — Empty default ensures no literal secret is committed; operators
+      # MUST set this in their .env file before bringing the sidecar up.
+      KEYCLOAK_ADMIN_CLIENT_SECRET: ${KEYCLOAK_ADMIN_CLIENT_SECRET:-}
+      AUTH_SIDECAR_SECRET: ${AUTH_SIDECAR_SECRET:-}
+      KALLE_REDIS_URL: redis://redis:6379
+      # IR-G — MUST match kalle's legacy BLACKLIST_PREFIX in apps/api/src/
+      # middleware/auth.ts so V2-issued blacklist entries are read by the
+      # legacy V1 middleware without modification, and vice versa.
+      KALLE_REDIS_BLACKLIST_KEY_PREFIX: "blacklist:"
+      # Backchannel logout endpoints: Keycloak posts logout tokens here on
+      # session termination. Both Kalle and Odoo backchannel pushes route
+      # to the SAME endpoint because the sidecar dispatches based on the
+      # logout token's audience claim (`aud`), not the URL.
+      KALLE_BACKCHANNEL_LOGOUT_URL: http://auth-sidecar:4001/backchannel-logout
+      ODOO_BACKCHANNEL_LOGOUT_URL: http://auth-sidecar:4001/backchannel-logout
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "4000:4000"   # Admin SPA (user / permission management UI)
+      - "4001:4001"   # Validation + backchannel-logout sidecar
+    depends_on:
+      auth-db:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      # Per packages/auth/Dockerfile, the sidecar exposes /health/ready
+      # (not bare /health) — `live` is process-up, `ready` additionally
+      # asserts the JWKS resolver and DB pool are operational. Use
+      # /health/ready for compose probes so dependent services only see
+      # this container as healthy when downstream traffic is safe.
+      test:
+        - CMD-SHELL
+        - wget --no-verbose --tries=1 --spider http://127.0.0.1:4001/health/ready || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+
+  # ---------------------------------------------------------------------------
+  # Flags Database (PostgreSQL 16 — @blitzy/admin-ui)
+  # ---------------------------------------------------------------------------
+  # Standalone Postgres 16 instance backing @blitzy/admin-ui's
+  # `feature_flags` and `flag_overrides` tables. Per AAP Rule RF2, this
+  # database is accessed ONLY by packages/admin-ui/src/. Kalle MUST NOT
+  # reference FLAGS_DB_URL — the api/web/worker containers reach flag
+  # state exclusively via HTTP through the `admin-ui` service below
+  # (cache → API → process.env fallback per Rule RF3).
+  #
+  # Verification: `grep -r "FLAGS_DB_URL" kalle/` returns no matches
+  # outside this docker-compose.yml's admin-ui block.
+  #
+  # Host port 5435 — separate from kalle's 5432 and auth-db's 5434.
+  # ---------------------------------------------------------------------------
+  flags-db:
+    image: postgres:16-alpine
+    container_name: kalle-flags-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${FLAGS_DB_USER:-flags}
+      POSTGRES_PASSWORD: ${FLAGS_DB_PASSWORD:-flags_dev_password}
+      POSTGRES_DB: ${FLAGS_DB_NAME:-flags_db}
+    ports:
+      - "5435:5432"   # Host 5435 (separate from kalle 5432 / auth-db 5434)
+    volumes:
+      - flags_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U ${FLAGS_DB_USER:-flags} -d ${FLAGS_DB_NAME:-flags_db}
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # Flags Admin UI — @blitzy/admin-ui (FR-4, FR-5, FR-6)
+  # ---------------------------------------------------------------------------
+  # Two Express servers bound by a single startFlagServer call:
+  #   * port 4002 — Flags Admin SPA (CRUD on feature_flags, override
+  #                 management; Vite-built React 18 static assets)
+  #   * port 4003 — Evaluation API:
+  #       - GET /flags/:name?subject=<email> → { enabled, rollout_percentage }
+  #         consumed by kalle/apps/api/src/middleware/auth.ts (TypeScript
+  #         client) and blitzy-odoo/addons/auth_v2/models/feature_flags.py
+  #         (Python client). Bearer-authenticated via FLAGS_API_SECRET.
+  #
+  # Build context: same `context: ../` pattern as auth-sidecar — the
+  # Dockerfile lives at packages/admin-ui/Dockerfile (composite repo root).
+  #
+  # Per Rule RF1, packages/admin-ui has zero `from kalle/...`,
+  # `from blitzy-odoo/...`, or `from packages/auth/...` imports.
+  # Per Rule RF7, all admin endpoints authenticate ONLY via
+  # `POST ${AUTH_SIDECAR_URL}/validate` with `requiredTier: "admin"` —
+  # @blitzy/auth is NEVER imported, even for shared types. Verified by
+  # `grep -r "from.*@blitzy/auth" packages/admin-ui/src` returning empty.
+  # ---------------------------------------------------------------------------
+  admin-ui:
+    build:
+      context: ../
+      dockerfile: packages/admin-ui/Dockerfile
+      # =====================================================================
+      # QA F3 Issue #5 — VITE_* Build-Time Argument Propagation
+      # =====================================================================
+      # The Flags Admin SPA (packages/admin-ui/src/admin-ui/) is a Vite-built
+      # React 18 static bundle. Vite reads `import.meta.env.VITE_*` at BUILD
+      # time and inlines the literal string into the compiled JS. Values not
+      # available during `vite build` become `undefined`, breaking the PKCE
+      # redirect: when VITE_KEYCLOAK_BASE_URL is empty, the SPA constructs
+      # `${baseUrl}/realms/blitzy/...` as a host-RELATIVE URL, sending the
+      # browser to http://localhost:4002/realms/... (HTTP 404) instead of
+      # http://localhost:8080/realms/... (the Keycloak issuer).
+      #
+      # Mirror precedent at the auth-sidecar service block above. Per Rule
+      # RF7 the Flags Admin SPA does NOT consume @blitzy/auth — it has its
+      # own copy of the Keycloak client config because each SPA must build
+      # in isolation (Rule RF1: zero cross-package imports).
+      # =====================================================================
+      args:
+        VITE_KEYCLOAK_BASE_URL: ${KEYCLOAK_PUBLIC_BASE_URL:-http://localhost:8080}
+        VITE_KEYCLOAK_REALM: ${KEYCLOAK_REALM:-blitzy}
+        VITE_KEYCLOAK_CLIENT_ID: ${KEYCLOAK_CLIENT_ID:-kalle-app}
+    container_name: kalle-admin-ui
+    restart: unless-stopped
+    environment:
+      NODE_ENV: ${NODE_ENV:-development}
+      ADMIN_UI_PORT: "4002"
+      FLAGS_API_PORT: "4003"
+      # QA F3 Issue #5 — SPA Static Asset Serving
+      # ----------------------------------------------------------------------
+      # The Flags Admin SPA (Vite-built React 18 bundle) lives at
+      # /app/packages/admin-ui/dist/admin-ui inside the runner image (per
+      # packages/admin-ui/Dockerfile's `COPY --from=builder` of dist/).
+      # Setting ADMIN_UI_STATIC_DIR enables the optional SPA static-serving
+      # branch in packages/admin-ui/src/api/server.ts (see lines 886-901)
+      # which mounts the Vite assets at GET /, GET /assets/*, etc.
+      #
+      # Without this var the admin app starts in "API-only" mode and every
+      # SPA route returns 404 (NOT_FOUND). The static-dir feature was
+      # intentionally optional so a deployment can split the SPA onto a
+      # separate static host (CDN, nginx, etc.) and the API onto port 4002,
+      # but for the local Docker Compose stack the SPA and API co-locate.
+      # ----------------------------------------------------------------------
+      ADMIN_UI_STATIC_DIR: /app/packages/admin-ui/dist/admin-ui
+      # NOTE: `flags-db` is the Docker-network DNS name; container port 5432
+      # (host port is 5435 for direct psql access during debugging).
+      FLAGS_DB_URL: postgresql://${FLAGS_DB_USER:-flags}:${FLAGS_DB_PASSWORD:-flags_dev_password}@flags-db:5432/${FLAGS_DB_NAME:-flags_db}?schema=public
+      # R8 — Empty default; operators set in .env. The shared bearer secret
+      # is sent by kalle and Odoo on every GET /flags/:name request and
+      # validated in packages/admin-ui/src/api/evaluate.ts.
+      FLAGS_API_SECRET: ${FLAGS_API_SECRET:-}
+      # RF7 — admin endpoints (CRUD + overrides) call this URL to validate
+      # the operator's bearer token; @blitzy/auth is NEVER imported.
+      AUTH_SIDECAR_URL: http://auth-sidecar:4001
+      AUTH_SIDECAR_SECRET: ${AUTH_SIDECAR_SECRET:-}
+      # 5-second TTL — per FR-4 default; operator-tunable via .env. The
+      # in-process cache makes the `cache → API → env` read order's first
+      # step a sub-millisecond Map lookup (RF3 fail-open semantics).
+      FLAGS_CACHE_TTL_MS: "5000"
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+    ports:
+      - "4002:4002"   # Admin SPA (feature flag CRUD + override management)
+      - "4003:4003"   # Evaluation API (consumed by kalle api/web + Odoo addon)
+    depends_on:
+      flags-db:
+        condition: service_healthy
+      auth-sidecar:
+        condition: service_healthy
+    healthcheck:
+      # Per packages/admin-ui/Dockerfile, the eval API exposes /health on
+      # port 4003 (the eval port — must be reachable by kalle and Odoo for
+      # flag lookups to succeed, so probing it validates the critical path).
+      test:
+        - CMD-SHELL
+        - wget --no-verbose --tries=1 --spider http://127.0.0.1:4003/health || exit 1
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
 # =============================================================================
 # Named Volumes — Persistent data across container restarts
 # =============================================================================
@@ -306,4 +755,23 @@ volumes:
     driver: local
   # Encrypted media file uploads — shared between API and potential CDN
   uploads:
+    driver: local
+  # ---------------------------------------------------------------------------
+  # V2 OAuth/OIDC + Feature Flags Volumes (added by AAP Group 4)
+  # ---------------------------------------------------------------------------
+  # Auth database persistence — @blitzy/auth's users / apps /
+  # user_app_permissions survive container restarts (Rule R2 boundary —
+  # this volume is mounted ONLY into the auth-db service).
+  auth_db_data:
+    driver: local
+  # Flags database persistence — @blitzy/admin-ui's feature_flags /
+  # flag_overrides survive container restarts (Rule RF2 boundary — this
+  # volume is mounted ONLY into the flags-db service).
+  flags_db_data:
+    driver: local
+  # Keycloak dev-file H2 store — admin-console changes (extra users, role
+  # grants, client tweaks) survive container restarts. The realm import
+  # (--import-realm) only runs on first boot when the volume is empty,
+  # then subsequent boots reuse the persisted state.
+  keycloak_data:
     driver: local

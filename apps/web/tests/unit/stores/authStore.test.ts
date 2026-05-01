@@ -386,21 +386,28 @@ describe('authStore', () => {
       expect(stored).not.toBeNull();
 
       const parsed = JSON.parse(stored!);
-      expect(parsed.state.accessToken).toBe(mockTokens.accessToken);
-      expect(parsed.state.refreshToken).toBe(mockTokens.refreshToken);
+      // R7: tokens are NEVER persisted — only user-display state for FOUC
+      expect(parsed.state.accessToken).toBeUndefined();
+      expect(parsed.state.refreshToken).toBeUndefined();
       expect(parsed.state.isAuthenticated).toBe(true);
       expect(parsed.state.user).toEqual(mockUser);
     });
 
-    it('store rehydrates from sessionStorage on initialization', async () => {
-      // Pre-populate sessionStorage with valid persisted state.
+    it('store rehydrates only user/isAuthenticated from sessionStorage (R7)', async () => {
+      // Pre-populate sessionStorage with the post-R7 partialized state.
       // IMPORTANT: setState must happen BEFORE setItem because
       // setState triggers the persist subscriber which writes current
       // (null) state to sessionStorage, overwriting any prior value.
+      //
+      // R7: Tokens MUST NOT be in the persisted slice. If a malicious
+      // actor or stale browser state injects token fields into the
+      // sessionStorage payload, the partialize on next persist will
+      // strip them, but on rehydration Zustand's persist middleware
+      // does write the entire stored state into the store. To avoid
+      // confusing test fixtures, we test the supported (R7-compliant)
+      // shape: { user, isAuthenticated } only.
       const persistedState = {
         state: {
-          accessToken: 'rehydrated-access',
-          refreshToken: 'rehydrated-refresh',
           user: mockUser,
           isAuthenticated: true,
         },
@@ -417,8 +424,12 @@ describe('authStore', () => {
       await useAuthStore.persist.rehydrate();
 
       const state = useAuthStore.getState();
-      expect(state.accessToken).toBe('rehydrated-access');
-      expect(state.refreshToken).toBe('rehydrated-refresh');
+      // R7: tokens are not persisted, so they remain at their initial
+      // null state after rehydration. The first protected API call
+      // will trigger the silent refresh that obtains a fresh access token.
+      expect(state.accessToken).toBeNull();
+      expect(state.refreshToken).toBeNull();
+      // FOUC-prevention slice is rehydrated as expected.
       expect(state.user).toEqual(mockUser);
       expect(state.isAuthenticated).toBe(true);
       expect(state.isInitialized).toBe(true);
@@ -433,18 +444,21 @@ describe('authStore', () => {
       expect(typeof window).toBe('object');
     });
 
-    it('only persists partialized state (not isLoading or isInitialized)', () => {
+    it('only persists partialized state (R7: tokens excluded; isLoading/isInitialized excluded)', () => {
       useAuthStore.getState().login(mockTokens, mockUser);
 
       const stored = sessionStorage.getItem(STORAGE_KEY);
       expect(stored).not.toBeNull();
 
       const parsed = JSON.parse(stored!);
-      // These fields SHOULD be in persisted state (partialized)
-      expect(parsed.state).toHaveProperty('accessToken');
-      expect(parsed.state).toHaveProperty('refreshToken');
+      // FOUC-prevention slice — these fields SHOULD be in persisted state
       expect(parsed.state).toHaveProperty('user');
       expect(parsed.state).toHaveProperty('isAuthenticated');
+      // R7 (CRITICAL): tokens are NEVER persisted to sessionStorage —
+      // they live ONLY in JS memory and the in-memory refreshToken slice
+      // is null in V2 mode (refresh value lives in httpOnly cookie).
+      expect(parsed.state).not.toHaveProperty('accessToken');
+      expect(parsed.state).not.toHaveProperty('refreshToken');
       // These transient fields should NOT be persisted
       expect(parsed.state).not.toHaveProperty('isLoading');
       expect(parsed.state).not.toHaveProperty('isInitialized');

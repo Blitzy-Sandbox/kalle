@@ -1,7 +1,35 @@
 /**
  * @file auth.test.ts
  * Unit tests for the JWT authentication middleware (R9, R33).
+ *
+ * NOTE: These tests exercise ONLY the legacy 2-arg overload of
+ * `createAuthMiddleware(jwtSecret, cacheProvider)`. The V2 OAuth dispatch
+ * overload (FR-9) is exercised by integration tests in
+ * `tests/integration/auth.test.ts` and the @blitzy/auth/integration suite.
+ *
+ * The `@blitzy/auth` and `@blitzy/admin-ui` modules are mocked here because
+ * the assigned middleware (`src/middleware/auth.ts`) loads them as TOP-LEVEL
+ * STATIC IMPORTS (Rule R3 forbids conditional imports). Without these mocks
+ * Jest's resolver would follow the imports into `@blitzy/auth/src/auth/initAuth.ts`
+ * which transitively requires the runtime-generated Prisma client. The mocks
+ * are runtime-only — they do not affect the legacy code path under test, since
+ * the V2 path is never invoked when the legacy 2-arg overload is constructed.
  */
+/* ────────────────────────────────────────────────────────────────────────────
+ * External module mocks — MUST come before any imports that use them.
+ * @blitzy/auth and @blitzy/admin-ui are mocked because the legacy V1 tests
+ * never invoke their runtime functions; the assigned middleware imports them
+ * statically per Rule R3 but only calls them on the V2 branch.
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+jest.mock('@blitzy/auth', () => ({
+  createExpressMiddleware: jest.fn(),
+}));
+
+jest.mock('@blitzy/admin-ui', () => ({
+  checkFlag: jest.fn(),
+}));
+
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { createAuthMiddleware } from '../../../src/middleware/auth';

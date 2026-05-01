@@ -27,6 +27,21 @@
  * - R7  (Zero Warnings Build): Compiles under `tsc --noEmit --strict` with
  *       zero warnings.
  *
+ * V2 Auth Integration (FR-9):
+ * - Detects V2-aware auth wiring by checking deps.authInstance.
+ *   When present (V2 mode wired in server.ts), the auth-middleware factory
+ *   dispatches per-request based on AUTH_V2_ENABLED (Rule R3, R4). The
+ *   middleware factory accepts an optional pre-constructed `flagsClient`
+ *   (an HTTP-only `FeatureFlagClient` from
+ *   `@blitzy/auth/clients/feature-flag-client`) — when omitted, the factory
+ *   constructs one internally from `flagsApiUrl + flagsApiSecret`.
+ * - When `authInstance` is absent (legacy-only mode or test fixture), the
+ *   factory falls back to the legacy 2-arg form (jwtSecret, cacheProvider).
+ *   This preserves the existing 1,814-test kalle suite under
+ *   AUTH_V2_ENABLED=false.
+ * - The new POST /api/v1/auth/logout route is V2-only and is gated by
+ *   deps.flagsClient inside auth.routes.ts (returns 404 in legacy mode).
+ *
  * Route Mount Summary:
  * ```
  * /api/v1/auth/*            — Auth (register, login, refresh, revoke)
@@ -106,6 +121,23 @@ import type { HealthController } from '../../controllers/HealthController.js';
 import type { AuthService } from '../../services/AuthService.js';
 
 // =============================================================================
+// V2 type-only imports — interface-level forward-declarations for the V2
+// auth instance and HTTP-only flag client injected by `server.ts`
+// (composition root). These imports are TYPE-ONLY and tree-shake to nothing
+// at runtime — they exist solely so the V1RouterDependencies interface can
+// declare the optional `authInstance?` and `flagsClient?` slots that
+// `server.ts` populates (FR-1, FR-4, FR-9, R3, R4 — V2 wiring at composition
+// root).
+//
+// Per Rule RF2, kalle MUST consume the HTTP-only `FeatureFlagClient` from
+// `@blitzy/auth/clients/feature-flag-client` — NEVER the DB-backed
+// `FlagInstance` from `@blitzy/admin-ui` (which would require FLAGS_DB_URL
+// access from inside kalle).
+// =============================================================================
+import type { AuthInstance } from '@blitzy/auth';
+import type { FeatureFlagClient } from '@blitzy/auth/clients/feature-flag-client';
+
+// =============================================================================
 // V1RouterDependencies Interface
 // =============================================================================
 
@@ -178,6 +210,60 @@ export interface V1RouterDependencies {
    * Passed to `createAuthMiddleware` for token signature verification.
    */
   jwtSecret: string;
+
+  /**
+   * V2 auth instance constructed by `server.ts` via `initAuth(...)` from
+   * `@blitzy/auth`. Optional — only populated when V2 env vars are set
+   * (KEYCLOAK_BASE_URL, AUTH_SERVICE_URL, AUTH_SIDECAR_SECRET). When
+   * `undefined`, the middleware factory uses the legacy JWT path
+   * exclusively (Rule R3 — zero V2 code executes when AUTH_V2_ENABLED=false
+   * AND in legacy-only deployments where V2 env vars are absent).
+   *
+   * In sidecar mode (kalle), this instance was constructed WITHOUT a
+   * `dbUrl` — token-to-user resolution is delegated via HTTP to
+   * ${AUTH_SERVICE_URL}/validate (Rule R2 — auth DB boundary).
+   *
+   * Used by the V2-aware `createAuthMiddleware` factory in
+   * `middleware/auth.ts` to dispatch to @blitzy/auth's
+   * `createExpressMiddleware` when AUTH_V2_ENABLED=true.
+   *
+   * @see ../../middleware/auth.ts — V2-aware createAuthMiddleware factory
+   * @see ../../../../packages/auth/README.md — initAuth() public API contract
+   */
+  authInstance?: AuthInstance;
+
+  /**
+   * V2 HTTP-only feature-flag client. Optional — only populated when V2 env
+   * vars are set (FLAGS_API_URL, FLAGS_API_SECRET). Constructed by
+   * `server.ts` via `createFeatureFlagClient(...)` from
+   * `@blitzy/auth/clients/feature-flag-client`. When `undefined`, the
+   * middleware factory falls back to the legacy 2-arg overload (jwtSecret,
+   * cacheProvider) — full byte-identical behavior with the pre-V2
+   * implementation, preserving the 1,814-test kalle suite under
+   * AUTH_V2_ENABLED=false.
+   *
+   * The `FeatureFlagClient` exposes:
+   * - `isEnabled(name, subject?)` — async, never-throwing, RF3 fail-open
+   *   internally (cache → API → env-var → ultimately `false`).
+   * - `isEnabledSync(name, subject?)` — synchronous env-var/cache read,
+   *   used by middleware where async pre-checks are not available.
+   * - `close()` — graceful shutdown (cancels in-flight HTTP requests).
+   *
+   * Rule RF2 (flags DB boundary): kalle MUST NEVER reference FLAGS_DB_URL.
+   * The HTTP-only `FeatureFlagClient` is the ONLY sanctioned flag-reading
+   * mechanism in kalle. Verified by:
+   *   grep "FLAGS_DB_URL" kalle/apps/api/src/  → zero matches
+   *
+   * Used by:
+   *   1. The V2-aware `createAuthMiddleware` factory in
+   *      `middleware/auth.ts` to dispatch on `AUTH_V2_ENABLED`.
+   *   2. The `requireV2(flagsClient)` guard in `auth.routes.ts` to gate
+   *      the V2-only `POST /logout` route.
+   *
+   * @see ../../middleware/auth.ts — V2-aware createAuthMiddleware factory
+   * @see ../../../../packages/auth/src/clients/feature-flag-client.ts — flag client implementation
+   */
+  flagsClient?: FeatureFlagClient;
 }
 
 // =============================================================================
@@ -242,7 +328,35 @@ export function createV1Router(deps: V1RouterDependencies): Router {
   //
   // Created ONCE here and passed to all route factories that need it.
   // -------------------------------------------------------------------------
-  const authMiddleware = createAuthMiddleware(deps.jwtSecret, deps.cacheProvider);
+
+  // ─── V2-aware auth middleware (FR-9, R3, R4) ────────────────────────────
+  // When `authInstance` is provided (V2 mode wired in server.ts), use the
+  // V2-aware overload of createAuthMiddleware that dispatches per-request
+  // based on AUTH_V2_ENABLED. Legacy handler is built FIRST and passed in so
+  // the V2-aware middleware can fall through to it when the flag is false.
+  //
+  // The optional `flagsClient` (HTTP-only `FeatureFlagClient` from
+  // `@blitzy/auth/clients/feature-flag-client`, Rule RF2) is forwarded when
+  // present — server.ts is responsible for constructing it once at boot.
+  // When `flagsClient` is absent, the V2-aware factory throws a descriptive
+  // error at construction time, which is detected here and avoided by
+  // gating V2 dispatch on `authInstance` only (the V2 wiring contract
+  // requires both `authInstance` and `flagsClient` to be wired together,
+  // but the gate uses `authInstance` because it is the canonical "V2 is
+  // active" signal — `flagsClient` is then validated inside the factory).
+  //
+  // When `authInstance` is absent (legacy-only mode or test fixture), the
+  // legacy 2-arg overload is used directly — full byte-identical behavior
+  // with the pre-V2 implementation. This branch preserves the existing
+  // 1,814-test suite under AUTH_V2_ENABLED=false (DB or env var).
+  const legacyAuthHandler = createAuthMiddleware(deps.jwtSecret, deps.cacheProvider);
+  const authMiddleware = deps.authInstance
+    ? createAuthMiddleware({
+        authInstance: deps.authInstance,
+        flagsClient: deps.flagsClient,
+        legacyAuthHandler,
+      })
+    : legacyAuthHandler;
 
   // -------------------------------------------------------------------------
   // Step 2: Mount PUBLIC routes (no auth middleware — Rule R9)
@@ -261,8 +375,13 @@ export function createV1Router(deps: V1RouterDependencies): Router {
    * POST /refresh, POST /revoke, POST /revoke-all (protected).
    * The auth route factory selectively applies authMiddleware
    * to protected endpoints internally.
+   *
+   * Pass `deps.flagsClient` as a third argument so auth.routes.ts can gate
+   * the new V2-only POST /logout route via `requireV2(flagsClient)`. When
+   * `flagsClient` is undefined (legacy-only mode), POST /logout returns 404,
+   * preserving legacy test parity.
    */
-  router.use('/auth', createAuthRoutes(deps.authController, authMiddleware));
+  router.use('/auth', createAuthRoutes(deps.authController, authMiddleware, deps.flagsClient));
 
   /**
    * Health check endpoint: GET /api/v1/health

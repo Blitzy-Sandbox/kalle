@@ -12,7 +12,35 @@
  * the logger, metrics measured around routes, error handler is the final
  * catch-all, etc.).
  *
+ * **V2 Auth Awareness (FR-9):** This factory is V2-flag-agnostic. The V2-aware
+ * auth middleware swap (legacy JWT/blacklist ↔ @blitzy/auth's createExpressMiddleware)
+ * is handled INSIDE the v1Router constructed by routes/v1/index.ts. By the time
+ * v1Router reaches this factory in `deps.v1Router`, the per-request flag check
+ * (AUTH_V2_ENABLED) and mutual-exclusion branching have already been bound to
+ * each protected route. This factory simply mounts v1Router at `/api/v1` —
+ * the V2 flag is invisible at this layer (Rule R4 mutual exclusion is enforced
+ * at the middleware level, not the factory level).
+ *
+ * The `authInstance` and `flagsClient` properties on `AppDependencies` are
+ * therefore documentary: they exist so `server.ts` can route the pre-built
+ * V2 dependency container through to `routes/v1/index.ts`'s factory. This
+ * file consumes neither at runtime — the only references are at the TypeScript
+ * type level via `import type` (which emits zero runtime code).
+ *
+ * **HTTP-only flag client (Rule RF2):** The kalle composition root constructs
+ * a `FeatureFlagClient` (HTTP-only, from `@blitzy/auth/clients/feature-flag-client`)
+ * — NOT a DB-backed `FlagInstance` from `@blitzy/admin-ui`. This enforces
+ * Rule RF2 (kalle MUST NOT reference `FLAGS_DB_URL` or import from `@blitzy/admin-ui`
+ * at runtime). The HTTP client reads `AUTH_V2_ENABLED` via `GET ${FLAGS_API_URL}/flags/...`,
+ * caches with TTL `FLAGS_CACHE_TTL_MS`, and falls back to `process.env.AUTH_V2_ENABLED`
+ * on API failure (Rule RF3 fail-open). The client is created in `server.ts` via
+ * `createFeatureFlagClient(...)` and injected through `flagsClient` here.
+ *
  * Architecture Rules Enforced:
+ * - R3  (V2 Flag Isolation): V2-aware mounting happens in v1Router; this factory
+ *       is V2-agnostic. With AUTH_V2_ENABLED=false, no @blitzy/auth code executes.
+ * - R4  (Mutual Exclusion): Enforced inside middleware/auth.ts; this factory only
+ *       mounts the pre-built v1Router which contains the resolved branch.
  * - R8  (Media Upload Validation): Body parser limit set to 26 MB (25 MB + overhead)
  * - R16 (OOD Layering): Pure factory — zero service/repository/provider instantiation
  * - R17 (Interface-Driven): Receives pre-wired dependencies, never imports concretes
@@ -26,6 +54,7 @@
 
 import express from 'express';
 import type { Application, Router, Request, Response } from 'express';
+import cookieParser from 'cookie-parser';
 import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
@@ -34,6 +63,31 @@ import { correlationIdMiddleware } from './middleware/correlation-id';
 import { createMetricsMiddleware } from './middleware/metrics';
 import { errorHandler } from './middleware/error-handler';
 import type { MetricsService } from './services/MetricsService';
+
+// ─── V2 Library Type Imports (FR-1, FR-9, Rule RF2) ──────────────────────────────
+// Type-only imports for the V2 auth library instance type and the HTTP-only
+// feature flag client type. These are referenced by the optional `authInstance`
+// and `flagsClient` props on AppDependencies. Although `app.ts` does NOT directly
+// use these libraries (the V2-aware auth middleware is bound INSIDE v1Router by
+// routes/v1/index.ts), the type definitions are surfaced here so that server.ts
+// can pass the instances through AppDependencies for forward-compatibility and to
+// make the V2 integration self-documenting at the type system level.
+//
+// **Rule RF2 mandate:** kalle MUST NOT import from `@blitzy/admin-ui` (which is
+// DB-backed and requires `FLAGS_DB_URL`). Instead, kalle uses the HTTP-only
+// `FeatureFlagClient` from the `@blitzy/auth/clients/feature-flag-client` subpath
+// export, which talks to the flags API over HTTP and never opens a Postgres
+// connection. This enforces the dual-database boundary (Rule RF2): only the
+// `admin-ui` server process holds `FLAGS_DB_URL`; kalle and Odoo only see HTTP.
+//
+// The `import type` syntax guarantees these emit zero runtime code (Rule R7
+// zero-warnings build): the resulting JavaScript contains no `require`/`import`
+// statement for `@blitzy/auth` from this file. This preserves Rule R3 (V2 flag
+// isolation) — with AUTH_V2_ENABLED=false, no V2 library code is loaded into
+// the require.cache when this module is evaluated, because TypeScript erases
+// type-only imports at emit time.
+import type { AuthInstance } from '@blitzy/auth';
+import type { FeatureFlagClient } from '@blitzy/auth/clients/feature-flag-client';
 
 // ---------------------------------------------------------------------------
 // AppDependencies Interface
@@ -81,7 +135,7 @@ export interface AppDependencies {
    * logging (Rule R28). Created by `server.ts` with a Pino logger configured
    * for JSON output and authorization header redaction (Rule R23).
    *
-   * Placed AFTER the correlation ID middleware (step 7) so that
+   * Placed AFTER the correlation ID middleware (step 8) so that
    * `req.correlationId` is available when the logger generates the log
    * entry's request identifier.
    */
@@ -93,7 +147,7 @@ export interface AppDependencies {
    * request counts, duration histograms, and active request gauges.
    *
    * Created by `server.ts` and passed here to wire the Prometheus exporter
-   * into the HTTP middleware chain at step 9.
+   * into the HTTP middleware chain at step 10.
    */
   metricsService: MetricsService;
 
@@ -103,6 +157,63 @@ export interface AppDependencies {
    * set to 'cross-origin' for cross-origin image loading from the frontend.
    */
   uploadDir: string;
+
+  /**
+   * V2 auth library instance constructed by `server.ts` via `initAuth(...)` from
+   * `@blitzy/auth`. Optional: only set when V2 OAuth integration is wired (FR-1, FR-9).
+   *
+   * **Note:** This factory does NOT use this property directly. It is surfaced on
+   * `AppDependencies` for forward-compatibility and documentation. The V2-aware
+   * auth middleware is bound INSIDE `v1Router` (constructed in `routes/v1/index.ts`
+   * by `server.ts` BEFORE being passed to this factory). The actual mount site is
+   * the `routes/v1/index.ts` factory, NOT this `app.ts` factory.
+   *
+   * In sidecar mode (kalle), this instance was constructed WITHOUT a `dbUrl` —
+   * token-to-user resolution is delegated via HTTP to ${AUTH_SERVICE_URL}/validate
+   * (Rule R2 — auth DB boundary).
+   *
+   * Set by `server.ts` and forwarded to `createV1Router` for use by the V2-aware
+   * `createAuthMiddleware` factory in `middleware/auth.ts`.
+   *
+   * @see ./middleware/auth.ts — V2-aware createAuthMiddleware factory
+   * @see ./routes/v1/index.ts — actual V2 auth-middleware mount site
+   * @see ../../../packages/auth/README.md — initAuth() public API contract
+   */
+  authInstance?: AuthInstance;
+
+  /**
+   * HTTP-only feature flag client constructed by `server.ts` via
+   * `createFeatureFlagClient(...)` from `@blitzy/auth/clients/feature-flag-client`.
+   * Optional: only set when V2 feature flag integration is wired
+   * (FR-4, FR-9, Rule RF2).
+   *
+   * **Note:** This factory does NOT use this property directly. It is surfaced
+   * for forward-compatibility and documentation. The flag check (`AUTH_V2_ENABLED`)
+   * happens INSIDE the v1Router's per-route auth middleware (in `middleware/auth.ts`
+   * via the V2-aware `createAuthMiddleware({ authInstance, flagsClient, legacyAuthHandler })`
+   * factory) and inside the V2-only `requireV2(flagsClient)` guard in `auth.routes.ts`.
+   *
+   * **Rule RF2 (Flags DB Boundary):** kalle MUST NOT reference `FLAGS_DB_URL`
+   * or import the DB-backed `FlagInstance` from `@blitzy/admin-ui`. Instead,
+   * the HTTP-only `FeatureFlagClient` is used, which:
+   *   - Calls `GET ${FLAGS_API_URL}/flags/:name` over HTTP (never opens Postgres).
+   *   - Caches results in-process with TTL `FLAGS_CACHE_TTL_MS` (default 5000 ms).
+   *   - Falls back to `process.env.AUTH_V2_ENABLED` on API failure
+   *     (Rule RF3 — flag fail-open).
+   *   - Exposes async `isEnabled()`, sync `isEnabledSync()`, `invalidate()`, and
+   *     `close()` methods (the latter for graceful shutdown).
+   *
+   * **Mode behavior:**
+   *   - When `FLAGS_API_URL`/`FLAGS_API_SECRET` env vars are set at boot, server.ts
+   *     constructs a real `FeatureFlagClient` and injects it here.
+   *   - When V2 env vars are absent (legacy-only deployment), this is `undefined`
+   *     and the V2-aware middleware factory falls back to legacy mode immediately.
+   *
+   * @see ./middleware/auth.ts — V2-aware createAuthMiddleware factory + flag check
+   * @see ./routes/v1/auth.routes.ts — requireV2(flagsClient) guard for /logout
+   * @see ../../../packages/auth/src/clients/feature-flag-client.ts — public API
+   */
+  flagsClient?: FeatureFlagClient;
 }
 
 // ---------------------------------------------------------------------------
@@ -113,7 +224,7 @@ export interface AppDependencies {
  * Creates and configures the Express application with the complete ordered
  * middleware chain.
  *
- * **Middleware chain (13 steps — order is CRITICAL):**
+ * **Middleware chain (14 steps — order is CRITICAL):**
  *
  * | # | Middleware              | Purpose                                    |
  * |---|------------------------|--------------------------------------------|
@@ -123,13 +234,14 @@ export interface AppDependencies {
  * | 4 | Compression            | gzip / deflate response compression        |
  * | 5 | JSON body parsing      | Parse JSON bodies (26 MB limit, Rule R8)   |
  * | 6 | URL-encoded parsing    | Parse URL-encoded bodies (same limit)      |
- * | 7 | Correlation ID         | UUID v4 per request (Rule R29)             |
- * | 8 | Pino HTTP logger       | Structured request logging (Rule R28)      |
- * | 9 | Metrics                | HTTP instrumentation (Rule R37)            |
- * |10 | Static uploads         | Serve /uploads with CORP header            |
- * |11 | API v1 routes          | All versioned endpoints (Rule R30)         |
- * |12 | 404 catch-all          | Unmatched routes (Rule R22)                |
- * |13 | Error handler          | Global error handler — MUST be last (R22)  |
+ * | 7 | Cookie parser          | Parse Cookie header into req.cookies (FR-8)|
+ * | 8 | Correlation ID         | UUID v4 per request (Rule R29)             |
+ * | 9 | Pino HTTP logger       | Structured request logging (Rule R28)      |
+ * |10 | Metrics                | HTTP instrumentation (Rule R37)            |
+ * |11 | Static uploads         | Serve /uploads with CORP header            |
+ * |12 | API v1 routes          | All versioned endpoints (Rule R30)         |
+ * |13 | 404 catch-all          | Unmatched routes (Rule R22)                |
+ * |14 | Error handler          | Global error handler — MUST be last (R22)  |
  *
  * @param deps - Pre-configured dependencies from the composition root
  * @returns Fully configured Express Application instance ready for
@@ -187,7 +299,7 @@ export function createApp(deps: AppDependencies): Application {
   // protocol overhead (base64 encoding, metadata envelope).
   //
   // Express body-parser returns 413 (Payload Too Large) when the limit is
-  // exceeded. The global error handler (step 13) translates this into the
+  // exceeded. The global error handler (step 14) translates this into the
   // standardized error response shape.
   // -------------------------------------------------------------------------
   app.use(express.json({ limit: '26mb' }));
@@ -202,30 +314,75 @@ export function createApp(deps: AppDependencies): Application {
   app.use(express.urlencoded({ extended: true, limit: '26mb' }));
 
   // -------------------------------------------------------------------------
-  // Step 7: Correlation ID — UUID v4 Per Request (Rule R29)
+  // Step 7: Cookie Parser — Parse Cookie Header into req.cookies (FR-8 / V2)
+  //
+  // **F-CRITICAL-6 (QA Checkpoint F2 final report):** The V2 (FR-8) silent
+  // refresh-then-retry flow at `apps/web/src/lib/api.ts` issues
+  // `POST /api/v1/auth/refresh` with `credentials: 'include'` and an empty
+  // request body, expecting the server to read the refresh token from the
+  // `httpOnly; Secure; SameSite=Strict` cookie that the auth/callback page
+  // wrote at PKCE completion. Without `cookie-parser` registered, `req.cookies`
+  // is undefined, the V2 silent refresh fails with HTTP 400 VALIDATION_ERROR,
+  // and the user enters a redirect loop.
+  //
+  // This middleware populates `req.cookies` (an object keyed by cookie name)
+  // for ALL incoming requests. Downstream consumers:
+  // - `routes/v1/auth.routes.ts` /refresh handler (V2 path) reads
+  //   `req.cookies.refreshToken` when the request body omits the token.
+  // - The /logout handler (FR-9) sets and clears cookies via `res.cookie()`
+  //   which does NOT depend on this middleware (response side); however,
+  //   any future cookie-reading logic on protected routes will benefit.
+  //
+  // Placed AFTER body parsers (steps 5-6) and BEFORE correlation ID (step 8)
+  // because:
+  //   1. Body parsing and cookie parsing are independent — they parse
+  //      different parts of the HTTP request — so they may execute in
+  //      either order without interference.
+  //   2. Correlation ID generation (step 8) currently does not consume
+  //      cookies, but placing cookie parsing before it future-proofs the
+  //      pipeline against optional cookie-based correlation ID propagation.
+  //   3. Logger (step 9) and metrics (step 10) do not need cookies.
+  //
+  // No secret key is configured: cookies are NOT signed at the HTTP layer.
+  // The refresh token cookie is protected against tampering by the V2 design
+  // (httpOnly prevents JS access; Secure prevents non-HTTPS leakage in prod;
+  // SameSite=Strict prevents CSRF) AND by AuthService.refreshToken() which
+  // validates the token's database row before issuing a new pair.
+  //
+  // Architecture rule references:
+  // - FR-8 (Kalle Web PKCE Flow): refresh token persisted only in cookie
+  // - R7 (Token Storage): access in JS memory, refresh in httpOnly cookie
+  // - R12 (API Stability): legacy /refresh body path remains supported;
+  //        cookie path is additive — no breaking change to existing callers.
+  // - R28 (Structured Logging): cookie-parser produces zero log output
+  // -------------------------------------------------------------------------
+  app.use(cookieParser());
+
+  // -------------------------------------------------------------------------
+  // Step 8: Correlation ID — UUID v4 Per Request (Rule R29)
   //
   // Assigns a unique UUID v4 correlation ID to every request, sets the
   // X-Correlation-ID response header, and attaches `req.correlationId` for
   // downstream consumers. If the client sends an X-Correlation-ID header,
   // it is reused for cross-service tracing.
   //
-  // MUST be registered BEFORE the logger (step 8) so that the Pino HTTP
+  // MUST be registered BEFORE the logger (step 9) so that the Pino HTTP
   // middleware can use `req.correlationId` as the log request identifier.
   // -------------------------------------------------------------------------
   app.use(correlationIdMiddleware);
 
   // -------------------------------------------------------------------------
-  // Step 8: Pino HTTP Logger — Structured Request Logging (Rule R28)
+  // Step 9: Pino HTTP Logger — Structured Request Logging (Rule R28)
   //
   // Logs every HTTP request/response cycle as structured JSON. Uses the
-  // correlation ID set by step 7 as the log entry's request identifier.
+  // correlation ID set by step 8 as the log entry's request identifier.
   // Configured by server.ts with authorization header redaction (Rule R23)
   // and custom log levels (5xx → error, 4xx → warn, 2xx/3xx → info).
   // -------------------------------------------------------------------------
   app.use(deps.pinoHttpMiddleware);
 
   // -------------------------------------------------------------------------
-  // Step 9: HTTP Metrics Instrumentation (Rule R37)
+  // Step 10: HTTP Metrics Instrumentation (Rule R37)
   //
   // Instruments HTTP request/response cycles for Prometheus-compatible
   // metrics using the injected MetricsService instance. The factory
@@ -245,7 +402,7 @@ export function createApp(deps: AppDependencies): Application {
   app.use(createMetricsMiddleware(deps.metricsService));
 
   // -------------------------------------------------------------------------
-  // Step 10: Static File Serving — Uploaded Media Assets
+  // Step 11: Static File Serving — Uploaded Media Assets
   //
   // Serves the uploads directory as static files at the /uploads prefix.
   // An inline middleware sets Cross-Origin-Resource-Policy: cross-origin on
@@ -258,7 +415,7 @@ export function createApp(deps: AppDependencies): Application {
   }, express.static(deps.uploadDir));
 
   // -------------------------------------------------------------------------
-  // Step 11: API Routes — All Versioned Endpoints (Rule R30)
+  // Step 12: API Routes — All Versioned Endpoints (Rule R30)
   //
   // Mounts the fully assembled v1 router under the /api/v1 prefix. The
   // router contains all route handlers with auth middleware, rate limiting,
@@ -268,13 +425,25 @@ export function createApp(deps: AppDependencies): Application {
   // limiter) are NOT applied globally — they are bound per-route inside
   // the v1Router to allow unauthenticated endpoints (e.g. /auth/register,
   // /auth/login, /health) and per-endpoint rate limit tuning.
+  //
+  // V2 OAuth Dispatch (FR-9, R3, R4, RF2): The auth middleware bound inside
+  // v1Router uses the V2-aware createAuthMiddleware({ authInstance,
+  // flagsClient, legacyAuthHandler }) factory from middleware/auth.ts.
+  // Per-request, the factory reads AUTH_V2_ENABLED via the HTTP-only
+  // FeatureFlagClient (cache → flags-API → process.env fallback per Rule RF3)
+  // and dispatches to either the legacy JWT/blacklist handler (V1) or
+  // @blitzy/auth's createExpressMiddleware (V2). Rule R4 guarantees the
+  // two paths are mutually exclusive on a per-request basis. Rule RF2
+  // ensures kalle never opens a Postgres connection to FLAGS_DB — only
+  // HTTP to the flags API. This factory mounts v1Router OPAQUELY — the
+  // flag is invisible at this layer.
   // -------------------------------------------------------------------------
   app.use('/api/v1', deps.v1Router);
 
   // -------------------------------------------------------------------------
-  // Step 12: 404 Catch-All Handler
+  // Step 13: 404 Catch-All Handler
   //
-  // Catches all requests that did not match any route in step 11. Returns
+  // Catches all requests that did not match any route in step 12. Returns
   // the standardized error response shape (Rule R22) so clients receive
   // consistent error payloads regardless of the error type.
   // -------------------------------------------------------------------------
@@ -289,7 +458,7 @@ export function createApp(deps: AppDependencies): Application {
   });
 
   // -------------------------------------------------------------------------
-  // Step 13: Global Error Handler — MUST BE LAST (Rule R22)
+  // Step 14: Global Error Handler — MUST BE LAST (Rule R22)
   //
   // Express identifies error-handling middleware by its 4-argument signature
   // (err, req, res, next). This middleware catches all errors thrown by
