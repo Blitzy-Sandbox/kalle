@@ -79,7 +79,13 @@ import {
   createFeatureFlagClient,
   type FeatureFlagClient,
 } from '@blitzy/auth/clients/feature-flag-client';
-import type { AuthInstance } from '@blitzy/auth';
+// Refine PR Directive D11 — import the canonical `AuthToken` type from
+// @blitzy/auth so the V2 backfill path uses the publicly-documented shape
+// (`{ jti: string; iat: number; exp: number }`) rather than an inline cast.
+// The inline cast in the prior implementation declared `jti?: string` /
+// `iat?: number` / `exp?: number`, which masked the post-D11 contract that
+// these are guaranteed-present (non-empty/finite) on the V2 success path.
+import type { AuthInstance, AuthToken, AuthUser } from '@blitzy/auth';
 
 // Re-export JwtPayload for internal typing usage
 type JwtPayload = jwt.JwtPayload;
@@ -512,20 +518,30 @@ export function createAuthMiddleware(
       return v2Handler(req, res, (err?: unknown) => {
         if (err) return next(err);
 
-        // Backfill req.user (R12) — V2 attaches req.authUser; legacy path uses
-        // req.user. We populate req.user from req.authUser plus the decoded
-        // JWT claims (jti/iat/exp) attached by @blitzy/auth as req.authToken.
+        // Backfill req.user (R12) — V2 attaches req.authUser AND
+        // req.authToken; legacy path uses req.user. We populate req.user
+        // from req.authUser plus the decoded JWT temporal claims
+        // (jti/iat/exp) attached by @blitzy/auth as req.authToken.
         //
-        // Coordination note: this depends on @blitzy/auth exposing
-        // req.authUser: { email, sub, tier } AND req.authToken (or equivalent)
-        // containing the JWT's jti/iat/exp claims. If only req.authUser is
-        // available, the V2 middleware MUST decode jti/iat/exp from the
-        // Authorization header — this responsibility lives in @blitzy/auth.
+        // Coordination note (Refine PR Directive D11): @blitzy/auth's
+        // createExpressMiddleware now attaches BOTH `req.authUser` AND
+        // `req.authToken = { jti, iat, exp }` on the V2 success path —
+        // see packages/auth/src/middleware/createExpressMiddleware.ts.
+        // The temporal claims come from the SAME jose.jwtVerify result
+        // (in-process / sidecar mode) or from the sidecar's `/validate`
+        // response (library mode). This guarantees the backfill produces
+        // a non-empty `req.user.jti` after V2 auth, matching the legacy
+        // V1 contract expected by downstream controllers (e.g.,
+        // `/auth/revoke-all` writes `blacklist:${req.user.jti}` to Redis).
+        //
+        // We use the canonical exported types from @blitzy/auth (AuthUser
+        // and AuthToken) so any future contract change is a build-time
+        // type error in this file rather than a runtime backfill regression.
         const authUser = (req as Request & {
-          authUser?: { email: string; sub: string; tier: string };
+          authUser?: AuthUser;
         }).authUser;
         const authToken = (req as Request & {
-          authToken?: { jti?: string; iat?: number; exp?: number };
+          authToken?: AuthToken;
         }).authToken;
 
         if (authUser) {
@@ -534,6 +550,15 @@ export function createAuthMiddleware(
           // opaque string identifier continue to work. Cross-database joins
           // by userId against kalle's User table are out of scope per AAP
           // Section 4 — kalle's User model is untouched.
+          //
+          // The `?? '' / ?? 0` defaults are retained as a defense-in-depth
+          // measure: if a future @blitzy/auth release breaks the contract
+          // by ceasing to attach `req.authToken`, downstream controllers
+          // will see empty/zero values rather than a crash on field access.
+          // Per Refine PR Directive D11 the post-D11 contract guarantees
+          // these defaults are NEVER reached on the V2 success path —
+          // operators observing them in production indicate a sidecar/
+          // middleware version mismatch and SHOULD upgrade.
           req.user = {
             userId: authUser.sub,
             email: authUser.email,
